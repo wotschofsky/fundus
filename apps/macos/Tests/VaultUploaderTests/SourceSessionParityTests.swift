@@ -64,6 +64,64 @@ import AVFoundation
         XCTAssertEqual(SessionTimeline(chunks: chunks, timeZone: berlin).clockTime(atMs: 9000), "10:00:09")
     }
 
+    func testAuthoritativeHistoryRemovesDeletedBadgesAfterAllPagesButKeepsPendingImports() throws {
+        let suite = "session-history-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = "https://vault.example.com"
+        let otherServer = "https://other.example.com"
+        let files = briefRecordings().map {
+            RecorderFile(url: $0.url, size: $0.fileSize, modified: nil, recorded: $0.start, transmitter: $0.transmitter, recording: $0)
+        }
+        let model = SourceSessions(defaults: defaults)
+        model.update(files, server: server)
+        XCTAssertGreaterThanOrEqual(model.sessions.count, 3)
+        let removed = model.sessions[0], retained = model.sessions[1], pending = model.sessions[2]
+        model.register([removed, retained, pending], server: server, importID: "local-batch")
+        model.updateReceipt(server: server, importID: "local-batch", entries: [
+            ["session_index": 0, "id": "trashed-or-deleted", "stage": "complete"],
+            ["session_index": 1, "id": "retained-on-second-page", "stage": "complete"]
+        ])
+        model.register([removed], server: otherServer, importID: "another-vault-batch")
+        model.updateReceipt(server: otherServer, importID: "another-vault-batch", entries: [
+            ["session_index": 0, "id": "other-vault-entry", "stage": "complete"]
+        ])
+
+        // An incomplete or interrupted history fetch must not erase badges for
+        // entries absent from the first page, or for locally queued imports.
+        let firstPage: [[String: Any]] = [["id": "new-remote-entry", "source_ids": ["remote-source"], "stage": "complete"]]
+        model.syncHistory(firstPage, server: server)
+        XCTAssertTrue(model.partlyImported(removed, server: server))
+        XCTAssertEqual(model.record(for: retained, server: server)?.entryID, "retained-on-second-page")
+        XCTAssertEqual(model.record(for: pending, server: server)?.stage, "uploading")
+        let afterInterruptedFetch = SourceSessions(defaults: defaults)
+        XCTAssertNotNil(afterInterruptedFetch.record(for: removed, server: server))
+        XCTAssertNotNil(afterInterruptedFetch.record(for: retained, server: server))
+
+        let secondPage: [[String: Any]] = [["id": "retained-on-second-page", "source_ids": retained.recordings.map(SourceSessions.sourceID), "stage": "complete"]]
+        model.syncHistory(secondPage, server: server)
+        XCTAssertNotNil(model.record(for: removed, server: server))
+        let authoritativeIDs = Set((firstPage + secondPage).compactMap { $0["id"] as? String })
+        model.reconcileHistory(server: server, entryIDs: authoritativeIDs)
+
+        XCTAssertNil(model.record(for: removed, server: server))
+        XCTAssertFalse(model.partlyImported(removed, server: server))
+        XCTAssertEqual(model.record(for: retained, server: server)?.entryID, "retained-on-second-page")
+        XCTAssertEqual(model.record(for: pending, server: server)?.importID, "local-batch")
+        XCTAssertNil(model.record(for: pending, server: server)?.entryID)
+        XCTAssertEqual(model.record(for: removed, server: otherServer)?.entryID, "other-vault-entry")
+
+        // A fully fetched empty archive is authoritative too; pending local
+        // uploads and another vault's history still survive, including relaunch.
+        model.reconcileHistory(server: server, entryIDs: [])
+        let restored = SourceSessions(defaults: defaults)
+        XCTAssertNil(restored.record(for: removed, server: server))
+        XCTAssertNil(restored.record(for: retained, server: server))
+        XCTAssertEqual(restored.record(for: pending, server: server)?.stage, "uploading")
+        XCTAssertEqual(restored.record(for: removed, server: otherServer)?.entryID, "other-vault-entry")
+        XCTAssertEqual(restored.records.count, 2)
+    }
+
     func testScannerInspectsRealHeadersAndReportsUnreadableClips() async throws {
         let folder = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
