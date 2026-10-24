@@ -51,7 +51,7 @@ staging="$work/dmg-root"
 mkdir "$staging"
 ditto "$app" "$staging/VaultUploader.app"
 ln -s /Applications "$staging/Applications"
-printf '%s\n' 'Drag VaultUploader to Applications. Configure your server HTTPS URL and an upload token.' > "$staging/Read Me.txt"
+printf '%s\n' 'Drag VaultUploader to Applications. Configure your server URL in Settings and sign in using your browser.' > "$staging/Read Me.txt"
 ditto -c -k --keepParent "$app" "$work/VaultUploader-$suffix.zip"
 hdiutil create -volname 'Vault Uploader' -srcfolder "$staging" -format UDZO "$work/VaultUploader-$suffix.dmg"
 if [[ "$mode" == --release ]]; then
