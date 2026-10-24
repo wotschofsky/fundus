@@ -229,20 +229,44 @@ private struct SourceTrimBar: View {
     let preview: SessionPreview
     var body: some View {
         let trim = source.trim(for: session) ?? Trim(start: 0, end: session.duration)
-        HStack(spacing: 10) {
-            Image(systemName: "scissors").foregroundStyle(.secondary)
-            Text("Import from").foregroundStyle(.secondary)
-            Text(preview.clock(atSeconds: trim.start)).monospacedDigit()
-            Button("Set Start") { source.setTrim(start: preview.player.currentSeconds, for: session) }
-            Text("to").foregroundStyle(.secondary)
-            Text(preview.clock(atSeconds: trim.end)).monospacedDigit()
-            Button("Set End") { source.setTrim(end: preview.player.currentSeconds, for: session) }
-            if source.trim(for: session) != nil { Button("Reset") { source.resetTrim(for: session) }.buttonStyle(.link) }
-            Spacer()
-            Text(source.trim(for: session) == nil ? "Whole recording" : "\(Format.duration(trim.duration)) of \(Format.duration(session.duration))").foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                Image(systemName: "scissors").foregroundStyle(.secondary)
+                startControls(trim)
+                endControls(trim)
+                resetButton
+                Spacer()
+                summary(trim)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) { startControls(trim); Spacer() }
+                HStack(spacing: 10) { endControls(trim); Spacer() }
+                HStack { summary(trim); Spacer(); resetButton }
+            }
         }
         .font(.callout).controlSize(.small)
         .padding(.horizontal, 16).padding(.bottom, 10)
         .disabled(!preview.player.isAvailable)
+    }
+    private func startControls(_ trim: Trim) -> some View {
+        Group {
+            Text("Import from").foregroundStyle(.secondary)
+            Text(preview.clock(atSeconds: trim.start)).monospacedDigit()
+            Button("Set Start") { source.setTrim(start: preview.player.currentSeconds, for: session) }
+        }
+    }
+    private func endControls(_ trim: Trim) -> some View {
+        Group {
+            Text("to").foregroundStyle(.secondary)
+            Text(preview.clock(atSeconds: trim.end)).monospacedDigit()
+            Button("Set End") { source.setTrim(end: preview.player.currentSeconds, for: session) }
+        }
+    }
+    @ViewBuilder private var resetButton: some View {
+        if source.trim(for: session) != nil { Button("Reset") { source.resetTrim(for: session) }.buttonStyle(.link) }
+    }
+    private func summary(_ trim: Trim) -> some View {
+        Text(source.trim(for: session) == nil ? "Whole recording" : "\(Format.duration(trim.duration)) of \(Format.duration(session.duration))")
+            .foregroundStyle(.secondary)
     }
 }
