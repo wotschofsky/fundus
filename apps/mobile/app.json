@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Vault Uploader",
+    "slug": "vault-uploader",
+    "scheme": "vault-uploader",
+    "version": "0.1.0",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "dev.wsky.vaultuploader",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "dev.wsky.vaultuploader",
+      "permissions": [
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC",
+        "POST_NOTIFICATIONS"
+      ],
+      "allowBackup": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-document-picker",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          },
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.18)
+project(vault_transfer C)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../../native/audio" "${CMAKE_CURRENT_BINARY_DIR}/vault_audio")
+add_library(vault_transfer SHARED vault_jni.c)
+target_link_libraries(vault_transfer PRIVATE vault_audio log)

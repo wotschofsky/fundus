@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-24T11:05:41.917346+00:00",
+  "title": "Design System: Transcript Vault Web",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.00586 285.89)",
+          "oklch(26.43% 0.00586 285.89)",
+          "oklch(37.86% 0.00586 285.89)",
+          "oklch(49.29% 0.00586 285.89)",
+          "oklch(60.71% 0.00586 285.89)",
+          "oklch(72.14% 0.00586 285.89)",
+          "oklch(83.57% 0.00586 285.89)",
+          "oklch(95.00% 0.00586 285.89)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "Accent hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.00699 286.01)",
+          "oklch(26.43% 0.00699 286.01)",
+          "oklch(37.86% 0.00699 286.01)",
+          "oklch(49.29% 0.00699 286.01)",
+          "oklch(60.71% 0.00699 286.01)",
+          "oklch(72.14% 0.00699 286.01)",
+          "oklch(83.57% 0.00699 286.01)",
+          "oklch(95.00% 0.00699 286.01)"
+        ]
+      },
+      "control-text": {
+        "role": "neutral",
+        "displayName": "Control text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00548 286.03)",
+          "oklch(26.43% 0.00548 286.03)",
+          "oklch(37.86% 0.00548 286.03)",
+          "oklch(49.29% 0.00548 286.03)",
+          "oklch(60.71% 0.00548 286.03)",
+          "oklch(72.14% 0.00548 286.03)",
+          "oklch(83.57% 0.00548 286.03)",
+          "oklch(95.00% 0.00548 286.03)"
+        ]
+      },
+      "body": {
+        "role": "neutral",
+        "displayName": "Body",
+        "tonalRamp": [
+          "oklch(15.00% 0.01462 285.79)",
+          "oklch(26.43% 0.01462 285.79)",
+          "oklch(37.86% 0.01462 285.79)",
+          "oklch(49.29% 0.01462 285.79)",
+          "oklch(60.71% 0.01462 285.79)",
+          "oklch(72.14% 0.01462 285.79)",
+          "oklch(83.57% 0.01462 285.79)",
+          "oklch(95.00% 0.01462 285.79)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.01381 285.94)",
+          "oklch(26.43% 0.01381 285.94)",
+          "oklch(37.86% 0.01381 285.94)",
+          "oklch(49.29% 0.01381 285.94)",
+          "oklch(60.71% 0.01381 285.94)",
+          "oklch(72.14% 0.01381 285.94)",
+          "oklch(83.57% 0.01381 285.94)",
+          "oklch(95.00% 0.01381 285.94)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "tonalRamp": [
+          "oklch(15.00% 0.00536 286.30)",
+          "oklch(26.43% 0.00536 286.30)",
+          "oklch(37.86% 0.00536 286.30)",
+          "oklch(49.29% 0.00536 286.30)",
+          "oklch(60.71% 0.00536 286.30)",
+          "oklch(72.14% 0.00536 286.30)",
+          "oklch(83.57% 0.00536 286.30)",
+          "oklch(95.00% 0.00536 286.30)"
+        ]
+      },
+      "control-border": {
+        "role": "neutral",
+        "displayName": "Control border",
+        "tonalRamp": [
+          "oklch(15.00% 0.00676 286.26)",
+          "oklch(26.43% 0.00676 286.26)",
+          "oklch(37.86% 0.00676 286.26)",
+          "oklch(49.29% 0.00676 286.26)",
+          "oklch(60.71% 0.00676 286.26)",
+          "oklch(72.14% 0.00676 286.26)",
+          "oklch(83.57% 0.00676 286.26)",
+          "oklch(95.00% 0.00676 286.26)"
+        ]
+      },
+      "control-border-hover": {
+        "role": "neutral",
+        "displayName": "Control border hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.00965 286.19)",
+          "oklch(26.43% 0.00965 286.19)",
+          "oklch(37.86% 0.00965 286.19)",
+          "oklch(49.29% 0.00965 286.19)",
+          "oklch(60.71% 0.00965 286.19)",
+          "oklch(72.14% 0.00965 286.19)",
+          "oklch(83.57% 0.00965 286.19)",
+          "oklch(95.00% 0.00965 286.19)"
+        ]
+      },
+      "subtle": {
+        "role": "neutral",
+        "displayName": "Subtle",
+        "tonalRamp": [
+          "oklch(15.00% 0.00132 286.38)",
+          "oklch(26.43% 0.00132 286.38)",
+          "oklch(37.86% 0.00132 286.38)",
+          "oklch(49.29% 0.00132 286.38)",
+          "oklch(60.71% 0.00132 286.38)",
+          "oklch(72.14% 0.00132 286.38)",
+          "oklch(83.57% 0.00132 286.38)",
+          "oklch(95.00% 0.00132 286.38)"
+        ]
+      },
+      "speaker": {
+        "role": "neutral",
+        "displayName": "Speaker",
+        "tonalRamp": [
+          "oklch(15.00% 0.01188 285.81)",
+          "oklch(26.43% 0.01188 285.81)",
+          "oklch(37.86% 0.01188 285.81)",
+          "oklch(49.29% 0.01188 285.81)",
+          "oklch(60.71% 0.01188 285.81)",
+          "oklch(72.14% 0.01188 285.81)",
+          "oklch(83.57% 0.01188 285.81)",
+          "oklch(95.00% 0.01188 285.81)"
+        ]
+      },
+      "danger": {
+        "role": "neutral",
+        "displayName": "Danger",
+        "tonalRamp": [
+          "oklch(15.00% 0.18205 29.51)",
+          "oklch(26.43% 0.18205 29.51)",
+          "oklch(37.86% 0.18205 29.51)",
+          "oklch(49.29% 0.18205 29.51)",
+          "oklch(60.71% 0.18205 29.51)",
+          "oklch(72.14% 0.18205 29.51)",
+          "oklch(83.57% 0.18205 29.51)",
+          "oklch(95.00% 0.18205 29.51)"
+        ]
+      },
+      "error-border": {
+        "role": "neutral",
+        "displayName": "Error border",
+        "tonalRamp": [
+          "oklch(15.00% 0.04835 24.50)",
+          "oklch(26.43% 0.04835 24.50)",
+          "oklch(37.86% 0.04835 24.50)",
+          "oklch(49.29% 0.04835 24.50)",
+          "oklch(60.71% 0.04835 24.50)",
+          "oklch(72.14% 0.04835 24.50)",
+          "oklch(83.57% 0.04835 24.50)",
+          "oklch(95.00% 0.04835 24.50)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Page heading",
+        "purpose": "Direct task headings using the native system stack."
+      },
+      "transcript": {
+        "displayName": "Transcript reading",
+        "purpose": "Readable passage text with preserved whitespace and generous leading."
+      },
+      "metadata": {
+        "displayName": "Recording metadata",
+        "purpose": "Compact dates and durations with tabular numerals."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "loading-spin",
+        "value": "spin 1s linear infinite",
+        "purpose": "Functional loading indicator; spin rotates to 360deg."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "@media (prefers-reduced-motion: reduce) { * { animation: none !important; scroll-behavior: auto !important; transition: none !important; } }",
+        "purpose": "Shared shipped override for motion preferences."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow-web",
+        "value": "760px"
+      },
+      {
+        "name": "small-web",
+        "value": "350px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "description": "Compact explicit action on the white archive surface.",
+      "html": "<button type=\"button\" class=\"ds-primary\">Save details</button>",
+      "css": ".ds-primary{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:8px 12px;border:1px solid #dedee3;border-radius:5px;font-size:12px;font-weight:500;line-height:1.3;cursor:pointer;background:var(--accent, #18181b);color:#fff;border-color:#18181b;}.ds-primary:hover{background:#343438;border-color:#18181b;}.ds-primary:focus-visible{outline:2px solid #52525b;outline-offset:3px;}.ds-primary:disabled{opacity:.45;cursor:not-allowed;}",
+      "refersTo": "button-primary"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "description": "Compact explicit action on the white archive surface.",
+      "html": "<button type=\"button\" class=\"ds-secondary\">Edit details</button>",
+      "css": ".ds-secondary{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:8px 12px;border:1px solid #dedee3;border-radius:5px;font-size:12px;font-weight:500;line-height:1.3;cursor:pointer;background:#fff;color:#27272a;border-color:#dedee3;}.ds-secondary:hover{background:#f7f7f8;border-color:#c9c9d0;}.ds-secondary:focus-visible{outline:2px solid #52525b;outline-offset:3px;}.ds-secondary:disabled{opacity:.45;cursor:not-allowed;}",
+      "refersTo": "button-secondary"
+    },
+    {
+      "name": "Destructive button",
+      "kind": "button",
+      "description": "Compact explicit action on the white archive surface.",
+      "html": "<button type=\"button\" class=\"ds-danger\">Revoke</button>",
+      "css": ".ds-danger{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:8px 12px;border:1px solid #dedee3;border-radius:5px;font-size:12px;font-weight:500;line-height:1.3;cursor:pointer;background:#fff;color:#b42318;border-color:#dedee3;}.ds-danger:hover{background:#f7f7f8;border-color:#c9c9d0;}.ds-danger:focus-visible{outline:2px solid #52525b;outline-offset:3px;}.ds-danger:disabled{opacity:.45;cursor:not-allowed;}",
+      "refersTo": "button-danger"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "description": "Plain white input, muted hint, and shared visible focus.",
+      "html": "<label class=\"ds-label\">Connection name<input class=\"ds-field\" placeholder=\"Connection name\" /></label>",
+      "css": ".ds-label{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:500;color:#18181b;}.ds-field{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:38px;padding:9px 11px;border:1px solid #dedee3;border-radius:5px;background:var(--paper, #fff);color:#18181b;max-width:100%;caret-color:#18181b;}.ds-field::placeholder{color:#71717a;}.ds-field:focus-visible{outline:2px solid #52525b;outline-offset:3px;}",
+      "refersTo": "field"
+    },
+    {
+      "name": "Horizontal navigation",
+      "kind": "nav",
+      "description": "Labeled destinations with a thin current-page underline.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#recordings\" aria-current=\"page\">Recordings</a><a href=\"#search\">Search</a><a href=\"#people\">People</a><a href=\"#settings\">Settings</a></nav>",
+      "css": ".ds-nav{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:stretch;gap:28px;height:72px;}.ds-nav a{display:flex;align-items:center;font-size:12px;color:#71717a;border-bottom:1px solid transparent;padding-top:1px;text-decoration:none;}.ds-nav a:hover{color:#18181b;}.ds-nav a[aria-current=\"page\"]{color:#18181b;border-bottom-color:#18181b;}.ds-nav a:focus-visible{outline:2px solid #52525b;outline-offset:3px;}@media(max-width:760px){.ds-nav{height:60px;gap:18px;}.ds-nav a{font-size:11px;}}@media(max-width:350px){.ds-nav{gap:12px;}}",
+      "refersTo": "navigation-item"
+    },
+    {
+      "name": "Label tag",
+      "kind": "chip",
+      "description": "Informational archive label with a fine outline and no fill.",
+      "html": "<span class=\"ds-chip\">Demo</span>",
+      "css": ".ds-chip{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:inline-block;font-size:10px;color:#52525b;border:1px solid var(--line, #e8e8ec);border-radius:3px;padding:3px 6px;}",
+      "refersTo": "chip"
+    },
+    {
+      "name": "Recording row",
+      "kind": "card",
+      "description": "Plain linked recording separated by a divider; title underlines on hover.",
+      "html": "<a href=\"#recording\" class=\"ds-recording\"><div class=\"ds-meta\">Oct 23, 2026 &nbsp; 0m 12s</div><h2>Demo \u00b7 Planning the cedar launch</h2><p>Synthetic demonstration: the team discussed launch timing.</p></a>",
+      "css": ".ds-recording{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:block;padding:26px 0;border-bottom:1px solid var(--line, #e8e8ec);color:#18181b;text-decoration:none;}.ds-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:11px;line-height:1.5;font-variant-numeric:tabular-nums;color:var(--muted, #71717a);}.ds-recording h2{font-size:17px;font-weight:500;letter-spacing:-.02em;line-height:1.5;margin:8px 0 7px;}.ds-recording p{font-size:13px;line-height:1.7;color:#52525b;margin:0;max-width:78ch;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}.ds-recording:hover h2{text-decoration:underline;text-underline-offset:4px;text-decoration-color:#b5b5bd;}.ds-recording:focus-visible{outline:2px solid #52525b;outline-offset:3px;}@media(max-width:760px){.ds-recording{padding:23px 0;}.ds-recording h2{font-size:16px;}.ds-recording p{font-size:12px;}.ds-meta{font-size:10px;gap:6px 12px;}}"
+    },
+    {
+      "name": "Processing notice",
+      "kind": "custom",
+      "description": "Outlined status text on the white page, without a filled panel.",
+      "html": "<div class=\"ds-notice\" role=\"status\">Processing note: the transcript is being prepared.</div>",
+      "css": ".ds-notice{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:15px 16px;border:1px solid var(--line, #e8e8ec);border-radius:5px;font-size:12px;line-height:1.7;color:#52525b;margin:20px 0;overflow-wrap:anywhere;}",
+      "refersTo": "notice"
+    },
+    {
+      "name": "Error notice",
+      "kind": "custom",
+      "description": "Outlined status text on the white page, without a filled panel.",
+      "html": "<div class=\"ds-error\" role=\"alert\">The recording could not be loaded. Please try again.</div>",
+      "css": ".ds-error{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:15px 16px;border:1px solid #f0c6c2;border-radius:5px;font-size:12px;line-height:1.7;color:#b42318;margin:20px 0;overflow-wrap:anywhere;}",
+      "refersTo": "notice-error"
+    },
+    {
+      "name": "Playing transcript turn",
+      "kind": "custom",
+      "description": "Text timestamp beside speaker and passage; pale fill applies only while playing.",
+      "html": "<article class=\"ds-turn\"><button type=\"button\" class=\"ds-time\" aria-label=\"Play from 00:00\">00:00</button><div><strong>Speaker 0:A</strong><p>Synthetic demo transcript: The cedar launch is on Tuesday.</p></div></article>",
+      "css": ".ds-turn{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:grid;grid-template-columns:50px minmax(0,1fr);gap:16px;padding:15px 0;background:#f7f7f8;scroll-margin-top:130px;}.ds-time{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:inline-flex;align-items:center;align-self:start;justify-content:start;gap:3px;min-height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:#71717a;font-size:10px;font-weight:500;line-height:1.3;font-variant-numeric:tabular-nums;cursor:pointer;}.ds-time:focus-visible{outline:2px solid #52525b;outline-offset:3px;}.ds-time:disabled{opacity:.45;cursor:not-allowed;}.ds-turn strong{font-size:11px;font-weight:600;color:#3f3f46;}.ds-turn p{font-size:14px;line-height:1.85;color:#27272a;margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;}@media(max-width:760px){.ds-turn{grid-template-columns:42px minmax(0,1fr);gap:12px;}}",
+      "refersTo": "transcript-turn-active"
+    }
+  ],
+  "narrative": {
+    "northStar": "Minimal white archive",
+    "overview": "The web interface is minimalist, modern, and white. Neutral text, thin dividers, plain horizontal navigation, and generous whitespace keep the recording list and transcript central. Page headings name the task directly; compact metadata supports the content without becoming ornament.\n\nThis records the shipped React web interface after the user's explicit white-interface direction superseded the earlier design. It establishes no native client tokens or architecture. The review screenshots contain synthetic demonstration content and provide web evidence only.",
+    "keyCharacteristics": [
+      "White page and control surfaces with neutral ink.",
+      "Plain horizontal navigation that retains text labels on narrow screens.",
+      "Divider-led rows with no decorative icon tiles or panels.",
+      "Timestamp-linked audio beside spacious transcript prose."
+    ],
+    "rules": [
+      {
+        "name": "White Ground",
+        "body": "Keep the archive on white; use neutral text and thin boundaries for hierarchy, with status color reserved for explicit problems and destructive actions.",
+        "section": "colors"
+      },
+      {
+        "name": "Divider",
+        "body": "Use whitespace and fine dividers to organize archive content; preserve an open reading surface instead of adding decorative containers.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep white as the page and control ground, using neutral type hierarchy and fine dividers.",
+      "Do retain labeled navigation and visible keyboard focus on narrow web screens.",
+      "Do preserve bounded, wrapping transcript prose and timestamp access to original audio.",
+      "Do make errors, failed processing, and destructive actions explicit in words as well as color."
+    ],
+    "donts": [
+      "Don't reintroduce warm backgrounds, green accents, decorative icon tiles, colored panels, gradients, or shadows.",
+      "Don't replace open archive rows with ornamental cards or badges.",
+      "Don't treat responsive web screenshots as native client or physical hardware validation."
+    ]
+  }
+}

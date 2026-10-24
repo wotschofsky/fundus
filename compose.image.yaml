@@ -1,0 +1,23 @@
+# Standalone deployment file; shares the default project/volume with compose.yaml.
+services:
+  server:
+    image: ${VAULT_IMAGE:?Set VAULT_IMAGE to a published GHCR tag or digest}
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3000:3000'
+    env_file: .env
+    volumes:
+      - vault-data:/data
+    stop_grace_period: 30m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=256m,uid=10001,gid=10001,mode=0700
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  vault-data:

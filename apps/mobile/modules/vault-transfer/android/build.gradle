@@ -1,0 +1,13 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+group = 'dev.wsky.vaulttransfer'
+version = '0.1.0'
+android {
+  namespace 'dev.wsky.vaulttransfer'
+  defaultConfig {
+    minSdkVersion 26
+    consumerProguardFiles "consumer-rules.pro"
+    externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_shared' } }
+  }
+  externalNativeBuild { cmake { path 'CMakeLists.txt'; version '3.22.1' } }
+}
