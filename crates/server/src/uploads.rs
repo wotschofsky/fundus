@@ -287,10 +287,7 @@ pub async fn patch(
         .and_then(|s| s.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| Error::bad("Upload-Offset required"))?;
-    let lock = {
-        let mut locks = app.upload_locks.lock().await;
-        locks.entry(id.clone()).or_default().clone()
-    };
+    let lock = upload_lock(&app, &id).await;
     let _guard = lock.lock().await;
     let r=sqlx::query("SELECT u.offset,u.length,u.state,i.state AS import_state FROM uploads u JOIN imports i ON i.id=u.import_id WHERE u.id=?").bind(&id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
     let saved: i64 = r.get("offset");
@@ -343,10 +340,7 @@ pub async fn terminate(
 ) -> Result<Response> {
     access.upload()?;
     version(&h)?;
-    let lock = {
-        let mut locks = app.upload_locks.lock().await;
-        locks.entry(id.clone()).or_default().clone()
-    };
+    let lock = upload_lock(&app, &id).await;
     let _upload_guard = lock.lock().await;
     let _guard = app.mutations.lock().await;
     let state: Option<String> = sqlx::query_scalar(
@@ -432,4 +426,11 @@ pub async fn complete(
     Ok(Json(
         json!({"id":id,"state":if state=="uploading"{"verifying"}else{&state}}),
     ))
+}
+
+/// Serializes writes to one upload. Locks nobody holds are dropped, so the map stays small.
+async fn upload_lock(app: &App, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let mut locks = app.upload_locks.lock().await;
+    locks.retain(|_, lock| std::sync::Arc::strong_count(lock) > 1);
+    locks.entry(id.to_string()).or_default().clone()
 }

@@ -44,23 +44,9 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
             app.clone(),
             oauth::require_mcp,
         ));
-    let transfers = Router::new()
-        .route("/api/v1/imports", post(uploads::create_import))
-        .route("/api/v1/imports/{id}", get(uploads::status))
-        .route("/api/v1/imports/{id}/complete", post(uploads::complete))
-        .route(
-            "/api/v1/uploads",
-            post(uploads::create).options(uploads::options),
-        )
-        .route(
-            "/api/v1/uploads/{id}",
-            axum::routing::head(uploads::head)
-                .patch(uploads::patch)
-                .delete(uploads::terminate)
-                .options(uploads::options),
-        )
+    let transfers = transfer_routes("/api/v1")
         .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
-    let protected = Router::new()
+    let protected = library_routes("/api/v1")
         .route(
             "/api/v1/oauth/authorize",
             get(oauth::authorization).post(oauth::consent),
@@ -70,90 +56,17 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
             "/api/v1/oauth/connections/{id}",
             axum::routing::delete(oauth::disconnect),
         )
-        .route("/api/v1/me", get(me))
-        .route(
-            "/api/v1/settings",
-            get(settings::get).patch(settings::update),
-        )
-        .route("/api/v1/entries/{id}/trash", post(trash_entry))
-        .route("/api/v1/entries/{id}/restore", post(restore_entry))
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/tokens", get(tokens).post(create_token))
         .route("/api/v1/tokens/{id}", axum::routing::delete(revoke))
-        .route("/api/v1/entries", get(entries))
-        .route(
-            "/api/v1/entries/{id}",
-            get(entry).patch(update_entry).delete(delete_entry),
-        )
-        .route("/api/v1/entries/{id}/transcript", get(read))
-        .route(
-            "/api/v1/entries/{id}/audio",
-            get(audio_file).head(audio_file),
-        )
-        .route("/api/v1/entries/{id}/retry", post(retry))
-        .route("/api/v1/entries/{id}/pause", post(pause))
-        .route("/api/v1/entries/{id}/reanalyze", post(reanalyze))
-        .route("/api/v1/source-history", get(source_history))
-        .route(
-            "/api/v1/people/{id}/voice",
-            axum::routing::delete(remove_voice),
-        )
-        .route(
-            "/api/v1/entries/{id}/speakers/{label}",
-            patch(assign_speaker),
-        )
-        .route("/api/v1/people", get(people).post(create_person))
-        .route(
-            "/api/v1/people/{id}",
-            patch(rename_person).delete(delete_person),
-        )
-        .route("/api/v1/labels", get(labels))
-        .route("/api/v1/search", get(search))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_browser,
         ));
     // Installed clients use an OAuth-only namespace. Proxy trust and legacy
     // upload/read credentials never authenticate these owner-capability routes.
-    let native = Router::new()
-        .route("/v1/me", get(me))
-        .route("/v1/settings", get(settings::get).patch(settings::update))
-        .route("/v1/entries/{id}/trash", post(trash_entry))
-        .route("/v1/entries/{id}/restore", post(restore_entry))
-        .route("/v1/imports", post(uploads::create_import))
-        .route("/v1/imports/{id}", get(uploads::status))
-        .route("/v1/imports/{id}/complete", post(uploads::complete))
-        .route(
-            "/v1/uploads",
-            post(uploads::create).options(uploads::options),
-        )
-        .route(
-            "/v1/uploads/{id}",
-            axum::routing::head(uploads::head)
-                .patch(uploads::patch)
-                .delete(uploads::terminate)
-                .options(uploads::options),
-        )
-        .route("/v1/entries", get(entries))
-        .route(
-            "/v1/entries/{id}",
-            get(entry).patch(update_entry).delete(delete_entry),
-        )
-        .route("/v1/entries/{id}/transcript", get(read))
-        .route("/v1/entries/{id}/audio", get(audio_file).head(audio_file))
-        .route("/v1/entries/{id}/retry", post(retry))
-        .route("/v1/entries/{id}/pause", post(pause))
-        .route("/v1/entries/{id}/reanalyze", post(reanalyze))
-        .route("/v1/source-history", get(source_history))
-        .route("/v1/people/{id}/voice", axum::routing::delete(remove_voice))
-        .route("/v1/entries/{id}/speakers/{label}", patch(assign_speaker))
-        .route("/v1/people", get(people).post(create_person))
-        .route(
-            "/v1/people/{id}",
-            patch(rename_person).delete(delete_person),
-        )
-        .route("/v1/labels", get(labels))
-        .route("/v1/search", get(search))
+    let native = library_routes("/v1")
+        .merge(transfer_routes("/v1"))
         .fallback(|| async { Error::not_found() })
         .layer(middleware::from_fn_with_state(
             app.clone(),
@@ -171,6 +84,57 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
         .with_state(app)
+}
+/// The library and its management, shared by the browser and the native namespace.
+fn library_routes(prefix: &str) -> Router<App> {
+    let at = |path: &str| format!("{prefix}{path}");
+    Router::new()
+        .route(&at("/me"), get(me))
+        .route(&at("/settings"), get(settings::get).patch(settings::update))
+        .route(&at("/entries"), get(entries))
+        .route(
+            &at("/entries/{id}"),
+            get(entry).patch(update_entry).delete(delete_entry),
+        )
+        .route(&at("/entries/{id}/transcript"), get(read))
+        .route(&at("/entries/{id}/audio"), get(audio_file).head(audio_file))
+        .route(&at("/entries/{id}/trash"), post(trash_entry))
+        .route(&at("/entries/{id}/restore"), post(restore_entry))
+        .route(&at("/entries/{id}/retry"), post(retry))
+        .route(&at("/entries/{id}/pause"), post(pause))
+        .route(&at("/entries/{id}/reanalyze"), post(reanalyze))
+        .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))
+        .route(&at("/source-history"), get(source_history))
+        .route(&at("/people"), get(people).post(create_person))
+        .route(
+            &at("/people/{id}"),
+            patch(rename_person).delete(delete_person),
+        )
+        .route(
+            &at("/people/{id}/voice"),
+            axum::routing::delete(remove_voice),
+        )
+        .route(&at("/labels"), get(labels))
+        .route(&at("/search"), get(search))
+}
+/// Resumable uploads and the imports they belong to.
+fn transfer_routes(prefix: &str) -> Router<App> {
+    let at = |path: &str| format!("{prefix}{path}");
+    Router::new()
+        .route(&at("/imports"), post(uploads::create_import))
+        .route(&at("/imports/{id}"), get(uploads::status))
+        .route(&at("/imports/{id}/complete"), post(uploads::complete))
+        .route(
+            &at("/uploads"),
+            post(uploads::create).options(uploads::options),
+        )
+        .route(
+            &at("/uploads/{id}"),
+            axum::routing::head(uploads::head)
+                .patch(uploads::patch)
+                .delete(uploads::terminate)
+                .options(uploads::options),
+        )
 }
 async fn read_only(Extension(a): Extension<Access>, r: Request, n: middleware::Next) -> Response {
     if let Err(e) = a.read() {
@@ -277,6 +241,9 @@ async fn entries(
     Query(f): Query<retrieval::Filters>,
 ) -> Result<Json<Value>> {
     a.read()?;
+    if f.trash == Some(true) {
+        a.admin()?;
+    }
     Ok(Json(retrieval::list(&app, f).await?))
 }
 async fn entry(
@@ -334,6 +301,9 @@ async fn search(
     Query(p): Query<SearchQuery>,
 ) -> Result<Json<Value>> {
     a.read()?;
+    if p.filters.trash == Some(true) {
+        a.admin()?;
+    }
     Ok(Json(
         retrieval::search(
             &app,
@@ -458,11 +428,14 @@ async fn retry(
         return Err(Error::conflict("Recording is already processing"));
     }
     let mut tx = app.db.begin().await?;
-    // Only an ambiguous submission is cleared: a saved AssemblyAI job ID is polled, never resubmitted.
-    sqlx::query("DELETE FROM transcriptions WHERE entry_id=? AND remote_id IS NULL")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+    // Retry is the owner's consent to pay again only for a request saved without its upload URL;
+    // a saved job ID is polled and a saved upload URL finds its job, never resubmitting.
+    sqlx::query(
+        "DELETE FROM transcriptions WHERE entry_id=? AND remote_id IS NULL AND audio_url IS NULL",
+    )
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE entries SET stage='queued',failure=NULL,pause_requested=0,requested_work=CASE WHEN stage='complete' THEN NULL ELSE requested_work END WHERE id=?")
         .bind(&id)
         .execute(&mut *tx)
@@ -619,21 +592,25 @@ async fn delete_entry(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     a.admin()?;
-    let v = retrieval::get_including_trash(&app, &id).await?;
-    if !["complete", "failed", "queued", "paused"].contains(&v["stage"].as_str().unwrap_or("")) {
-        return Err(Error::conflict(
-            "Wait for processing to finish before deleting",
-        ));
-    }
+    let _lock = app.mutations.lock().await;
     let sources: Vec<String> =
         sqlx::query_scalar("SELECT upload_id FROM entry_sources WHERE entry_id=?")
             .bind(&id)
             .fetch_all(&app.db)
             .await?;
-    sqlx::query("DELETE FROM entries WHERE id=?")
-        .bind(&id)
-        .execute(&app.db)
-        .await?;
+    // One statement, so the worker cannot claim the entry between the check and the delete.
+    let deleted = sqlx::query(
+        "DELETE FROM entries WHERE id=? AND stage IN ('complete','failed','queued','paused')",
+    )
+    .bind(&id)
+    .execute(&app.db)
+    .await?;
+    if deleted.rows_affected() == 0 {
+        retrieval::get_including_trash(&app, &id).await?;
+        return Err(Error::conflict(
+            "Wait for processing to finish before deleting",
+        ));
+    }
     let _ = tokio::fs::remove_dir_all(app.entry_dir(&id)).await;
     for source in sources {
         let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entry_sources WHERE upload_id=?")

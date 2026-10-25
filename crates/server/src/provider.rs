@@ -29,9 +29,12 @@ pub struct ProviderError {
     retry_after: Option<Duration>,
 }
 impl ProviderError {
-    fn transient(&self) -> bool {
+    pub fn transient(&self) -> bool {
         self.status
             .is_none_or(|status| status == 429 || status >= 500)
+    }
+    pub fn not_found(&self) -> bool {
+        self.status == Some(404)
     }
     /// The provider answered and refused the request, so it was certainly not accepted.
     pub fn rejected(&self) -> bool {
@@ -137,6 +140,15 @@ struct Status {
     error: Option<String>,
     utterances: Option<Vec<Utterance>>,
 }
+#[derive(Deserialize)]
+struct Listed {
+    transcripts: Vec<ListedJob>,
+}
+#[derive(Deserialize)]
+struct ListedJob {
+    id: String,
+    audio_url: Option<String>,
+}
 pub enum Job {
     Pending,
     Completed {
@@ -160,12 +172,43 @@ pub async fn upload(app: &App, path: &Path) -> Result<String> {
         Ok(assemblyai(app, reqwest::Method::POST, "/v2/upload")
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .header(header::CONTENT_LENGTH, length)
+            // A ten-hour rendition is about 600 MB: allow uplinks down to ~1 Mbit/s.
+            .timeout(Duration::from_secs(600 + length / 100_000))
             .body(reqwest::Body::wrap_stream(ReaderStream::new(
                 tokio::fs::File::from_std(file),
             ))))
     })
     .await?;
     Ok(decode::<Uploaded>("AssemblyAI", &body)?.upload_url)
+}
+
+/// The job a create request made from `audio_url`, when its answer was lost. Upload URLs are
+/// unique, so a match is that request's job, and no match means it never reached AssemblyAI.
+// ponytail: newest 200 jobs only; page with before_id if an unresolved request can fall further behind.
+pub async fn find(app: &App, audio_url: &str) -> Result<Option<String>> {
+    let body = with_retry("AssemblyAI", 4, || {
+        Ok(assemblyai(
+            app,
+            reqwest::Method::GET,
+            "/v2/transcript?limit=200",
+        ))
+    })
+    .await?;
+    Ok(decode::<Listed>("AssemblyAI", &body)?
+        .transcripts
+        .into_iter()
+        .find(|job| job.audio_url.as_deref() == Some(audio_url))
+        .map(|job| job.id))
+}
+
+/// Removes a finished job's transcript and uploaded audio from AssemblyAI.
+pub async fn delete(app: &App, id: &str) -> Result<()> {
+    let path = format!("/v2/transcript/{id}");
+    with_retry("AssemblyAI", 2, || {
+        Ok(assemblyai(app, reqwest::Method::DELETE, &path))
+    })
+    .await?;
+    Ok(())
 }
 
 /// Creates the paid transcription job. Never retried automatically: a lost response may
@@ -186,6 +229,7 @@ pub async fn submit(app: &App, audio_url: &str, prompt: Option<&str>) -> Result<
     Ok(decode::<Created>("AssemblyAI", &body)?.id)
 }
 
+/// Errors are `ProviderError`s (`not_found()`, `transient()`) or an unreadable response.
 pub async fn poll(app: &App, id: &str) -> Result<Job> {
     let path = format!("/v2/transcript/{id}");
     let raw = with_retry("AssemblyAI", 4, || {
@@ -195,19 +239,19 @@ pub async fn poll(app: &App, id: &str) -> Result<Job> {
     let status: Status = decode("AssemblyAI", &raw)?;
     Ok(match status.status.as_str() {
         "completed" => {
-            let utterances: Vec<_> = status
+            // A malformed utterance is dropped rather than failing a paid job's result.
+            let utterances = status
                 .utterances
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|u| !u.text.trim().is_empty())
+                .filter(|u| {
+                    !u.text.trim().is_empty()
+                        && u.start >= 0
+                        && u.end >= u.start
+                        && !u.speaker.is_empty()
+                        && u.speaker.len() <= 128
+                })
                 .collect();
-            ensure!(
-                utterances.iter().all(|u| u.start >= 0
-                    && u.end >= u.start
-                    && !u.speaker.is_empty()
-                    && u.speaker.len() <= 128),
-                "AssemblyAI returned an invalid utterance time or speaker"
-            );
             Job::Completed { utterances, raw }
         }
         "error" => Job::Failed(status.error.unwrap_or_else(|| "unknown error".into())),

@@ -16,7 +16,27 @@ pub struct Filters {
     pub stage: Option<String>,
     pub limit: Option<u32>,
     pub cursor: Option<u32>,
+    /// Owner-only: the API checks access, and MCP never passes it.
+    #[schemars(skip)]
     pub trash: Option<bool>,
+}
+/// A UTC day (`YYYY-MM-DD`, the end inclusive) or an exact RFC 3339 instant (the end exclusive),
+/// so browsers can filter by the viewer's local days.
+fn bound(value: &str, end: bool) -> Result<String> {
+    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Ok(instant
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    }
+    let day = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| Error::bad("Date filters must use YYYY-MM-DD (UTC) or RFC 3339"))?;
+    let day = if end {
+        day.succ_opt()
+            .ok_or_else(|| Error::bad("Invalid end date"))?
+    } else {
+        day
+    };
+    Ok(format!("{day}T00:00:00.000Z"))
 }
 fn filter<'a>(q: &mut QueryBuilder<'a, Sqlite>, f: &Filters) -> Result<()> {
     q.push(if f.trash.unwrap_or(false) {
@@ -24,20 +44,12 @@ fn filter<'a>(q: &mut QueryBuilder<'a, Sqlite>, f: &Filters) -> Result<()> {
     } else {
         " AND e.trashed_at IS NULL"
     });
-    for (field, value) in [("e.recorded_at >= ", &f.from), ("e.recorded_at < ", &f.to)] {
-        if let Some(s) = value {
-            let day = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|_| Error::bad("Date filters must use YYYY-MM-DD (UTC)"))?;
-            let day = if field.contains('<') {
-                day.succ_opt()
-                    .ok_or_else(|| Error::bad("Invalid end date"))?
-            } else {
-                day
-            };
-            q.push(" AND ")
-                .push(field)
-                .push_bind(format!("{day}T00:00:00.000Z"));
-        }
+    if let Some(from) = &f.from {
+        q.push(" AND e.recorded_at >= ")
+            .push_bind(bound(from, false)?);
+    }
+    if let Some(to) = &f.to {
+        q.push(" AND e.recorded_at < ").push_bind(bound(to, true)?);
     }
     if let Some(labels) = &f.labels {
         for label in labels.split(',').filter(|s| !s.trim().is_empty()).take(20) {
@@ -230,7 +242,7 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
             Some(json!({"id":id,"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)}))
         })
         .collect();
-    let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused') AND trashed_at IS NULL")
+    let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused','failed') AND trashed_at IS NULL")
         .fetch_one(&app.db)
         .await?;
     // Without a configured embedding provider, keyword search is the complete design, not a gap.

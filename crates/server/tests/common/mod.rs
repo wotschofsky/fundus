@@ -3,6 +3,8 @@
 use axum::{
     Json, Router,
     extract::Path,
+    http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
 };
 use serde_json::{Value, json};
@@ -20,6 +22,8 @@ pub struct Options {
     pub pending_polls: usize,
     /// The first this many jobs end in AssemblyAI's error state.
     pub failing_jobs: usize,
+    /// The first this many creation requests make a job but lose their answer (HTTP 503).
+    pub lost_answers: usize,
 }
 
 #[derive(Default)]
@@ -27,6 +31,9 @@ pub struct Provider {
     pub submits: AtomicUsize,
     pub polls: AtomicUsize,
     pub uploads: AtomicUsize,
+    pub deletes: AtomicUsize,
+    /// Every job created, with the audio URL it reads.
+    pub jobs: Mutex<Vec<(String, String)>>,
     /// Bodies of transcript creation requests.
     pub transcripts: Mutex<Vec<Value>>,
     /// Bodies of Groq chat completion requests.
@@ -35,6 +42,9 @@ pub struct Provider {
 impl Provider {
     pub fn submits(&self) -> usize {
         self.submits.load(Ordering::SeqCst)
+    }
+    pub fn deletes(&self) -> usize {
+        self.deletes.load(Ordering::SeqCst)
     }
 }
 
@@ -51,6 +61,7 @@ pub async fn connect(
 ) -> (Arc<Provider>, tokio::task::JoinHandle<()>) {
     let state = Arc::new(Provider::default());
     let (submit, poll, upload, chat) = (state.clone(), state.clone(), state.clone(), state.clone());
+    let (list, delete) = (state.clone(), state.clone());
     let gate = options.gate.clone();
     let router = Router::new()
         .route(
@@ -67,11 +78,24 @@ pub async fn connect(
                 let (state, gate) = (submit.clone(), gate.clone());
                 async move {
                     let n = state.submits.fetch_add(1, Ordering::SeqCst);
+                    let job = format!("job-{n}");
+                    let audio = body["audio_url"].as_str().unwrap_or_default().to_string();
+                    state.jobs.lock().unwrap().push((job.clone(), audio));
                     state.transcripts.lock().unwrap().push(body);
                     if let Some(gate) = gate {
                         gate.notified().await;
                     }
-                    Json(json!({"id": format!("job-{n}"), "status": "queued"}))
+                    if n < options.lost_answers {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    Json(json!({"id": job, "status": "queued"})).into_response()
+                }
+            })
+            .get(move || {
+                let state = list.clone();
+                async move {
+                    let jobs = state.jobs.lock().unwrap().clone();
+                    Json(json!({"transcripts": jobs.iter().rev().map(|(id, audio)| json!({"id": id, "status": "processing", "audio_url": audio})).collect::<Vec<_>>()}))
                 }
             }),
         )
@@ -81,14 +105,23 @@ pub async fn connect(
                 let state = poll.clone();
                 async move {
                     let n = state.polls.fetch_add(1, Ordering::SeqCst);
-                    let job: usize = id.trim_start_matches("job-").parse().unwrap();
+                    let Ok(job) = id.trim_start_matches("job-").parse::<usize>() else {
+                        return (StatusCode::NOT_FOUND, Json(json!({"error": "Transcript not found"}))).into_response();
+                    };
                     Json(if job < options.failing_jobs {
                         json!({"id": id, "status": "error", "error": "synthetic failure"})
                     } else if n % (options.pending_polls + 1) < options.pending_polls {
                         json!({"id": id, "status": "processing"})
                     } else {
                         json!({"id": id, "status": "completed", "utterances": serde_json::from_str::<Value>(UTTERANCES).unwrap(), "words": []})
-                    })
+                    }).into_response()
+                }
+            })
+            .delete(move || {
+                let state = delete.clone();
+                async move {
+                    state.deletes.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"status": "completed"}))
                 }
             }),
         )

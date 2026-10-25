@@ -17,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 const AMBIGUOUS: &str = "A transcription request may have been submitted. Retry explicitly to authorize another request.";
 /// Entries processed at the same time. Most of a job is waiting for AssemblyAI.
 const CONCURRENCY: usize = 2;
+/// AssemblyAI's limit for one job.
+const MAX_DURATION_MS: i64 = 10 * 60 * 60 * 1000;
 
 pub async fn worker(app: App, shutdown: CancellationToken) {
     recover(&app).await;
@@ -59,11 +61,11 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
     while jobs.join_next().await.is_some() {}
 }
 
-/// After a crash, work that cannot bill twice resumes on its own. A transcription request that
-/// may have reached AssemblyAI without its job ID being saved waits for an explicit Retry.
+/// After a crash, work that cannot bill twice resumes on its own, including a request whose job
+/// is found by its saved upload URL. One saved without that URL waits for an explicit Retry.
 async fn recover(app: &App) {
     let active = "stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL";
-    let _ = sqlx::query(&format!("UPDATE entries SET stage='failed',failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE {active} AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted')"))
+    let _ = sqlx::query(&format!("UPDATE entries SET stage='failed',failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE {active} AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted' AND t.audio_url IS NULL)"))
         .execute(&app.db)
         .await;
     let _ = sqlx::query(&format!("UPDATE entries SET stage='queued' WHERE {active}"))
@@ -369,60 +371,75 @@ async fn pause_at_checkpoint(app: &App, entry: &str) -> Result<bool> {
     Ok(requested)
 }
 
-/// The whole recording as one AssemblyAI job, checkpointed so it is paid for once: the job ID
-/// is saved the moment it exists and its result once it completes. Returns None when a pause
-/// or shutdown interrupts the wait; the saved job ID makes the next run poll the same job.
+/// The whole recording as one AssemblyAI job, checkpointed so it is paid for once: the upload
+/// URL is saved before the job is requested, its ID the moment it exists, and its result once
+/// it completes. Returns None when a pause or shutdown interrupts; the next run continues.
 async fn transcribe(
     app: &App,
     entry: &str,
     rendition: &Path,
     stop: &CancellationToken,
 ) -> Result<Option<Vec<Utterance>>> {
-    let saved: Option<(Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT remote_id,utterances FROM transcriptions WHERE entry_id=?")
-            .bind(entry)
-            .fetch_optional(&app.db)
-            .await?;
+    let saved: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT remote_id,audio_url,utterances FROM transcriptions WHERE entry_id=?",
+    )
+    .bind(entry)
+    .fetch_optional(&app.db)
+    .await?;
     let job = match saved {
-        Some((_, Some(utterances))) => return Ok(Some(serde_json::from_str(&utterances)?)),
-        Some((Some(job), None)) => job,
-        Some((None, None)) => bail!(AMBIGUOUS),
+        Some((_, _, Some(utterances))) => return Ok(Some(serde_json::from_str(&utterances)?)),
+        Some((Some(job), _, None)) => job,
+        // A request whose answer was lost: its job is found by the upload URL, or it never arrived.
+        Some((None, Some(audio), None)) => match provider::find(app, &audio).await? {
+            Some(job) => save_job(app, entry, &job).await?,
+            None if stop.is_cancelled() => return Ok(None),
+            None => submit(app, entry, &audio).await?,
+        },
+        // Saved before upload URLs were: only the owner can decide to pay again.
+        Some((None, None, None)) => bail!(AMBIGUOUS),
         None => {
+            let duration: i64 = sqlx::query_scalar("SELECT duration_ms FROM entries WHERE id=?")
+                .bind(entry)
+                .fetch_one(&app.db)
+                .await?;
+            ensure!(
+                duration <= MAX_DURATION_MS,
+                "AssemblyAI transcribes at most 10 hours per recording. Split this session into shorter ones and import it again."
+            );
+            if stop.is_cancelled() {
+                return Ok(None);
+            }
             let audio = provider::upload(app, rendition).await?;
-            let context = crate::settings::load(app).await?.recording_context;
-            let prompt = Some(context.trim()).filter(|text| !text.is_empty());
-            sqlx::query(
-                "INSERT INTO transcriptions(entry_id,state,submitted_at)VALUES(?,'submitted',?)",
-            )
-            .bind(entry)
-            .bind(now())
-            .execute(&app.db)
-            .await?;
-            let job = match provider::submit(app, &audio, prompt).await {
-                Ok(job) => job,
-                Err(error) => {
-                    // A definite refusal created no job, so nothing stands in the way of a retry.
-                    if error
-                        .downcast_ref::<ProviderError>()
-                        .is_some_and(ProviderError::rejected)
-                    {
-                        forget_transcription(app, entry).await?;
-                    }
-                    return Err(error);
-                }
-            };
-            sqlx::query(
-                "UPDATE transcriptions SET state='processing',remote_id=? WHERE entry_id=?",
-            )
-            .bind(&job)
-            .bind(entry)
-            .execute(&app.db)
-            .await?;
-            job
+            if stop.is_cancelled() {
+                return Ok(None);
+            }
+            sqlx::query("INSERT INTO transcriptions(entry_id,state,audio_url,submitted_at)VALUES(?,'submitted',?,?)")
+                .bind(entry).bind(&audio).bind(now()).execute(&app.db).await?;
+            submit(app, entry, &audio).await?
         }
     };
     loop {
-        match provider::poll(app, &job).await? {
+        let status = match provider::poll(app, &job).await {
+            Ok(status) => status,
+            Err(error) => {
+                let failure = error.downcast_ref::<ProviderError>();
+                if failure.is_some_and(ProviderError::not_found) {
+                    return Err(fail_transcription(
+                        app,
+                        entry,
+                        "AssemblyAI no longer has this recording's job. Retry to submit it again.",
+                    )
+                    .await);
+                }
+                if !failure.is_some_and(ProviderError::transient) {
+                    return Err(error);
+                }
+                // An outage does not stop the job at AssemblyAI: keep waiting for its result.
+                tracing::warn!(%entry, %error, "AssemblyAI unavailable; waiting for the job");
+                Job::Pending
+            }
+        };
+        match status {
             Job::Completed { utterances, raw } => {
                 let dir = app.entry_dir(entry);
                 tokio::fs::write(dir.join("transcription.partial.json"), raw).await?;
@@ -438,13 +455,22 @@ async fn transcribe(
                 .bind(entry)
                 .execute(&app.db)
                 .await?;
+                // Notes from an earlier transcript name other labels and other text.
+                for stale in ["enrichment.json", "identity-analysis.json"] {
+                    let _ = tokio::fs::remove_file(dir.join(stale)).await;
+                }
+                sqlx::query("UPDATE entries SET summary=NULL WHERE id=?")
+                    .bind(entry)
+                    .execute(&app.db)
+                    .await?;
+                // The vault keeps the result; AssemblyAI need not keep the audio or transcript.
+                if let Err(error) = provider::delete(app, &job).await {
+                    tracing::warn!(%entry, %job, %error, "could not delete the job at AssemblyAI");
+                }
                 return Ok(Some(utterances));
             }
             Job::Failed(message) => {
-                forget_transcription(app, entry).await?;
-                bail!(
-                    "AssemblyAI could not transcribe this recording ({message}). Retry to submit it again."
-                );
+                return Err(fail_transcription(app, entry, &format!("AssemblyAI could not transcribe this recording ({message}). Retry to submit it again.")).await);
             }
             Job::Pending => {
                 if pause_at_checkpoint(app, entry).await? {
@@ -459,12 +485,61 @@ async fn transcribe(
     }
 }
 
-async fn forget_transcription(app: &App, entry: &str) -> Result<()> {
-    sqlx::query("DELETE FROM transcriptions WHERE entry_id=?")
+/// The paid request. Never repeated here: a lost answer is resolved by `provider::find`.
+async fn submit(app: &App, entry: &str, audio: &str) -> Result<String> {
+    let context = crate::settings::load(app).await?.recording_context;
+    let prompt = Some(context.trim()).filter(|text| !text.is_empty());
+    let job = match provider::submit(app, audio, prompt).await {
+        Ok(job) => job,
+        // A definite refusal created no job: the next attempt uploads and submits afresh.
+        Err(error)
+            if error
+                .downcast_ref::<ProviderError>()
+                .is_some_and(ProviderError::rejected) =>
+        {
+            return Err(fail_transcription(app, entry, &error.to_string()).await);
+        }
+        Err(error) => match provider::find(app, audio).await {
+            Ok(Some(job)) => job,
+            // The job may still exist; the saved upload URL lets the next run look again.
+            _ => return Err(error),
+        },
+    };
+    save_job(app, entry, &job).await
+}
+
+async fn save_job(app: &App, entry: &str, job: &str) -> Result<String> {
+    tracing::info!(%entry, %job, "AssemblyAI job created");
+    sqlx::query("UPDATE transcriptions SET state='processing',remote_id=? WHERE entry_id=?")
+        .bind(job)
         .bind(entry)
         .execute(&app.db)
         .await?;
-    Ok(())
+    Ok(job.into())
+}
+
+/// Forgets a job that cannot produce a result and fails the entry in one step, so a restart in
+/// between cannot resubmit without the owner's Retry.
+async fn fail_transcription(app: &App, entry: &str, message: &str) -> anyhow::Error {
+    let result = async {
+        let mut tx = app.db.begin().await?;
+        sqlx::query("DELETE FROM transcriptions WHERE entry_id=?")
+            .bind(entry)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?")
+            .bind(message)
+            .bind(now())
+            .bind(entry)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+    .await;
+    match result {
+        Ok(()) => anyhow::anyhow!("{message}"),
+        Err(error) => error.into(),
+    }
 }
 
 /// Replaces the entry's segments. Speaker labels that no longer occur (a legacy multi-part
@@ -579,8 +654,12 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
+    complete(app, entry, &warnings, &rendition).await
+}
+
+async fn complete(app: &App, entry: &str, warnings: &[String], rendition: &Path) -> Result<()> {
     sqlx::query("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=?")
-        .bind(serde_json::to_string(&warnings)?).bind(now()).bind(entry).execute(&app.db).await?;
+        .bind(serde_json::to_string(warnings)?).bind(now()).bind(entry).execute(&app.db).await?;
     let _ = tokio::fs::remove_file(rendition).await;
     Ok(())
 }
@@ -595,7 +674,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         return Ok(());
     }
     let ambiguous: Option<String> = sqlx::query_scalar(
-        "SELECT state FROM transcriptions WHERE entry_id=? AND state='submitted'",
+        "SELECT state FROM transcriptions WHERE entry_id=? AND state='submitted' AND audio_url IS NULL",
     )
     .bind(entry)
     .fetch_optional(&app.db)
@@ -647,9 +726,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     if let Err(e) = index(app, entry).await {
         warnings.push(format!("Semantic search unavailable: {e}"));
     }
-    sqlx::query("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,pause_requested=0,requested_work=NULL,warnings=?,updated_at=? WHERE id=?").bind(serde_json::to_string(&warnings)?).bind(now()).bind(entry).execute(&app.db).await?;
-    let _ = tokio::fs::remove_file(&rendition).await;
-    Ok(())
+    complete(app, entry, &warnings, &rendition).await
 }
 
 /// A model finding is evidence for review, never an automatic voice enrollment. It counts only
@@ -682,17 +759,20 @@ async fn apply_name_evidence(app: &App, entry: &str, names: &[NameFinding]) -> R
         if contradicted || !applied.insert(*speaker) {
             continue;
         }
-        sqlx::query(
-            "UPDATE speakers SET evidence=? WHERE entry_id=? AND label=? AND state!='manual'",
-        )
-        .bind(
-            json!([{"source":"transcript","name":finding.name.trim(),"quote":finding.quote,"applied":false}])
-                .to_string(),
-        )
-        .bind(entry)
-        .bind(speaker)
-        .execute(&app.db)
-        .await?;
+        // Added beside a voice match, never over it; the owner's own decisions stay untouched.
+        let current: Option<String> = sqlx::query_scalar("SELECT evidence FROM speakers WHERE entry_id=? AND label=? AND state NOT IN ('manual','manual_unknown')")
+            .bind(entry).bind(speaker).fetch_optional(&app.db).await?;
+        let Some(current) = current else { continue };
+        let mut evidence: Vec<serde_json::Value> =
+            serde_json::from_str(&current).unwrap_or_default();
+        evidence.retain(|item| item["source"] != "transcript");
+        evidence.push(json!({"source":"transcript","name":finding.name.trim(),"quote":finding.quote,"applied":false}));
+        sqlx::query("UPDATE speakers SET evidence=? WHERE entry_id=? AND label=?")
+            .bind(serde_json::to_string(&evidence)?)
+            .bind(entry)
+            .bind(speaker)
+            .execute(&app.db)
+            .await?;
     }
     Ok(())
 }

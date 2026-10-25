@@ -542,7 +542,35 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
     .execute(&app.db)
     .await
     .unwrap();
+    // Its notes describe the old labels and text; they must not survive the new transcript.
+    tokio::fs::create_dir_all(app.entry_dir(&entry))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        app.entry_dir(&entry).join("enrichment.json"),
+        r#"{"title":"Old","summary":"Old summary","names":[{"speaker":"1:A","name":"Old","quote":"old"}]}"#,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE entries SET summary='Old summary' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
     pipeline::process(&app, &entry).await.unwrap();
+    assert_eq!(
+        text(&app, "SELECT summary FROM entries WHERE id=?", &entry).await,
+        "Discussed the launch and the next proposal."
+    );
+    assert!(
+        text(
+            &app,
+            "SELECT evidence FROM speakers WHERE entry_id=? AND label='A'",
+            &entry
+        )
+        .await
+        .contains("Morgan")
+    );
     let speakers: Vec<String> =
         sqlx::query_scalar("SELECT label FROM speakers WHERE entry_id=? ORDER BY label")
             .bind(&entry)
@@ -556,5 +584,106 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
         .await
         .unwrap();
     assert_eq!(segments, 3);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_lost_create_answer_is_found_by_its_upload_url_and_paid_once() {
+    let (dir, app, provider, task) = setup(Options {
+        lost_answers: 1,
+        ..Default::default()
+    })
+    .await;
+    let entry = entry(&app, dir.path(), "lost").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    assert_eq!(stage(&app, &entry).await, "complete");
+    assert_eq!(provider.submits(), 1);
+    // The vault keeps the result; the job and its audio are removed at AssemblyAI.
+    assert_eq!(provider.deletes(), 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_restart_after_an_unanswered_submit_resumes_the_job_it_finds() {
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "restart").await;
+    provider
+        .jobs
+        .lock()
+        .unwrap()
+        .push(("job-5".into(), "https://cdn.example/earlier".into()));
+    sqlx::query("INSERT INTO transcriptions(entry_id,state,audio_url,submitted_at)VALUES(?,'submitted','https://cdn.example/earlier',?)")
+        .bind(&entry).bind(now()).execute(&app.db).await.unwrap();
+    sqlx::query("UPDATE entries SET stage='transcribing' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    stop.cancel();
+    pipeline::worker(app.clone(), stop).await;
+    assert_eq!(stage(&app, &entry).await, "queued");
+    pipeline::process(&app, &entry).await.unwrap();
+    assert_eq!(stage(&app, &entry).await, "complete");
+    assert_eq!(provider.submits(), 0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_job_gone_at_assemblyai_fails_cleanly_so_retry_submits_again() {
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "gone").await;
+    sqlx::query("INSERT INTO transcriptions(entry_id,state,remote_id,audio_url,submitted_at)VALUES(?,'processing','gone','https://cdn.example/gone',?)")
+        .bind(&entry).bind(now()).execute(&app.db).await.unwrap();
+    let error = pipeline::process(&app, &entry).await.unwrap_err();
+    assert!(error.to_string().contains("no longer has"), "{error}");
+    assert_eq!(stage(&app, &entry).await, "failed");
+    pipeline::process(&app, &entry).await.unwrap();
+    assert_eq!(provider.submits(), 1);
+    assert_eq!(stage(&app, &entry).await, "complete");
+    task.abort();
+}
+
+#[tokio::test]
+async fn recordings_over_assemblyais_limit_are_refused_before_upload() {
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "long").await;
+    sqlx::query("UPDATE entries SET duration_ms=? WHERE id=?")
+        .bind(10 * 60 * 60 * 1000 + 1)
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let error = pipeline::process(&app, &entry).await.unwrap_err();
+    assert!(error.to_string().contains("10 hours"), "{error}");
+    assert_eq!(
+        provider.uploads.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn read_tokens_cannot_list_trash() {
+    use tower::ServiceExt;
+    let (_dir, app, _provider, task) = setup(Options::default()).await;
+    let router =
+        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    for (scope, expected) in [("read", 403), ("admin", 200)] {
+        let token = transcript_vault::auth::issue(&app, "test", scope)
+            .await
+            .unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/entries?trash=true")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{scope}");
+    }
     task.abort();
 }

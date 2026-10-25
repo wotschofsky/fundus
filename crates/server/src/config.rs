@@ -125,7 +125,7 @@ impl App {
         use sqlx::sqlite::{
             SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
         };
-        for folder in ["uploads", "entries", "work"] {
+        for folder in ["uploads", "entries"] {
             tokio::fs::create_dir_all(config.data.join(folder)).await?;
         }
         let options = SqliteConnectOptions::new()

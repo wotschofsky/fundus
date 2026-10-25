@@ -32,14 +32,20 @@ impl VaultMcp {
         description = "Browse recordings by UTC recording date, labels or person. Use this for recency questions and exhaustive date-window browsing, including recordings not yet searchable. Follow next_cursor. Labels are comma-separated.",
         annotations(read_only_hint = true)
     )]
-    async fn list_entries(&self, Parameters(f): Parameters<retrieval::Filters>) -> CallToolResult {
+    async fn list_entries(
+        &self,
+        Parameters(mut f): Parameters<retrieval::Filters>,
+    ) -> CallToolResult {
+        // Trash is hidden from chat agents.
+        f.trash = None;
         result(retrieval::list(&self.app, f).await)
     }
     #[tool(
         description = "Search spoken passages by meaning and keywords. Returns verbatim evidence and citation URLs. Inspect coverage: an empty search does not establish absence. Expand relevant hits with read_transcript. Date filters use UTC YYYY-MM-DD.",
         annotations(read_only_hint = true)
     )]
-    async fn search(&self, Parameters(s): Parameters<retrieval::Search>) -> CallToolResult {
+    async fn search(&self, Parameters(mut s): Parameters<retrieval::Search>) -> CallToolResult {
+        s.filters.trash = None;
         result(retrieval::search(&self.app, s).await)
     }
     #[tool(
