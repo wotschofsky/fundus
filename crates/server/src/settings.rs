@@ -47,7 +47,20 @@ pub async fn load(app: &App) -> anyhow::Result<Settings> {
     })
 }
 fn view(app: &App, settings: &Settings) -> Value {
-    json!({"recording_context":settings.recording_context,"voice_thresholds":settings.voice_thresholds,"models":{"transcription":app.config.transcription_model,"text":app.config.text_model,"embedding":app.config.embedding_model,"voice":voice::MODEL},"voice_configured":app.config.voice_model.is_some(),"recorder_timezone":app.config.recorder_timezone})
+    let c = &app.config;
+    let configured = |ready: bool, name: String| if ready { name } else { "Not configured".into() };
+    json!({
+        "recording_context": settings.recording_context,
+        "voice_thresholds": settings.voice_thresholds,
+        "models": {
+            "transcription": format!("AssemblyAI {}", c.transcription_models.join(", ")),
+            "text": configured(!c.groq_key.is_empty(), format!("Groq {}", c.text_model)),
+            "embedding": configured(!c.openai_key.is_empty(), format!("OpenAI {}", c.embedding_model)),
+            "voice": configured(c.voice_model.is_some(), format!("Local {}", voice::MODEL)),
+        },
+        "voice_configured": c.voice_model.is_some(),
+        "recorder_timezone": c.recorder_timezone,
+    })
 }
 pub async fn get(
     State(app): State<App>,

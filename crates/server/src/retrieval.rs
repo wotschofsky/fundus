@@ -110,7 +110,8 @@ pub struct Read {
     pub cursor: Option<u32>,
     pub limit: Option<u32>,
 }
-pub async fn transcript(app: &App, r: Read) -> Result<Value> {
+/// `max_limit` bounds one page: large for the libraries, small for MCP agents.
+pub async fn transcript(app: &App, r: Read, max_limit: u32) -> Result<Value> {
     let known: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE id=? AND trashed_at IS NULL")
             .bind(&r.entry_id)
@@ -119,7 +120,7 @@ pub async fn transcript(app: &App, r: Read) -> Result<Value> {
     if known == 0 {
         return Err(Error::not_found());
     }
-    let limit = r.limit.unwrap_or(100).clamp(1, 300);
+    let limit = r.limit.unwrap_or(100).clamp(1, max_limit);
     let cursor = r.cursor.unwrap_or(0);
     let from = r.from_ms.unwrap_or(0);
     let to = r.to_ms.unwrap_or(i64::MAX);
@@ -157,11 +158,7 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
     if s.query.trim().is_empty() || s.query.len() > 4096 {
         return Err(Error::bad("Search requires 1–4096 characters"));
     }
-    let mut q = QueryBuilder::new(
-        "SELECT p.*,e.title,e.recorded_at FROM passages p JOIN entries e ON e.id=p.entry_id WHERE 1=1",
-    );
-    filter(&mut q, &s.filters)?;
-    let rows = q.build().fetch_all(&app.db).await?;
+    // Reciprocal rank fusion over the keyword and semantic rankings.
     let mut ranks: HashMap<String, f32> = HashMap::new();
     let expression = lexical(&s.query);
     if !expression.is_empty() {
@@ -171,19 +168,23 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
         q.push_bind(expression);
         filter(&mut q, &s.filters)?;
         q.push(" ORDER BY bm25(passage_fts) LIMIT 100");
-        let lexical = q.build().fetch_all(&app.db).await?;
-        for (i, r) in lexical.iter().enumerate() {
+        for (i, r) in q.build().fetch_all(&app.db).await?.iter().enumerate() {
             *ranks.entry(r.get("id")).or_default() += 1. / (61. + i as f32);
         }
     }
+    let enabled = provider::semantic_search(app);
     let mut semantic = false;
-    if let Ok(v) = provider::embeddings(app, std::slice::from_ref(&s.query)).await {
+    if enabled && let Ok(v) = provider::embeddings(app, std::slice::from_ref(&s.query), false).await
+    {
         let probe = &v[0];
+        // ponytail: every vector is parsed per query; a vector index if archives reach ~100k passages.
+        let mut q = QueryBuilder::new(
+            "SELECT p.id,p.embedding FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NOT NULL",
+        );
+        filter(&mut q, &s.filters)?;
         let mut scores = vec![];
-        for row in &rows {
-            let encoded: Option<String> = row.get("embedding");
-            if let Some(encoded) = encoded
-                && let Ok(vector) = serde_json::from_str::<Vec<f32>>(&encoded)
+        for row in q.build().fetch_all(&app.db).await? {
+            if let Ok(vector) = serde_json::from_str::<Vec<f32>>(row.get("embedding"))
                 && vector.len() == probe.len()
             {
                 scores.push((
@@ -200,26 +201,48 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
         }
         semantic = true;
     }
-    let mut matched: Vec<_> = rows
+    let mut best: Vec<(String, f32)> = ranks.into_iter().collect();
+    best.sort_by(|(a, x), (b, y)| y.total_cmp(x).then(a.cmp(b)));
+    best.truncate(s.filters.limit.unwrap_or(12).clamp(1, 50) as usize);
+    let mut q = QueryBuilder::new(
+        "SELECT p.id,p.entry_id,p.start_ms,p.end_ms,p.text,e.title,e.recorded_at FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.id IN (",
+    );
+    let mut ids = q.separated(",");
+    for (id, _) in &best {
+        ids.push_bind(id.clone());
+    }
+    q.push(")");
+    let rows = if best.is_empty() {
+        vec![]
+    } else {
+        q.build().fetch_all(&app.db).await?
+    };
+    let details: HashMap<String, _> = rows
         .iter()
-        .filter_map(|r| {
-            ranks
-                .get(&r.get::<String, _>("id"))
-                .map(|score| (r, *score))
+        .map(|row| (row.get::<String, _>("id"), row))
+        .collect();
+    let results: Vec<Value> = best
+        .iter()
+        .filter_map(|(id, score)| {
+            let r = details.get(id)?;
+            let eid: String = r.get("entry_id");
+            let start: i64 = r.get("start_ms");
+            Some(json!({"id":id,"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)}))
         })
         .collect();
-    matched.sort_by(|(a, x), (b, y)| {
-        y.total_cmp(x)
-            .then(a.get::<String, _>("id").cmp(&b.get::<String, _>("id")))
-    });
     let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused') AND trashed_at IS NULL")
         .fetch_one(&app.db)
         .await?;
-    let missing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NULL AND e.trashed_at IS NULL")
-        .fetch_one(&app.db)
-        .await?;
+    // Without a configured embedding provider, keyword search is the complete design, not a gap.
+    let missing: i64 = if enabled {
+        sqlx::query_scalar("SELECT COUNT(*) FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NULL AND e.trashed_at IS NULL")
+            .fetch_one(&app.db)
+            .await?
+    } else {
+        0
+    };
     Ok(
-        json!({"results":matched.into_iter().take(s.filters.limit.unwrap_or(12).clamp(1,50) as usize).map(|(r,score)|{let eid:String=r.get("entry_id");let start:i64=r.get("start_ms");json!({"id":r.get::<String,_>("id"),"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)})}).collect::<Vec<_>>(),"mode":if semantic{"hybrid"}else{"keyword"},"coverage":{"pending_entries":pending,"passages_without_embeddings":missing},"partial_results":pending>0||missing>0||!semantic}),
+        json!({"results":results,"mode":if semantic{"hybrid"}else{"keyword"},"coverage":{"pending_entries":pending,"passages_without_embeddings":missing},"partial_results":pending>0||missing>0||(enabled && !semantic)}),
     )
 }
 pub async fn labels(app: &App) -> Result<Value> {

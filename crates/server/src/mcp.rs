@@ -64,7 +64,7 @@ impl VaultMcp {
         annotations(read_only_hint = true)
     )]
     async fn read_transcript(&self, Parameters(p): Parameters<retrieval::Read>) -> CallToolResult {
-        result(retrieval::transcript(&self.app, p).await)
+        result(retrieval::transcript(&self.app, p, 300).await)
     }
     #[tool(
         description = "List available user labels and their recording counts. Discover labels before applying label filters.",

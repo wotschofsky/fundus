@@ -29,37 +29,55 @@ FIXTURE_IMAGE = "python:3.12-slim-bookworm"
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
+    """AssemblyAI, Groq and embeddings stand-in. Jobs complete on their second poll."""
+    polls = {}
+
     def log_message(self, *_args):
         pass
 
-    def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        if self.path.endswith("/audio/transcriptions"):
-            result = {"segments": [
-                {"speaker": "A", "start": 0, "end": 5,
-                 "text": "I'm Morgan. The cedar launch is on Tuesday."},
-                {"speaker": "A", "start": 6, "end": 12,
-                 "text": "We agreed to send the proposal tomorrow."},
-            ]}
-        elif self.path.endswith("/embeddings"):
-            inputs = json.loads(body)["input"]
-            count = len(inputs) if isinstance(inputs, list) else 1
-            result = {"data": [{"index": i, "embedding": [1.0, 0.0, 0.0]}
-                               for i in range(count)]}
-        elif self.path.endswith("/responses"):
-            result = {"output": [{"content": [{"type": "output_text", "text": json.dumps({
-                "title": "Synthetic integration recording",
-                "summary": "Synthetic fixture for container verification.", "names": [],
-            })}]}]}
-        else:
-            self.send_error(404)
-            return
+    def reply(self, result):
         response = json.dumps(result).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response)))
         self.end_headers()
         self.wfile.write(response)
+
+    def do_GET(self):
+        if not self.path.startswith("/v2/transcript/"):
+            self.send_error(404)
+            return
+        job = self.path.rsplit("/", 1)[1]
+        Provider.polls[job] = Provider.polls.get(job, 0) + 1
+        if Provider.polls[job] < 2:
+            self.reply({"id": job, "status": "processing"})
+            return
+        self.reply({"id": job, "status": "completed", "utterances": [
+            {"speaker": "A", "start": 0, "end": 5000,
+             "text": "I'm Morgan. The cedar launch is on Tuesday.", "confidence": 0.9},
+            {"speaker": "A", "start": 6000, "end": 12000,
+             "text": "We agreed to send the proposal tomorrow.", "confidence": 0.9},
+        ]})
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path == "/v2/upload":
+            assert body, "empty upload"
+            self.reply({"upload_url": "https://cdn.example/synthetic"})
+        elif self.path == "/v2/transcript":
+            assert json.loads(body)["speaker_labels"] is True
+            self.reply({"id": uuid.uuid4().hex, "status": "queued"})
+        elif self.path.endswith("/embeddings"):
+            inputs = json.loads(body)["input"]
+            count = len(inputs) if isinstance(inputs, list) else 1
+            self.reply({"data": [{"index": i, "embedding": [1.0, 0.0, 0.0]} for i in range(count)]})
+        elif self.path.endswith("/chat/completions"):
+            self.reply({"choices": [{"message": {"content": json.dumps({
+                "title": "Synthetic integration recording",
+                "summary": "Synthetic fixture for container verification.", "names": [],
+            })}}]})
+        else:
+            self.send_error(404)
 
 
 def exercise(restarted=False, proxy=False):
@@ -181,7 +199,7 @@ def run_image(image, proxy=False):
         missing = subprocess.run(["docker", "run", "--rm", "--name", name + "-missing",
                                   "--network=none", *restrictions, image, "serve"],
                                  capture_output=True, text=True, timeout=30)
-        assert missing.returncode and "OPENAI_API_KEY" in missing.stderr, missing.stderr
+        assert missing.returncode and "ASSEMBLYAI_API_KEY" in missing.stderr, missing.stderr
         if not proxy:
             docker("run", "--rm", "-i", "--name", name + "-init", "--network=none",
                    *restrictions, "-v", volume + ":/data", image, "init",
@@ -191,7 +209,8 @@ def run_image(image, proxy=False):
                FIXTURE_IMAGE, "python3", "/fixture.py", "mock", stdout=subprocess.DEVNULL)
         docker("run", "-d", "--name", name + "-server", "--network", network,
                "--network-alias=vault", *restrictions, "-v", volume + ":/data",
-               "-e", "OPENAI_API_KEY=synthetic-only", "-e", "OPENAI_BASE_URL=http://provider:3119",
+               *[arg for name in ("ASSEMBLYAI", "GROQ", "OPENAI") for arg in (
+                   "-e", name + "_API_KEY=synthetic-only", "-e", name + "_BASE_URL=http://provider:3119")],
                "-e", "VAULT_PUBLIC_URL=" + BASE,
                "-e", "VAULT_AUTH_MODE=" + ("proxy" if proxy else "password"),
                image, stdout=subprocess.DEVNULL)

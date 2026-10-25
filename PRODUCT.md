@@ -20,7 +20,7 @@ The Mac workspace includes a remote transcript library with playback and editing
 
 Clients copy, prepare lossless FLAC where appropriate, verify, and transfer durably without modifying originals. Mac stages overlap with bounded concurrency: two copies, two preparations, three file uploads. Mobile keeps a system document-picker upload workflow with native platform controls and transfer modules; server grouping is its fallback.
 
-The Rust server owns storage, audio assembly, transcription, enrichment, search, and recurring voice recognition. Recording context informs post-transcription interpretation and summaries, not diarization. Provider credentials and model selection stay on the server; a configured OpenAI API key is required before startup.
+The Rust server owns storage, audio assembly, transcription, enrichment, search, and recurring voice recognition. Recording context describes the audio to the transcription model and gives background for summaries; it is never evidence for a speaker identity. Provider credentials and model selection stay on the server: AssemblyAI transcribes each recording as one job (a configured key is required before startup), Groq writes titles, summaries and name evidence, and embeddings for semantic search are optional.
 
 The server serves HTTP behind separately managed HTTPS and browser authentication. Native API routes require owner OAuth even when browser requests are trusted from the proxy. No historical migration or built-in chat in v1. No personal device information in artifacts or fixtures. Hardware compatibility is not claimed as tested without physical validation.
 

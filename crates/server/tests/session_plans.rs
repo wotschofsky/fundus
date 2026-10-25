@@ -1,16 +1,9 @@
-use axum::{
-    Json, Router,
-    body::Bytes,
-    http::{Request, StatusCode},
-    routing::post,
-};
+mod common;
+use axum::http::{Request, StatusCode};
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 use tower::ServiceExt;
 use transcript_vault::{
     auth,
@@ -178,47 +171,49 @@ async fn remote_trim_is_sample_exact_across_the_source_boundary() {
         .fetch_one(&app.db)
         .await
         .unwrap();
-    let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let count = Arc::new(AtomicUsize::new(0));
-    let (notify, gate, calls) = (started.clone(), release.clone(), count.clone());
-    let provider = Router::new()
-        .route("/audio/transcriptions",post(move |_:Bytes| { let (notify,gate,calls)=(notify.clone(),gate.clone(),calls.clone()); async move {
-            calls.fetch_add(1,Ordering::SeqCst); notify.notify_one(); gate.notified().await;
-            Json(json!({"segments":[{"speaker":"A","start":0.,"end":1.,"text":"Synthetic trim test"}]}))
-        }}))
-        .route("/responses",post(|| async { Json(json!({"output":[{"content":[{"type":"output_text","text":"{\"title\":\"Trim fixture\",\"summary\":\"Synthetic audio\",\"names\":[]}"}]}]})) }))
-        .route("/embeddings",post(|Json(body):Json<Value>| async move { Json(json!({"data":body["input"].as_array().unwrap().iter().enumerate().map(|(index,_)|json!({"index":index,"embedding":[1.,0.]})).collect::<Vec<_>>()})) }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let provider_task = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-    Arc::make_mut(&mut app.config).openai_url = format!("http://{address}");
+    let (provider, task) = common::connect(
+        &mut app,
+        common::Options {
+            gate: Some(release.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
     let work_app = app.clone();
     let work_entry = entry.clone();
     let process = tokio::spawn(async move { pipeline::process(&work_app, &work_entry).await });
-    tokio::time::timeout(std::time::Duration::from_secs(15), started.notified())
-        .await
-        .unwrap();
-    let mut working = hound::WavReader::open(app.entry_dir(&entry).join("working.wav")).unwrap();
-    assert_eq!(working.spec().sample_rate, 8000);
-    let samples: Vec<f32> = working.samples::<f32>().map(Result::unwrap).collect();
-    assert_eq!(samples.len(), 8000);
-    assert!(
-        samples[..4000]
-            .iter()
-            .all(|sample| (*sample - 1000. / 32768.).abs() < 0.00001)
+    common::until(|| provider.submits() == 1).await;
+    // The uploaded rendition holds exactly the kept second: half of each source, 16 kHz mono.
+    let decoded = dir.path().join("rendition.wav");
+    transcript_vault::audio::ffmpeg(&[
+        "-i".into(),
+        app.entry_dir(&entry)
+            .join("transcription.flac")
+            .display()
+            .to_string(),
+        "-c:a".into(),
+        "pcm_s16le".into(),
+        decoded.display().to_string(),
+    ])
+    .await
+    .unwrap();
+    let mut rendition = hound::WavReader::open(&decoded).unwrap();
+    assert_eq!(
+        (rendition.spec().sample_rate, rendition.spec().channels),
+        (16000, 1)
     );
-    assert!(
-        samples[4000..]
-            .iter()
-            .all(|sample| (*sample - 2000. / 32768.).abs() < 0.00001)
-    );
+    let samples: Vec<i16> = rendition.samples::<i16>().map(Result::unwrap).collect();
+    assert_eq!(samples.len(), 16000);
+    // Away from the resampler's transition band, each half carries its source's level.
+    assert!(samples[200..7800].iter().all(|s| (*s - 1000).abs() <= 2));
+    assert!(samples[8200..15800].iter().all(|s| (*s - 2000).abs() <= 2));
     release.notify_one();
     process.await.unwrap().unwrap();
     // A processing retry reuses the transcript checkpoint for the exact trimmed audio.
     pipeline::process(&app, &entry).await.unwrap();
-    assert_eq!(count.load(Ordering::SeqCst), 1);
-    provider_task.abort();
+    assert_eq!(provider.submits(), 1);
+    task.abort();
 }
 
 #[tokio::test]
@@ -710,7 +705,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
 }
 
 #[tokio::test]
-async fn settings_are_validated_persisted_and_applied_to_enrichment_only() {
+async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let (_dir, mut app) = setup().await;
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
@@ -734,26 +729,41 @@ async fn settings_are_validated_persisted_and_applied_to_enrichment_only() {
     let saved = transcript_vault::settings::load(&reloaded).await.unwrap();
     assert_eq!(saved.recording_context, "Synthetic vocabulary context");
     assert!((saved.voice_thresholds.strong - 0.9).abs() < 0.00001);
-    let captured = Arc::new(tokio::sync::Mutex::new(Value::Null));
-    let record = captured.clone();
-    let provider=Router::new().route("/responses",post(move |Json(body):Json<Value>| {let record=record.clone();async move{
-        *record.lock().await=body;
-        Json(json!({"output":[{"content":[{"type":"output_text","text":"{\"title\":\"Fixture\",\"summary\":\"Synthetic\",\"names\":[]}"}]}]}))
-    }}));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-    Arc::make_mut(&mut app.config).openai_url = format!("http://{address}");
-    transcript_vault::provider::enrich(&app, "Synthetic transcript")
+    // The context describes the audio to AssemblyAI and is background for Groq's notes.
+    let (provider, task) = common::connect(&mut app, Default::default()).await;
+    let audio = _dir.path().join("context.wav");
+    wav(&audio, 1000);
+    add_batch(
+        &app,
+        "context",
+        &[("a", audio.as_path())],
+        &[plan(&["a"], None, None)],
+    )
+    .await;
+    pipeline::finalize(&app, "context").await.unwrap();
+    let entry: String = sqlx::query_scalar("SELECT id FROM entries")
+        .fetch_one(&app.db)
         .await
         .unwrap();
-    let request = captured.lock().await;
+    pipeline::process(&app, &entry).await.unwrap();
+    let transcript = provider.transcripts.lock().unwrap()[0].clone();
+    assert_eq!(transcript["prompt"], "Synthetic vocabulary context");
+    let chat = provider.chats.lock().unwrap()[0].clone();
+    assert_eq!(chat["model"], "openai/gpt-oss-120b");
+    assert_eq!(chat["temperature"], 0);
+    assert_eq!(chat["response_format"]["json_schema"]["strict"], true);
     assert!(
-        request["instructions"]
+        chat["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("Synthetic vocabulary context")
     );
-    assert!(request.get("prompt").is_none());
-    server.abort();
+    assert!(
+        !chat["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Synthetic vocabulary context"),
+        "context stays out of the transcript evidence"
+    );
+    task.abort();
 }

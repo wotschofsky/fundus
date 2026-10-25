@@ -4,7 +4,7 @@ This file records checks performed against synthetic fixtures. No personal recor
 
 Passed so far:
 
-- CLI rejects absent or whitespace-only OpenAI API keys before creating storage.
+- CLI rejects absent or whitespace-only AssemblyAI API keys before creating storage.
 - Rust unit and HTTP integration tests: grouping, FTS escaping, matching thresholds, credential scopes/revocation, cross-origin cookie mutation rejection, tus offsets after reopening SQLite, MCP initialization and read-only tool discovery.
 - OAuth security/integration checks: discovery metadata and MCP challenges, explicit same-origin consent, exact callback validation, PKCE and single-use codes, read-only MCP audience separation, confidential/public clients, expiration, refresh rotation/replay revocation, owner disconnect, and bounded public registration. Native owner tests additionally cover exact native scope/resource pairing, rejection of MCP/legacy/cookie/proxy credentials on native APIs, native CRUD aliases, refresh, and revocation. Web consent/settings build and Rust Clippy passed.
 - Proxy authentication regression checks: owner browser access without a password, disabled password login, token requirements on upload/MCP routes, scope separation, rejected legacy cookies on token routes, and same-origin browser mutations.
@@ -21,7 +21,10 @@ Passed so far:
 - Real WeSpeaker model inference from Rust-generated filterbank features: 256 finite dimensions, deterministic repeat, successful process shutdown with ort 2.0.0-rc.15 / ONNX Runtime 1.31.0.
 - Web production build, synthetic browser sign-in, recording browse/detail, keyword results, authenticated audio Range (206), responsive detail at 390px with no horizontal overflow.
 - Backup command refused concurrent operation while the server lock was held.
-- Graceful shutdown regression: a delayed provider response is preserved, a queued next job is left untouched, and saved transcription is reused. Genuine hard-crash checkpoints still require an explicit retry.
+- AssemblyAI checkpoint regressions against a local mock: one job per entry with a pending poll; graceful shutdown waits for an in-flight job creation, saves its ID, stops waiting, and a restarted worker polls the same job to completion without resubmitting; pause keeps the job ID and resume polls it; a crash during submission requires explicit Retry, which never clears a saved job ID; a job reported as failed is resubmitted on Retry. Also checked end to end with the debug binary: SIGTERM while a job was pending stopped the server at once and the restart completed the same job.
+- Two entries processed concurrently with an atomic claim; playback becomes available before transcription finishes.
+- Voice recognition across several entries in one server process (one shared ONNX Runtime environment; previously only the first analysis per process succeeded).
+- Without Groq: entries complete with a visible summary warning. Without an embeddings key: keyword-only search, not reported as partial.
 - Container smoke test with a synthetic local provider: HTTP/tus upload, real packaged WeSpeaker inference and enrollment, hybrid retrieval, and authenticated audio Range all passed without processing warnings.
 - Reusable isolated container smoke test passed on Linux AMD64 and ARM64 with a read-only root filesystem, dropped capabilities, no external provider access, and archive persistence after restart.
 - Proxy-mode AMD64 container smoke test passed without owner initialization: browser access, password login disabled, anonymous upload/MCP rejection, cross-origin mutation rejection, full synthetic ingestion, and restart persistence.
@@ -33,7 +36,7 @@ Still to exercise on physical devices/account:
 
 - USB storage visibility for the intended DJI microphone, cables, and OS document pickers.
 - Long recordings and storage pressure, real disconnects, airplane mode, background execution, force quit, relaunch, token revocation during transfer, and final server receipts on signed native apps.
-- Live OpenAI access, billing, languages, diarization quality, and transcript accuracy.
+- Live AssemblyAI and Groq access: the exact request shapes (`speech_models: ["universal-3-5-pro"]` with `language_codes`, `prompt`; Groq strict `json_schema` with `openai/gpt-oss-120b`) follow the MicIngest client and the providers' documentation but were exercised only against local mocks. Also billing, languages, diarization quality, and transcript accuracy.
 - Voice thresholds on enrolled real voices, noisy/overlapping speech, and deliberate unknown speakers. Synthetic inference validates integration, not recognition accuracy.
 - Hosted chat-client and native-owner OAuth sign-in against the production proxy, profile switching/relaunch with real Keychain storage, and restore into a clean server. These checks require the generic native discovery and `/api/native/*` routes to be externally reachable while enforcing owner OAuth; browser consent stays behind browser authentication.
 - First hosted AMD64/ARM64 container workflow, GHCR publication and vulnerability scan; Developer ID signing/notarization and signed mobile distribution.

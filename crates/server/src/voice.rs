@@ -51,11 +51,17 @@ pub fn match_person(
         None
     }
 }
+/// ONNX Runtime allows one environment per process, ever: it is created on first use and kept.
+static ENVIRONMENT: std::sync::LazyLock<Result<ort::environment::Environment, String>> =
+    std::sync::LazyLock::new(|| ort::init().build().map_err(|error| error.to_string()));
+
 fn embed(model: &Path, clips: Vec<(String, Vec<PathBuf>)>) -> Result<Vec<(String, Vec<f32>)>> {
     use kaldi_fbank::{FbankOptions, OnlineFbank, WindowType};
     use ort::{session::Session, value::Tensor};
-    let environment = ort::init().build()?;
-    let mut session = Session::builder(&environment)?
+    let environment = ENVIRONMENT
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("ONNX Runtime unavailable: {error}"))?;
+    let mut session = Session::builder(environment)?
         .with_intra_threads(2)
         .map_err(|e| anyhow::anyhow!(e.to_string()))?
         .commit_from_file(model)?;
@@ -121,32 +127,46 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
         .clone()
         .context("Configure VAULT_VOICE_MODEL and ONNX Runtime for local recognition")?;
     ensure!(model.is_file(), "Speaker model file is missing");
-    let rows = sqlx::query(
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT speaker,start_ms,end_ms FROM segments WHERE entry_id=? ORDER BY position",
     )
     .bind(entry)
     .fetch_all(&app.db)
     .await?;
     let mut excerpts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
-    for r in &rows {
-        let start: i64 = r.get("start_ms");
-        let end: i64 = r.get("end_ms");
-        let speaker: String = r.get("speaker");
-        if end - start < 3000 {
-            continue;
-        }
-        if rows.iter().any(|other| {
-            other.get::<String, _>("speaker") != speaker
-                && other.get::<i64, _>("start_ms") < end
-                && other.get::<i64, _>("end_ms") > start
-        }) {
+    for (speaker, start, end) in &rows {
+        // Only clean speech: long enough and not overlapping anyone else.
+        // ponytail: O(n²) over utterances, ~25M cheap comparisons for a long day; sort by start if it shows.
+        if end - start < 3000
+            || rows
+                .iter()
+                .any(|(other, s, e)| other != speaker && s < end && e > start)
+        {
             continue;
         }
         excerpts
-            .entry(speaker)
+            .entry(speaker.clone())
             .or_default()
-            .push((start, (end - start).min(10000)));
+            .push((*start, (end - start).min(10000)));
     }
+    let dir = app.entry_dir(entry);
+    let result = probe_and_match(app, entry, audio_path, model, excerpts).await;
+    // Keep only durable vectors, also after a failure; excerpts can be rebuilt from the archive.
+    let mut items = tokio::fs::read_dir(&dir).await?;
+    while let Some(item) = items.next_entry().await? {
+        if item.file_name().to_string_lossy().starts_with("voice-") {
+            let _ = tokio::fs::remove_file(item.path()).await;
+        }
+    }
+    result
+}
+async fn probe_and_match(
+    app: &App,
+    entry: &str,
+    audio_path: &Path,
+    model: PathBuf,
+    excerpts: BTreeMap<String, Vec<(i64, i64)>>,
+) -> Result<()> {
     let mut clips = vec![];
     let dir = app.entry_dir(entry);
     for (speaker, mut times) in excerpts {
@@ -186,13 +206,6 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
         sqlx::query("INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,?,?,?) ON CONFLICT(entry_id,speaker,model)DO UPDATE SET vector_json=excluded.vector_json").bind(entry).bind(&label).bind(MODEL).bind(serde_json::to_string(&vector)?).execute(&app.db).await?;
         if let Some((person, score)) = match_person(&vector, &profiles, strong, margin) {
             sqlx::query("UPDATE speakers SET person_id=?,state='automatic',evidence=? WHERE entry_id=? AND label=? AND state NOT IN ('manual','manual_unknown')").bind(person).bind(json!([{"source":"voice","score":score,"model":MODEL}]).to_string()).bind(entry).bind(label).execute(&app.db).await?;
-        }
-    }
-    // Keep only durable vectors; excerpts can be rebuilt from the full-quality archive.
-    let mut items = tokio::fs::read_dir(&dir).await?;
-    while let Some(item) = items.next_entry().await? {
-        if item.file_name().to_string_lossy().starts_with("voice-") {
-            let _ = tokio::fs::remove_file(item.path()).await;
         }
     }
     Ok(())

@@ -8,13 +8,13 @@ fn server_rejects_missing_and_blank_api_key_before_touching_storage() {
         command
             .arg("serve")
             .env("VAULT_DATA_DIR", &data)
-            .env_remove("OPENAI_API_KEY");
+            .env_remove("ASSEMBLYAI_API_KEY");
         if let Some(key) = key {
-            command.env("OPENAI_API_KEY", key);
+            command.env("ASSEMBLYAI_API_KEY", key);
         }
         let output = command.output().unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("OPENAI_API_KEY is required"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("ASSEMBLYAI_API_KEY is required"));
         assert!(!data.exists());
     }
 }

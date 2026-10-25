@@ -311,6 +311,7 @@ async fn read(
                 cursor: p.cursor,
                 limit: p.limit,
             },
+            2000,
         )
         .await?,
     ))
@@ -457,7 +458,8 @@ async fn retry(
         return Err(Error::conflict("Recording is already processing"));
     }
     let mut tx = app.db.begin().await?;
-    sqlx::query("DELETE FROM parts WHERE entry_id=? AND raw_json IS NULL")
+    // Only an ambiguous submission is cleared: a saved AssemblyAI job ID is polled, never resubmitted.
+    sqlx::query("DELETE FROM transcriptions WHERE entry_id=? AND remote_id IS NULL")
         .bind(&id)
         .execute(&mut *tx)
         .await?;
@@ -777,7 +779,20 @@ async fn static_file(request: Request) -> Response {
             })
             .first_or_octet_stream()
             .to_string();
-            ([(header::CONTENT_TYPE, mime)], asset.data.into_owned()).into_response()
+            // Vite fingerprints everything under assets/; the page itself must revalidate.
+            let cache = if path.starts_with("assets/") {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_str()),
+                    (header::CACHE_CONTROL, cache),
+                ],
+                asset.data.into_owned(),
+            )
+                .into_response()
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }

@@ -8,10 +8,19 @@ pub struct Config {
     pub data: PathBuf,
     pub bind: String,
     pub public_url: url::Url,
+    pub assemblyai_url: String,
+    pub assemblyai_key: String,
+    pub transcription_models: Vec<String>,
+    pub transcription_languages: Vec<String>,
+    /// How often a submitted AssemblyAI job is polled.
+    pub poll_interval: std::time::Duration,
+    pub groq_url: String,
+    /// Empty: no titles, summaries or name evidence; entries get a visible warning.
+    pub groq_key: String,
+    pub text_model: String,
+    /// OpenAI-compatible embeddings for semantic search. Empty key: keyword search only.
     pub openai_url: String,
     pub openai_key: String,
-    pub transcription_model: String,
-    pub text_model: String,
     pub embedding_model: String,
     pub voice_model: Option<PathBuf>,
     pub recorder_timezone: String,
@@ -21,9 +30,17 @@ pub struct Config {
 impl Config {
     pub fn validate_for_serve(&self) -> Result<()> {
         anyhow::ensure!(
-            !self.openai_key.trim().is_empty(),
-            "OPENAI_API_KEY is required to start the server"
+            !self.assemblyai_key.is_empty(),
+            "ASSEMBLYAI_API_KEY is required to start the server"
         );
+        if self.groq_key.is_empty() {
+            tracing::warn!(
+                "GROQ_API_KEY is not set: recordings get no titles, summaries or name evidence"
+            );
+        }
+        if self.openai_key.is_empty() {
+            tracing::info!("OPENAI_API_KEY is not set: search uses keywords only");
+        }
         Ok(())
     }
     pub fn from_env() -> Result<Self> {
@@ -58,23 +75,40 @@ impl Config {
             public_url,
             data,
             bind: std::env::var("VAULT_BIND").unwrap_or("127.0.0.1:3000".into()),
-            openai_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or("https://api.openai.com/v1".into())
-                .trim_end_matches('/')
-                .into(),
-            openai_key: std::env::var("OPENAI_API_KEY")
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            transcription_model: std::env::var("VAULT_TRANSCRIPTION_MODEL")
-                .unwrap_or("gpt-4o-transcribe-diarize".into()),
-            text_model: std::env::var("VAULT_TEXT_MODEL").unwrap_or("gpt-6-luna".into()),
+            assemblyai_url: base_url("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com"),
+            assemblyai_key: secret("ASSEMBLYAI_API_KEY"),
+            transcription_models: list("VAULT_TRANSCRIPTION_MODEL", "universal-3-5-pro"),
+            transcription_languages: list("VAULT_TRANSCRIPTION_LANGUAGES", "de,en"),
+            poll_interval: std::time::Duration::from_secs(5),
+            groq_url: base_url("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+            groq_key: secret("GROQ_API_KEY"),
+            text_model: std::env::var("VAULT_TEXT_MODEL").unwrap_or("openai/gpt-oss-120b".into()),
+            openai_url: base_url("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            openai_key: secret("OPENAI_API_KEY"),
             embedding_model: std::env::var("VAULT_EMBEDDING_MODEL")
                 .unwrap_or("text-embedding-3-small".into()),
             voice_model: std::env::var_os("VAULT_VOICE_MODEL").map(PathBuf::from),
             recorder_timezone,
         })
     }
+}
+fn base_url(name: &str, default: &str) -> String {
+    std::env::var(name)
+        .unwrap_or(default.into())
+        .trim_end_matches('/')
+        .into()
+}
+fn secret(name: &str) -> String {
+    std::env::var(name).unwrap_or_default().trim().to_string()
+}
+fn list(name: &str, default: &str) -> Vec<String> {
+    std::env::var(name)
+        .unwrap_or(default.into())
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .collect()
 }
 #[derive(Clone)]
 pub struct App {

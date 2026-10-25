@@ -8,7 +8,7 @@ The server accepts **HTTP only**. Put your existing HTTPS reverse proxy in front
 
 ```sh
 cp .env.example .env
-# Edit .env: external URL, OpenAI API key, recorder timezone.
+# Edit .env: external URL, AssemblyAI and Groq API keys, recorder timezone.
 docker compose build
 python3 -c 'import getpass; print(getpass.getpass("Vault password: "))' | docker compose run --rm -T server init
 docker compose up -d
@@ -45,7 +45,7 @@ python3 -c 'import getpass; print(getpass.getpass("Vault password: "))' | target
 target/release/transcript-vault serve
 ```
 
-Default local bind is `127.0.0.1:3000`, public URL `http://localhost:3000`, and data directory `data`. Build the web app before compiling Rust: its assets are embedded in the binary. `OPENAI_API_KEY` is required: the server refuses to start when it is missing or blank. Initialization, backup, and other administrative commands do not need an API key.
+Default local bind is `127.0.0.1:3000`, public URL `http://localhost:3000`, and data directory `data`. Build the web app before compiling Rust: its assets are embedded in the binary. `ASSEMBLYAI_API_KEY` is required: the server refuses to start when it is missing or blank. `GROQ_API_KEY` is recommended (without it, recordings get no titles, summaries or name evidence and show a warning); `OPENAI_API_KEY` is optional and only enables semantic search. Initialization, backup, and other administrative commands do not need an API key.
 
 ## Upload apps
 
@@ -53,9 +53,9 @@ For prebuilt GHCR deployment, multi-platform CI and versioned native bundles, se
 [packaging and releases](docs/packaging.md). `compose.image.yaml` runs a published
 image without compiling on the server; `compose.yaml` builds from source.
 
-**Mac:** `scripts/build-macos.sh` builds an ad hoc signed SwiftUI `.app` in `build/`; `scripts/package-macos.sh` also creates versioned ZIP/DMG bundles and checksums. macOS 15+ and Xcode are required. Connect your server in Settings and approve owner access in your browser. Credentials are stored per vault in Keychain; saved vault profiles let you switch archives. A manual upload-token fallback is available for older servers. Use `scripts/package-macos.sh --release` with your own signing/notarization credentials for distribution.
+**Mac:** `scripts/build-macos.sh` builds `build/Transcript Vault.app`; `scripts/package-macos.sh` also creates versioned ZIP/DMG bundles and checksums. The app runs on macOS 15+ and is built with Xcode 26 or newer, which supplies the Liquid Glass design. The build signs with `MACOS_SIGNING_IDENTITY`, otherwise with the first Developer ID Application or Apple Development identity in your keychain, and only falls back to ad hoc signing without one. Keep the identity stable: Keychain access to saved connections is tied to it, so every ad hoc build asks again. Connect your server in Settings (⌘,) and approve owner access in your browser. Credentials are stored per vault in Keychain; saved vaults are listed at the bottom of the sidebar. A manual upload-token fallback is available for older servers. Use `scripts/package-macos.sh --release` with your own signing/notarization credentials for distribution.
 
-The native Mac workspace preserves the recorder workflow: automatic discovery at startup and mount, per-microphone selection, grouped rollover sessions, short-fragment filtering, manual merge/split, seamless multi-clip preview, frame-based trim selection, and safe eject after copying. Folders and individual files are also supported. Grouping and trim decisions are metadata sent with the import; the server performs the actual merge, trim, transcription, and indexing. Source-history receipts show prior imports and remote processing progress. The native library provides transcript playback, editing, people and speaker corrections, recoverable Trash, and settings for recorder time, recording context, and voice-match thresholds.
+The Mac app keeps the Mic Ingest layout: an Import screen for the connected recorder or a chosen folder, and the vault's transcripts in the sidebar. It preserves the recorder workflow: automatic discovery at startup and mount, per-microphone tabs, grouped rollover sessions, short-fragment filtering, manual merge/split, seamless multi-clip preview, frame-based trim selection, and safe eject after copying. Individual files can be imported with ⌘O. Grouping and trim decisions are metadata sent with the import; the server performs the actual merge, trim, transcription, and indexing. Source-history receipts show prior imports and remote processing progress. Transcripts stream their audio from the vault as you listen, follow processing while it runs, and support title/label/date edits, people and speaker corrections, Markdown export, and recoverable Trash. Settings cover the vault connection, recorder clock, recording context, people, and voice-match thresholds. The app polls the vault only while something is uploading or processing, and otherwise refreshes when it becomes active.
 
 **iOS and Android:** `apps/mobile` uses Expo SDK 58, React Native, and **Expo UI’s SwiftUI / Jetpack Compose controls**. It requires a custom native build, not Expo Go:
 
@@ -76,22 +76,22 @@ One selected batch runs at a time. On Mac, copying, FLAC preparation, and upload
 
 ## Pipeline and retrieval
 
-SQLite uses WAL, foreign keys, migrations, and durable commits. Audio stays in server-owned paths. The pipeline verifies decoded PCM, deduplicates equivalent WAV/FLAC audio, groups compatible contiguous DJI chunks, prepares browser playback, transcribes bounded ten-minute requests, extracts a title/summary, and indexes passages. Generic audio with no reliable timestamp stays undated until edited in the web library. Ambiguous timezone/DST timestamps are not guessed. Transmitter streams remain separate; simultaneous transmitter tracks are not aligned or mixed.
+SQLite uses WAL, foreign keys, migrations, and durable commits. Audio stays in server-owned paths. The pipeline verifies decoded PCM, deduplicates equivalent WAV/FLAC audio, groups compatible contiguous DJI chunks, prepares browser playback (playable while the rest is still processing), transcribes the whole recording as one AssemblyAI job so speaker labels stay consistent from start to end, extracts a title/summary, and indexes passages. Two recordings are processed at a time. Generic audio with no reliable timestamp stays undated until edited in the web library. Ambiguous timezone/DST timestamps are not guessed. Transmitter streams remain separate; simultaneous transmitter tracks are not aligned or mixed.
 
-Every transcription request gets a durable checkpoint before submission. Completed raw responses are reused on retry. If an interrupted request may have reached the provider, another paid request requires an explicit Retry. Summaries and embeddings may be requested again during an explicit retry. Missing optional processing creates visible warnings rather than hiding an otherwise readable transcript. No live OpenAI call is needed for the automated tests.
+Every transcription job gets a durable checkpoint before submission, its AssemblyAI job ID is saved as soon as it exists, and the completed result is kept, so a recording is paid for once: retries, pauses and restarts poll the saved job or reuse its result. Only if the server stopped while the creation request may have reached AssemblyAI does another paid request require an explicit Retry; a job AssemblyAI reports as failed is submitted again on Retry. Summaries and embeddings may be requested again during an explicit retry. Missing optional processing creates visible warnings rather than hiding an otherwise readable transcript. No live provider call is needed for the automated tests.
 
-Search combines SQLite FTS5 with OpenAI passage embeddings using rank fusion; semantic search degrades to keywords when unavailable. Vectors are stored in SQLite and compared in Rust: no vector service. Results include source entry, excerpt, audio times, and links. Coverage flags expose unfinished entries and missing embeddings. Transcript reads are paginated; consumers must follow `next_cursor` for full coverage.
+Search uses SQLite FTS5 keyword ranking, fused with passage embeddings when `OPENAI_API_KEY` is set (any OpenAI-compatible embeddings endpoint via `OPENAI_BASE_URL`); without it, keyword search is the complete design and is not reported as partial. Vectors are stored in SQLite and compared in Rust: no vector service. Results include source entry, excerpt, audio times, and links. Coverage flags expose unfinished entries and missing embeddings. Transcript reads are paginated; consumers must follow `next_cursor` for full coverage.
 
-The web and native Mac libraries support playback, time-linked transcripts, labels, titles, recording-date correction, people, manual speaker correction, processing errors, and retries. The Mac library also provides recoverable Trash and permanent deletion. Recording context helps interpret names and produce summaries after transcription; it is not a diarization prompt. Built-in chat and historic filesystem-vault migration are deferred; chat happens through your preferred MCP client.
+The web and native Mac libraries support playback, time-linked transcripts, labels, titles, recording-date correction, people, manual speaker correction, processing errors, and retries. The Mac library also provides recoverable Trash and permanent deletion. Recording context describes the audio to AssemblyAI (vocabulary, languages, setting) and gives background for summaries; it is never evidence for a speaker identity. Built-in chat and historic filesystem-vault migration are deferred; chat happens through your preferred MCP client.
 
 ### Models
 
-- Speaker-labeled transcription: `gpt-4o-transcribe-diarize` via the isolated `provider.rs` adapter.
-- Titles, summaries, explicit name evidence: `gpt-6-luna`, Responses API with structured output and `store: false`.
-- Passage embeddings: `text-embedding-3-small`.
+- Speaker-labeled transcription: AssemblyAI pre-recorded API, `universal-3-5-pro` (`VAULT_TRANSCRIPTION_MODEL`, comma-separated), code-switching between `de,en` (`VAULT_TRANSCRIPTION_LANGUAGES`), speaker labels on. The server uploads a 16 kHz mono FLAC rendition; the archive stays full quality. The vault's recording context is sent as AssemblyAI's `prompt`, which describes the audio.
+- Titles, summaries, explicit name evidence: Groq chat completions with strict JSON Schema output, `openai/gpt-oss-120b` (`VAULT_TEXT_MODEL`). Long transcripts are summarized in sections of about 12,000 characters and then combined; rate limits are retried.
+- Passage embeddings (optional): `text-embedding-3-small` (`VAULT_EMBEDDING_MODEL`).
 - Recurring voice recognition: local WeSpeaker ResNet34-LM ONNX, separate from text embeddings. Docker includes the pinned model and ONNX Runtime 1.31.0. For a local binary, run `scripts/fetch-speaker-model.sh`, set `VAULT_VOICE_MODEL` to its output and `ORT_DYLIB_PATH` to your runtime library.
 
-The diarization model is [deprecated, with shutdown scheduled for February 26, 2027](https://developers.openai.com/api/docs/deprecations). The [current transcription documentation](https://developers.openai.com/api/docs/guides/speech-to-text) still specifies it for speaker-labeled file transcripts; swapping model names alone will not preserve the response format. Replace the isolated transcription adapter when an equivalent current diarization workflow is available. Model IDs and the OpenAI base URL are configurable.
+All provider calls live in the isolated `provider.rs` adapter. Model IDs and the base URLs (`ASSEMBLYAI_BASE_URL`, `GROQ_BASE_URL`, `OPENAI_BASE_URL`) are configurable. Entries transcribed by the former OpenAI pipeline keep their transcripts; an explicit Retry of such an entry transcribes it again with AssemblyAI and replaces its per-part speaker labels.
 
 Speaker profiles require manual identity confirmation. Clean, non-overlapping excerpts form acoustic probes; automatic matches require both a strong score and separation from the runner-up. Uncertain speakers stay unnamed. Textual name findings are reviewable evidence, never automatic voice enrollment. Correcting or deleting a person/entry removes its contributed voice samples. The initial thresholds are conservative defaults, not a calibrated accuracy guarantee.
 
@@ -123,11 +123,11 @@ bearer_token_env_var = "VAULT_READ_TOKEN"
 
 ## Data, deletion, and backup
 
-Audio archives, browser playback, raw transcription responses, summaries, transcripts, labels, embeddings, speaker probes, and voice samples live in `VAULT_DATA_DIR`. Processing sends audio and transcript text to OpenAI; self-hosting the archive does not make model inference local. There is no analytics SDK. Protect server disks and backups using your own encryption and access controls.
+Audio archives, browser playback, raw transcription responses, summaries, transcripts, labels, embeddings, speaker probes, and voice samples live in `VAULT_DATA_DIR`. Processing sends a 16 kHz rendition of the audio to AssemblyAI, transcript text to Groq, and, if semantic search is enabled, passage text to the embeddings endpoint; voice embeddings never leave the server. Self-hosting the archive does not make transcription or summarization local. There is no analytics SDK. Protect server disks and backups using your own encryption and access controls.
 
 Stop the server before backup; the CLI enforces an exclusive server lock:
 
-On a normal shutdown, the worker finishes its current job and saves the results before exiting. The included Compose files allow up to 30 minutes for this; keep the supervisor's stop timeout aligned. A forced stop or crash during a remote request may require an explicit retry, while completed transcription parts are reused.
+On a normal shutdown, the worker finishes its current job and saves the results before exiting. The included Compose files allow up to 30 minutes for this; keep the supervisor's stop timeout aligned. A job waiting for AssemblyAI stops waiting immediately and resumes polling the same job after restart. A forced stop or crash while a transcription request is being submitted requires an explicit retry; saved jobs and results are reused.
 
 ```sh
 docker compose stop server
@@ -154,6 +154,6 @@ swift build --package-path apps/macos
 scripts/test-native-codec.sh
 ```
 
-The server integration test runs a local OpenAI mock and real FFmpeg, covering audio preparation through searchable transcripts, checkpoint reuse, PCM deduplication, and speaker correction. Additional tests cover scopes/revocation, browser origin checks, resumable offsets after reopening SQLite, and actual MCP initialization/tool discovery. Native tests verify lossless integer conversion and byte-preserving float/int32 passthrough. A separate ignored Rust test can validate inference with the pinned voice model: set `VAULT_VOICE_MODEL` and `ORT_DYLIB_PATH`, then `cargo test pinned_model_runs -- --ignored`.
+The server integration tests run local AssemblyAI, Groq and embeddings mocks and real FFmpeg, covering audio preparation through searchable transcripts, checkpoint reuse across pause/shutdown/restart, failed-job resubmission, keyword-only search without embeddings, PCM deduplication, sample-exact trims, and speaker correction. Additional tests cover scopes/revocation, browser origin checks, resumable offsets after reopening SQLite, and actual MCP initialization/tool discovery. Native tests verify lossless integer conversion and byte-preserving float/int32 passthrough. A separate ignored Rust test can validate inference with the pinned voice model: set `VAULT_VOICE_MODEL` and `ORT_DYLIB_PATH`, then `cargo test pinned_model_runs -- --ignored`.
 
 See [verification notes](docs/verification.md) for what has and has not been exercised. Real microphone USB access, signed-device background execution, live provider behavior, and accuracy on your own voices still require device/account validation.
