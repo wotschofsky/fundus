@@ -1,6 +1,6 @@
 import XCTest
 import AVFoundation
-@testable import VaultUploader
+@testable import TranscriptVault
 
 @MainActor final class SourceSessionParityTests: XCTestCase {
     func testTrimSelectionAndOverridesPersistAndProduceOrderedRemotePlan() throws {
@@ -42,7 +42,7 @@ import AVFoundation
         XCTAssertEqual(session.start(trimmedBy: trim), date("2026-10-01 21:14:50"))
         XCTAssertEqual(session.end(trimmedBy: trim), date("2026-10-01 21:44:20"))
         let plan = model.uploadPlan([session]).plans[0]
-        model.syncHistory([["id":"remote-entry","source_ids":plan.sourceIDs,"trim_start_frame":plan.trimStartFrame!,"trim_end_frame":plan.trimEndFrame!,"stage":"complete"]], server: "https://vault.example.com")
+        model.syncHistory(try wire([["id": "remote-entry", "source_ids": plan.sourceIDs, "trim_start_frame": plan.trimStartFrame!, "trim_end_frame": plan.trimEndFrame!, "stage": "complete"]]), server: "https://vault.example.com")
         XCTAssertEqual(model.record(for: session, server: "https://vault.example.com")?.entryID, "remote-entry")
         XCTAssertNil(model.record(for: session, server: "https://other.example.com"))
         model.resetTrim(for: session)
@@ -78,19 +78,19 @@ import AVFoundation
         XCTAssertGreaterThanOrEqual(model.sessions.count, 3)
         let removed = model.sessions[0], retained = model.sessions[1], pending = model.sessions[2]
         model.register([removed, retained, pending], server: server, importID: "local-batch")
-        model.updateReceipt(server: server, importID: "local-batch", entries: [
+        model.updateReceipt(server: server, importID: "local-batch", entries: try wire([
             ["session_index": 0, "id": "trashed-or-deleted", "stage": "complete"],
             ["session_index": 1, "id": "retained-on-second-page", "stage": "complete"]
-        ])
+        ]))
         model.register([removed], server: otherServer, importID: "another-vault-batch")
-        model.updateReceipt(server: otherServer, importID: "another-vault-batch", entries: [
+        model.updateReceipt(server: otherServer, importID: "another-vault-batch", entries: try wire([
             ["session_index": 0, "id": "other-vault-entry", "stage": "complete"]
-        ])
+        ]))
 
         // An incomplete or interrupted history fetch must not erase badges for
         // entries absent from the first page, or for locally queued imports.
         let firstPage: [[String: Any]] = [["id": "new-remote-entry", "source_ids": ["remote-source"], "stage": "complete"]]
-        model.syncHistory(firstPage, server: server)
+        model.syncHistory(try wire(firstPage), server: server)
         XCTAssertTrue(model.partlyImported(removed, server: server))
         XCTAssertEqual(model.record(for: retained, server: server)?.entryID, "retained-on-second-page")
         XCTAssertEqual(model.record(for: pending, server: server)?.stage, "uploading")
@@ -99,7 +99,7 @@ import AVFoundation
         XCTAssertNotNil(afterInterruptedFetch.record(for: retained, server: server))
 
         let secondPage: [[String: Any]] = [["id": "retained-on-second-page", "source_ids": retained.recordings.map(SourceSessions.sourceID), "stage": "complete"]]
-        model.syncHistory(secondPage, server: server)
+        model.syncHistory(try wire(secondPage), server: server)
         XCTAssertNotNil(model.record(for: removed, server: server))
         let authoritativeIDs = Set((firstPage + secondPage).compactMap { $0["id"] as? String })
         model.reconcileHistory(server: server, entryIDs: authoritativeIDs)
@@ -133,5 +133,50 @@ import AVFoundation
         XCTAssertEqual(valid.duration, 2.5, accuracy: 0.0001)
         XCTAssertEqual(valid.frameCount, 20_000)
         XCTAssertEqual(files.filter { $0.inspectionError != nil }.count, 1)
+    }
+
+    /// Server JSON, decoded the way the app decodes it.
+    private func wire<T: Decodable>(_ objects: [[String: Any]]) throws -> [T] {
+        try VaultAPI.decode([T].self, from: JSONSerialization.data(withJSONObject: objects))
+    }
+
+    func testCreatedPersonDecodesWithoutSampleCount() throws {
+        // POST /people answers {id, name}; GET /people adds samples.
+        let created = try VaultAPI.decode(Person.self, from: Data(#"{"id":"p1","name":"Morgan"}"#.utf8))
+        XCTAssertEqual(created.samples, 0)
+        let listed = try VaultAPI.decode(Page<Person>.self, from: Data(#"{"people":[{"id":"p1","name":"Morgan","samples":3}]}"#.utf8))
+        XCTAssertEqual(listed.items.first?.samples, 3)
+    }
+
+    func testFailedImportReleasesItsSessions() throws {
+        let defaults = UserDefaults(suiteName: "failed-import-\(UUID())")!
+        let model = SourceSessions(defaults: defaults)
+        let server = "https://vault.example.com"
+        let files = briefRecordings().map { RecorderFile(url: $0.url, size: $0.fileSize, modified: nil, recorded: $0.start, transmitter: $0.transmitter, recording: $0) }
+        model.update(files, server: server)
+        let session = try XCTUnwrap(model.sessions.first)
+        model.register([session], server: server, importID: "batch")
+        XCTAssertEqual(model.pendingImportIDs(server: server), ["batch"])
+        let receipt = try VaultAPI.decode(ImportReceipt.self, from: Data(#"{"id":"batch","state":"failed","entries":[],"files":[]}"#.utf8))
+        model.failImport(server: server, importID: "batch", message: "rejected")
+        XCTAssertEqual(receipt.state, "failed")
+        XCTAssertTrue(model.pendingImportIDs(server: server).isEmpty)
+        XCTAssertEqual(model.record(for: session, server: server)?.stage, "failed")
+        model.dropUnfinished(server: server, importID: "batch")
+        XCTAssertNil(model.record(for: session, server: server))
+    }
+
+    func testEntriesDecodeFromServerJSON() throws {
+        let json = #"{"entries":[{"id":"e1","title":"Planning","recorded_at":"2026-10-22T07:30:12.000Z","created_at":"2026-10-24T16:29:20.974Z","duration_ms":1500000,"timezone":"Europe/Berlin","stage":"transcribing","active_stage":"transcribing","failure":null,"pause_requested":false,"labels":["work"],"summary":null,"warnings":[],"audio_available":true,"trashed_at":null,"trim_start_frame":null}],"next_cursor":100}"#
+        let page = try VaultAPI.decode(Page<Entry>.self, from: Data(json.utf8))
+        XCTAssertEqual(page.nextCursor, 100)
+        let entry = try XCTUnwrap(page.items.first)
+        XCTAssertTrue(entry.isProcessing)
+        XCTAssertEqual(entry.status, "Transcribing")
+        // Shown in this Mac's zone, not the recorder clock the entry was imported with.
+        let recorded = try XCTUnwrap(entry.recordedAt)
+        XCTAssertEqual(entry.dateLine, "\(Format.day(recorded)) · \(SessionTimeline.clock(recorded, in: .current, seconds: false))")
+        XCTAssertEqual(recorded.timeIntervalSince1970, 1_792_654_212, accuracy: 0.001)
+        XCTAssertEqual(entry.duration, 1500)
     }
 }

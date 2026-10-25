@@ -80,6 +80,8 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private let session: URLSession
     private let preferences: UserDefaults
     private var refreshes: [String: Task<NativeOAuthCredentials, Error>] = [:]
+    /// Keychain reads are slow enough to matter on every request; the stored item stays the source of truth.
+    private var cached: [String: NativeOAuthCredentials] = [:]
     private var login: Task<Void, Error>?
     private static let preference = "NativeVaultServer"
 
@@ -90,7 +92,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         self.init(storage: NativeKeychainStorage(), session: URLSession(configuration: configuration, delegate: NativeNoRedirects(), delegateQueue: nil))
         if let remembered = UserDefaults.standard.string(forKey: Self.preference),
            let normalized = try? Self.origin(remembered),
-           (try? storage.read(server: normalized)) != nil {
+           (try? stored(normalized)) != nil {
             server = normalized
             isConnected = true
         }
@@ -99,6 +101,17 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         self.storage = storage
         self.session = session
         self.preferences = preferences
+    }
+
+    private func stored(_ server: String) throws -> NativeOAuthCredentials? {
+        if let credentials = cached[server] { return credentials }
+        let credentials = try storage.read(server: server)
+        cached[server] = credentials
+        return credentials
+    }
+    private func store(_ credentials: NativeOAuthCredentials) throws {
+        try storage.save(credentials)
+        cached[credentials.server] = credentials
     }
 
     static func origin(_ supplied: String) throws -> String {
@@ -142,7 +155,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         server = origin
         isConnected = false
         lastError = nil
-        guard try storage.read(server: origin) != nil else {
+        guard try stored(origin) != nil else {
             throw NativeOAuthFailure.message("Connect this app to this vault first.")
         }
         do {
@@ -161,7 +174,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         defer { receiver.cancel() }
         let callback = try await receiver.start()
         let registration = try await oauth(server: server, path: "/oauth/register", json: [
-            "client_name": "Vault Uploader", "redirect_uris": [callback.absoluteString],
+            "client_name": "Transcript Vault for Mac", "redirect_uris": [callback.absoluteString],
             "token_endpoint_auth_method": "none", "scope": "vault:owner",
             "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]
         ])
@@ -184,7 +197,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         ])
         let credentials = try Self.credentials(tokens, server: server, client: client)
         try Task.checkCancellation()
-        try storage.save(credentials)
+        try store(credentials)
         self.server = server
         isConnected = true
         preferences.set(server, forKey: Self.preference)
@@ -218,7 +231,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     }
     func connection(for supplied: String, forceRefresh: Bool = false) async throws -> VaultConnection {
         let origin = try Self.origin(supplied)
-        guard let credentials = try storage.read(server: origin) else {
+        guard let credentials = try stored(origin) else {
             guard let token = VaultCredentials.read(), !token.isEmpty else { throw NativeOAuthFailure.message("Connect this app to your vault first.") }
             return try VaultConnection(server: origin, token: token)
         }
@@ -238,7 +251,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             ])
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
-            try storage.save(updated)
+            try store(updated)
             return updated
         }
         refreshes[credentials.server] = task
@@ -256,6 +269,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         return try await connection(for: server).request(path, method: method, json: json)
     }
     public func json(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> [String: Any] {
+        let data = try await data(path, method: method, body: body)
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+    /// The response body of an owner API call; an expired access token is refreshed and retried once.
+    public func data(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> Data {
         guard !server.isEmpty else { throw NativeOAuthFailure.message("Connect this app to your vault first.") }
         var connection = try await connection(for: server)
         var result = try await session.data(for: connection.request(path, method: method, json: body))
@@ -264,17 +282,18 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             result = try await session.data(for: connection.request(path, method: method, json: body))
         }
         try VaultConnection.check(result.1, result.0)
-        return (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any] ?? [:]
+        return result.0
     }
     public func signOut() async {
         cancelSignIn()
         let origin = server
-        if let credentials = try? storage.read(server: origin) {
+        if let credentials = try? stored(origin) {
             _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
         }
         refreshes[origin]?.cancel()
         refreshes[origin] = nil
         try? storage.remove(server: origin)
+        cached[origin] = nil
         isConnected = false
         server = ""
         lastError = nil
@@ -388,7 +407,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
                     self.reply(connection, status: "400 Bad Request", message: "This connection request was not recognized.", result: nil)
                     return
                 }
-                self.reply(connection, status: "200 OK", message: "Connection request received. You can close this tab and return to Vault Uploader.", result: url)
+                self.reply(connection, status: "200 OK", message: "Connection request received. You can close this tab and return to Transcript Vault.", result: url)
             }
         }
     }

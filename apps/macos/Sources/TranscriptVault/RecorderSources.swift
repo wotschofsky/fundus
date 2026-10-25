@@ -1,6 +1,6 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 
 struct RecorderFile: Identifiable, Equatable, Sendable {
     let url: URL
@@ -128,23 +128,28 @@ enum RecorderScanner {
     }
 }
 
+/// Connected DJI recorders and a manually chosen folder. One of them is shown at a time, like Mic
+/// Ingest: a recorder that is plugged in replaces the folder, choosing a folder replaces the recorder.
 @MainActor
-final class RecorderSources: ObservableObject {
-    @Published private(set) var devices: [RecorderDevice] = []
-    @Published private(set) var folder: URL?
-    @Published private(set) var folderFiles: [RecorderFile] = []
-    @Published private(set) var isScanning = false
-    @Published private(set) var isReadingFolder = false
-    @Published private(set) var isEjecting = false
-    private var timezone = TimeZone.current
-    private let notifications: NotificationCenter
-    private let discover: @Sendable (TimeZone) async -> [RecorderDevice]
-    private let eject: (URL) async throws -> Void
-    private var observers: [NSObjectProtocol] = []
-    private var scanTask: Task<Void, Never>?
-    private var folderTask: Task<Void, Never>?
-    private var generation = UUID()
-    private var refreshAfterEject = false
+@Observable
+final class RecorderSources {
+    private(set) var devices: [RecorderDevice] = []
+    private(set) var folder: URL?
+    private(set) var folderFiles: [RecorderFile] = []
+    private(set) var isScanning = false
+    private(set) var isReadingFolder = false
+    private(set) var isEjecting = false
+    /// The folder was chosen after the current recorders connected.
+    private var prefersFolder = false
+    @ObservationIgnored private var timezone = TimeZone.current
+    @ObservationIgnored private let notifications: NotificationCenter
+    @ObservationIgnored private let discover: @Sendable (TimeZone) async -> [RecorderDevice]
+    @ObservationIgnored private let eject: (URL) async throws -> Void
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var folderTask: Task<Void, Never>?
+    @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var refreshAfterEject = false
 
     init(notifications: NotificationCenter = NSWorkspace.shared.notificationCenter,
          discover: @escaping @Sendable (TimeZone) async -> [RecorderDevice] = { await RecorderScanner.devices(timezone: $0) },
@@ -157,6 +162,21 @@ final class RecorderSources: ObservableObject {
     }
 
     var files: [RecorderFile] { devices.flatMap(\.files).sorted { ($0.recorded ?? .distantPast) > ($1.recorded ?? .distantPast) } }
+
+    var showsRecorders: Bool { !devices.isEmpty && !(prefersFolder && folder != nil) }
+    var hasSource: Bool { showsRecorders || folder != nil }
+    /// Files of whatever is shown: the recorders, or the chosen folder.
+    var shownFiles: [RecorderFile] { showsRecorders ? files : folderFiles }
+    var isReading: Bool { showsRecorders ? isScanning : isReadingFolder || (folder == nil && isScanning) }
+
+    /// `TX01, TX02 · 14 recordings` or `~/Recordings`.
+    var sourceDescription: String {
+        if showsRecorders {
+            let names = Set(files.compactMap(\.transmitter)).sorted()
+            return "\(names.isEmpty ? "Recorder connected" : names.joined(separator: ", ")) · \(files.count) recordings"
+        }
+        return folder.map(Format.path) ?? ""
+    }
 
     func start(timezone: String) {
         self.timezone = TimeZone(identifier: timezone) ?? .current
@@ -204,6 +224,8 @@ final class RecorderSources: ObservableObject {
         scanTask = Task { [weak self] in
             let devices = await discover(timezone)
             guard let self, !Task.isCancelled, self.generation == generation else { return }
+            // A recorder that was not there before takes over from a chosen folder.
+            if !Set(devices.map(\.id)).subtracting(self.devices.map(\.id)).isEmpty { self.prefersFolder = false }
             self.devices = devices
             self.isScanning = false
         }
@@ -213,6 +235,7 @@ final class RecorderSources: ObservableObject {
         guard !isEjecting else { return }
         if folder != url { folderFiles = [] }
         folder = url
+        prefersFolder = true
         UserDefaults.standard.set(url.path, forKey: "recorder-source-folder")
         isReadingFolder = true
         folderTask?.cancel()

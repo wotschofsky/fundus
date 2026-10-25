@@ -69,7 +69,9 @@ belongs to the external reverse proxy. `compose.yaml` remains the source-build o
 ## Mac bundles
 
 `scripts/package-macos.sh` produces versioned ZIP, DMG and SHA-256 files in `build/`.
-The `-local` suffix identifies ad hoc signed test bundles; CI uploads these as
+The `-local` suffix identifies bundles that are not notarized: signed with a local
+Developer ID or Apple Development identity when the keychain has one, ad hoc
+otherwise (as on CI). CI uploads these as
 `macos-local-bundle`. Version comes from `crates/server/Cargo.toml`, architecture
 from the build host, and `VAULT_BUILD_NUMBER` sets the numeric build (default `1`).
 

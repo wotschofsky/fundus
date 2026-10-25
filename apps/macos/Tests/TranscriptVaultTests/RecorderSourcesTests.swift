@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import VaultUploader
+@testable import TranscriptVault
 
 private actor Inventory {
     var devices: [RecorderDevice]

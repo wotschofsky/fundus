@@ -9,10 +9,13 @@ final class PlayerModel {
     private(set) var currentSeconds = 0.0
     private(set) var durationSeconds = 0.0
     private(set) var isAvailable = false
+    /// Set when the audio cannot be played, e.g. the vault stopped answering range requests.
+    private(set) var error: String?
 
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var rateObservation: NSKeyValueObservation?
+    private var statusObservation: NSKeyValueObservation?
     /// Where the latest seek is going. Until it lands, the player still reports the old position;
     /// showing that would make the scrubber jump back for a moment.
     private var seekTarget: Double?
@@ -41,12 +44,18 @@ final class PlayerModel {
         rateObservation = player.observe(\.rate) { [weak self] player, _ in
             Task { @MainActor in self?.isPlaying = player.rate != 0 }
         }
+        statusObservation = item.observe(\.status) { [weak self] item, _ in
+            let message = item.status == .failed ? "Could not play the audio: \(item.error?.localizedDescription ?? "unknown error")" : nil
+            Task { @MainActor in self?.error = message }
+        }
     }
 
     func unload() {
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         timeObserver = nil
         rateObservation = nil
+        statusObservation = nil
+        error = nil
         player?.pause()
         player = nil
         seekTarget = nil

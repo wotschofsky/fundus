@@ -1,5 +1,5 @@
 import XCTest
-@testable import VaultUploader
+@testable import TranscriptVault
 
 final class DJIFilenameTests: XCTestCase {
     func testParsesStandardName() throws {

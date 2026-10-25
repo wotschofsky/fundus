@@ -18,7 +18,7 @@ jobs:
       - run: cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test --locked
       - run: scripts/test-native-codec.sh
   native:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -31,8 +31,8 @@ jobs:
         with:
           name: macos-local-bundle
           path: |
-            build/VaultUploader-*.zip
-            build/VaultUploader-*.dmg
-            build/VaultUploader-*.sha256
+            build/TranscriptVault-*.zip
+            build/TranscriptVault-*.dmg
+            build/TranscriptVault-*.sha256
           if-no-files-found: error
       - run: pnpm install --frozen-lockfile && pnpm --dir apps/mobile check

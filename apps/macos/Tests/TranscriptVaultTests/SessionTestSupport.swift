@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import VaultUploader
+@testable import TranscriptVault
 
 let berlin = TimeZone(identifier: "Europe/Berlin")!
 
@@ -80,7 +80,7 @@ func writeWAV(to url: URL, seconds: Double, sampleRate: Double = 8000, bitDepth:
 }
 
 func temporaryDirectory() throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("VaultUploaderTests-\(UUID().uuidString)")
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("TranscriptVaultTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }

@@ -124,33 +124,50 @@ final class SourceSessions {
         }
         saveHistory()
     }
-    func updateReceipt(server: String, importID: String, entries: [[String: Any]]) {
+    func updateReceipt(server: String, importID: String, entries: [ImportReceipt.Entry]) {
         for entry in entries {
-            guard let index = entry["session_index"] as? Int,
-                  let position = records.firstIndex(where: { $0.server == server && $0.importID == importID && $0.sessionIndex == index }) else { continue }
-            records[position].entryID = entry["id"] as? String
-            records[position].stage = entry["stage"] as? String ?? "queued"
-            records[position].activeStage = entry["active_stage"] as? String
-            records[position].failure = entry["failure"] as? String
-            records[position].pauseRequested = entry["pause_requested"] as? Bool
+            guard let position = records.firstIndex(where: { $0.server == server && $0.importID == importID && $0.sessionIndex == entry.sessionIndex }) else { continue }
+            records[position].entryID = entry.id
+            records[position].stage = entry.stage
+            records[position].activeStage = entry.activeStage
+            records[position].failure = entry.failure
+            records[position].pauseRequested = entry.pauseRequested
         }
         saveHistory()
     }
-    func syncHistory(_ entries: [[String: Any]], server: String) {
+    func syncHistory(_ entries: [SourceHistoryEntry], server: String) {
         for entry in entries {
-            guard let id = entry["id"] as? String, let ids = entry["source_ids"] as? [String], !ids.isEmpty else { continue }
-            let existing = records.firstIndex { $0.server == server && $0.entryID == id }
-            var record = existing.map { records[$0] } ?? SessionImportRecord(server: server, fingerprint: "remote:" + id, sources: [], sourceIDs: ids, importID: "", sessionIndex: 0, stage: "queued")
-            record.entryID = id
+            let ids = entry.sourceIds.compactMap { $0 }
+            guard !ids.isEmpty, ids.count == entry.sourceIds.count else { continue }
+            let existing = records.firstIndex { $0.server == server && $0.entryID == entry.id }
+            var record = existing.map { records[$0] } ?? SessionImportRecord(server: server, fingerprint: "remote:" + entry.id, sources: [], sourceIDs: ids, importID: "", sessionIndex: 0, stage: "queued")
+            record.entryID = entry.id
             record.sourceIDs = ids
-            record.trimStartFrame = (entry["trim_start_frame"] as? NSNumber)?.int64Value
-            record.trimEndFrame = (entry["trim_end_frame"] as? NSNumber)?.int64Value
-            record.stage = entry["stage"] as? String ?? "queued"
-            record.activeStage = entry["active_stage"] as? String
-            record.failure = entry["failure"] as? String
-            record.pauseRequested = entry["pause_requested"] as? Bool
+            record.trimStartFrame = entry.trimStartFrame
+            record.trimEndFrame = entry.trimEndFrame
+            record.stage = entry.stage
+            record.activeStage = entry.activeStage
+            record.failure = entry.failure
+            record.pauseRequested = entry.pauseRequested
             if let existing { records[existing] = record } else { records.append(record) }
         }
+        saveHistory()
+    }
+    /// Imports still being uploaded or processed, whose receipts are worth polling.
+    func pendingImportIDs(server: String) -> Set<String> {
+        Set(records.filter { $0.server == server && !["complete", "failed", "paused"].contains($0.stage) && !$0.importID.isEmpty }.map(\.importID))
+    }
+    /// The vault rejected the whole import: its sessions can be imported again.
+    func failImport(server: String, importID: String, message: String) {
+        for index in records.indices where records[index].server == server && records[index].importID == importID && records[index].entryID == nil {
+            records[index].stage = "failed"
+            records[index].failure = message
+        }
+        saveHistory()
+    }
+    /// An upload was cleared before the vault created entries for it: forget its sessions.
+    func dropUnfinished(server: String, importID: String) {
+        records.removeAll { $0.server == server && $0.importID == importID && $0.entryID == nil }
         saveHistory()
     }
     func reconcileHistory(server: String, entryIDs: Set<String>) {
