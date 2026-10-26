@@ -23,6 +23,8 @@ pub struct Config {
     pub openai_key: String,
     pub embedding_model: String,
     pub voice_model: Option<PathBuf>,
+    /// Built web app, served from memory.
+    pub web: PathBuf,
     pub recorder_timezone: String,
     pub secure_cookie: bool,
     pub proxy_auth: bool,
@@ -32,6 +34,11 @@ impl Config {
         anyhow::ensure!(
             !self.assemblyai_key.is_empty(),
             "ASSEMBLYAI_API_KEY is required to start the server"
+        );
+        anyhow::ensure!(
+            self.web.join("index.html").is_file(),
+            "No web app in {}: run pnpm build or set VAULT_WEB_DIR",
+            self.web.display()
         );
         if self.groq_key.is_empty() {
             tracing::warn!(
@@ -88,6 +95,7 @@ impl Config {
             embedding_model: std::env::var("VAULT_EMBEDDING_MODEL")
                 .unwrap_or("text-embedding-3-small".into()),
             voice_model: std::env::var_os("VAULT_VOICE_MODEL").map(PathBuf::from),
+            web: PathBuf::from(std::env::var("VAULT_WEB_DIR").unwrap_or("web/dist".into())),
             recorder_timezone,
         })
     }

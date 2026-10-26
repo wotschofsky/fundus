@@ -45,7 +45,7 @@ python3 -c 'import getpass; print(getpass.getpass("Vault password: "))' | target
 target/release/transcript-vault serve
 ```
 
-Default local bind is `127.0.0.1:3000`, public URL `http://localhost:3000`, and data directory `data`. Build the web app before compiling Rust: its assets are embedded in the binary. `ASSEMBLYAI_API_KEY` is required: the server refuses to start when it is missing or blank. `GROQ_API_KEY` is recommended (without it, recordings get no titles, summaries or name evidence and show a warning); `OPENAI_API_KEY` is optional and only enables semantic search. Initialization, backup, and other administrative commands do not need an API key.
+Default local bind is `127.0.0.1:3000`, public URL `http://localhost:3000`, data directory `data`, and web app `web/dist` (`VAULT_WEB_DIR`). A release server reads the built web app at startup (a debug build on every request) and refuses to serve without it, so UI changes need no Rust compile. `ASSEMBLYAI_API_KEY` is required: the server refuses to start when it is missing or blank. `GROQ_API_KEY` is recommended (without it, recordings get no titles, summaries or name evidence and show a warning); `OPENAI_API_KEY` is optional and only enables semantic search. Initialization, backup, and other administrative commands do not need an API key.
 
 ## Upload apps
 

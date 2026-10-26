@@ -72,6 +72,8 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
             app.clone(),
             oauth::require_native,
         ));
+    let root = app.config.web.clone();
+    let web = std::sync::Arc::new(web_files(&root));
     Router::new()
         .route("/healthz", get(|| async { Json(json!({"ok":true})) }))
         .route("/api/login", post(auth::login))
@@ -80,7 +82,15 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         .merge(transfers)
         .merge(mcp)
         .nest("/api/native", native)
-        .fallback(static_file)
+        .fallback(move |request: Request| {
+            // Debug builds pick up a fresh `pnpm build` without a restart.
+            let web = if cfg!(debug_assertions) {
+                std::sync::Arc::new(web_files(&root))
+            } else {
+                web.clone()
+            };
+            static_file(web, request)
+        })
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
         .with_state(app)
@@ -732,21 +742,42 @@ async fn assign_speaker(
     }
     Ok(StatusCode::NO_CONTENT)
 }
-#[derive(rust_embed::Embed)]
-#[folder = "../../web/dist/"]
-struct Assets;
-async fn static_file(request: Request) -> Response {
+type WebFiles = std::collections::HashMap<String, axum::body::Bytes>;
+/// The built web app, read once at startup so it is served like an embedded bundle.
+fn web_files(root: &std::path::Path) -> WebFiles {
+    let mut files = WebFiles::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        // ponytail: an unreadable folder serves 404s; `serve` refuses to start without index.html.
+        for path in std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+        {
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let (Ok(name), Ok(data)) = (path.strip_prefix(root), std::fs::read(&path)) {
+                files.insert(name.to_string_lossy().into(), data.into());
+            }
+        }
+    }
+    files
+}
+async fn static_file(web: std::sync::Arc<WebFiles>, request: Request) -> Response {
     let path = request.uri().path().trim_start_matches('/');
     if path.starts_with("api/") {
         return Error::not_found().into_response();
     }
-    let resource = Assets::get(if path.is_empty() { "index.html" } else { path }).or_else(|| {
-        if !path.contains('.') {
-            Assets::get("index.html")
-        } else {
-            None
-        }
-    });
+    let resource = web
+        .get(if path.is_empty() { "index.html" } else { path })
+        .or_else(|| {
+            if !path.contains('.') {
+                web.get("index.html")
+            } else {
+                None
+            }
+        });
     match resource {
         Some(asset) => {
             let mime = mime_guess::from_path(if path.contains('.') {
@@ -767,10 +798,48 @@ async fn static_file(request: Request) -> Response {
                     (header::CONTENT_TYPE, mime.as_str()),
                     (header::CACHE_CONTROL, cache),
                 ],
-                asset.data.into_owned(),
+                asset.clone(),
             )
                 .into_response()
         }
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn web_files_serve_like_the_embedded_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("index.html"), "page").unwrap();
+        std::fs::write(dir.path().join("assets/a.js"), "code").unwrap();
+        let web = std::sync::Arc::new(super::web_files(dir.path()));
+        let immutable = "public, max-age=31536000, immutable";
+        for (path, status, body, kind, cache) in [
+            ("/", 200, "page", "text/html", "no-cache"),
+            ("/library/entry", 200, "page", "text/html", "no-cache"),
+            ("/assets/a.js", 200, "code", "text/javascript", immutable),
+            ("/assets/missing.js", 404, "", "", ""),
+            ("/api/missing", 404, "", "application/json", ""),
+        ] {
+            let request = super::Request::get(path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = super::static_file(web.clone(), request).await;
+            let header = |name| {
+                response
+                    .headers()
+                    .get(name)
+                    .map_or("", |v| v.to_str().unwrap())
+                    .to_string()
+            };
+            assert_eq!(response.status(), status, "{path}");
+            assert_eq!(header(super::header::CONTENT_TYPE), kind, "{path}");
+            assert_eq!(header(super::header::CACHE_CONTROL), cache, "{path}");
+            if status == 200 {
+                let bytes = axum::body::to_bytes(response.into_body(), 1024).await;
+                assert_eq!(bytes.unwrap(), body, "{path}");
+            }
+        }
     }
 }

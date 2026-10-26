@@ -4,6 +4,12 @@ The server image bundles the web UI, Rust binary, FFmpeg, ONNX Runtime and pinne
 speaker model. Node and Python are build dependencies, absent from the final image.
 Upload clients remain separate native applications.
 
+FFmpeg is built from the signed release tarball pinned in the `Dockerfile`
+(`FFMPEG_VERSION`, `FFMPEG_SHA256`) with only what the server runs: WAV, FLAC, MP3
+and M4A (AAC/ALAC) in; WAV, FLAC, M4A and raw PCM out. Other formats fail
+verification. The image scan cannot see this build: bump both values when FFmpeg
+publishes a security release.
+
 ## Container CI
 
 `containers.yml` runs on PRs, pushes to `main`, `v*` tags and manual runs. It calls
@@ -24,7 +30,9 @@ Published under `ghcr.io/<owner>/<repository>`:
 
 Published images include SBOM/provenance. Each architecture has a separate
 `mode=max` layer cache. BuildKit cache mounts help local rebuilds, but their
-contents are not exported by the GitHub layer cache.
+contents are not exported by the GitHub layer cache. The web app, Rust binary,
+FFmpeg, speaker model and ONNX Runtime come from independent stages: a UI-only
+change rebuilds neither the binary nor the model download.
 
 ```sh
 docker build -t transcript-vault:local .
@@ -35,7 +43,7 @@ python3 scripts/container-smoke.py transcript-vault:local --proxy
 
 The smoke check creates and removes disposable containers, an internal network
 and a volume. A Python fixture image runs the provider mock and HTTP client.
-Synthetic audio exercises startup rejection without a key, embedded web assets,
+Synthetic audio exercises startup rejection without a key, web assets,
 tus offsets, real FFmpeg/ONNX inference, speaker enrollment, hybrid search, audio
 Range, health checks and persistence after restart. No host recordings or API
 keys are mounted, and runtime tests have no external network access.

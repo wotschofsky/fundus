@@ -105,7 +105,7 @@ def exercise(restarted=False, proxy=False):
                 raise
             time.sleep(1)
     _, page = call("/")
-    assert b'<div id="root">' in page, "Embedded web bundle is missing"
+    assert b'<div id="root">' in page, "Web bundle is missing"
     if proxy:
         _, me = call("/api/v1/me")
         assert me["auth_mode"] == "proxy" and me["scope"] == "admin"
