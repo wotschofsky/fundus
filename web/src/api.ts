@@ -1,4 +1,4 @@
-import { queryOptions } from '@tanstack/react-query';
+import { queryOptions } from '@tanstack/svelte-query';
 
 export class ApiError extends Error {
   constructor(

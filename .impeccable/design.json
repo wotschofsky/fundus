@@ -308,7 +308,7 @@
   ],
   "narrative": {
     "northStar": "Minimal white archive",
-    "overview": "The web interface is minimalist, modern, and white. Neutral text, thin dividers, plain horizontal navigation, and generous whitespace keep the recording list and transcript central. Page headings name the task directly; compact metadata supports the content without becoming ornament.\n\nThis records the shipped React web interface after the user's explicit white-interface direction superseded the earlier design. It establishes no native client tokens or architecture. The review screenshots contain synthetic demonstration content and provide web evidence only.",
+    "overview": "The web interface is minimalist, modern, and white. Neutral text, thin dividers, plain horizontal navigation, and generous whitespace keep the recording list and transcript central. Page headings name the task directly; compact metadata supports the content without becoming ornament.\n\nThis records the shipped Svelte web interface after the user's explicit white-interface direction superseded the earlier design. It establishes no native client tokens or architecture. The review screenshots contain synthetic demonstration content and provide web evidence only.",
     "keyCharacteristics": [
       "White page and control surfaces with neutral ink.",
       "Plain horizontal navigation that retains text labels on narrow screens.",

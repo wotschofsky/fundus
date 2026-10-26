@@ -5,7 +5,7 @@
 adaptive
 
 ## Stack
-Confirmed: Rust/Axum/SQLite backend; React web library; Expo/React Native with native Expo UI on iOS and Android; SwiftUI Mac workspace. JavaScript tooling uses PNPM workspaces with one root lockfile. Apple clients share native preparation and transfer code.
+Confirmed: Rust/Axum/SQLite backend; Svelte web library; Expo/React Native with native Expo UI on iOS and Android; SwiftUI Mac workspace. JavaScript tooling uses PNPM workspaces with one root lockfile. Apple clients share native preparation and transfer code.
 
 ## Users
 Individuals maintaining private recording archives. Each person operates a separate single-owner deployment.

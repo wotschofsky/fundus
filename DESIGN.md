@@ -115,7 +115,7 @@ components:
 
 The web interface is minimalist, modern, and white. Neutral text, thin dividers, plain horizontal navigation, and generous whitespace keep the recording list and transcript central. Page headings name the task directly; compact metadata supports the content without becoming ornament.
 
-This records the shipped React web interface after the user's explicit white-interface direction superseded the earlier design. It establishes no native client tokens or architecture. Review screenshots use synthetic demonstration content and provide web evidence only.
+This records the shipped Svelte web interface after the user's explicit white-interface direction superseded the earlier design. It establishes no native client tokens or architecture. Review screenshots use synthetic demonstration content and provide web evidence only.
 
 **Key Characteristics:**
 

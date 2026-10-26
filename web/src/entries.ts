@@ -1,13 +1,13 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { api, isProcessing, type Entry, type Page } from '../api';
+import { createInfiniteQuery } from '@tanstack/svelte-query';
+import { api, isProcessing, type Entry, type Page } from './api';
 
 /** Paged library listing. `params` is the extra query string; polls only while one is processing. */
-export function useEntries(params: string, poll: boolean) {
-  return useInfiniteQuery({
-    queryKey: ['entries', params],
+export function createEntries(params: () => string, poll: boolean) {
+  return createInfiniteQuery(() => ({
+    queryKey: ['entries', params()],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      api<Page<'entries', Entry>>(`/v1/entries?cursor=${pageParam}${params}`),
+      api<Page<'entries', Entry>>(`/v1/entries?cursor=${pageParam}${params()}`),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     // Pages are fetched by position, so a recording arriving in between repeats a row.
     select: (data) => {
@@ -19,5 +19,5 @@ export function useEntries(params: string, poll: boolean) {
     // ponytail: refetches every loaded page while one is processing; poll page one only if many are loaded.
     refetchInterval: (q) =>
       poll && q.state.data?.pages.some((p) => p.entries.some(isProcessing)) ? 4000 : false,
-  });
+  }));
 }

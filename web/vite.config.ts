@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 export default defineConfig({
-  plugins: [react()],
-  resolve: { dedupe: ['react', 'react-dom'] },
+  plugins: [svelte()],
   server: { proxy: { '/api': 'http://127.0.0.1:3000', '/healthz': 'http://127.0.0.1:3000' } },
 });
