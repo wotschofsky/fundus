@@ -97,7 +97,7 @@ final class Library {
     // MARK: Recordings
 
     enum Action {
-        case trash, restore, deletePermanently, pause, resume, reanalyzeSpeakers
+        case trash, restore, deletePermanently, pause, resume, reanalyzeSpeakers, regenerateSummary
     }
 
     func perform(_ action: Action, on id: String) async throws {
@@ -108,6 +108,7 @@ final class Library {
         case .pause: try await VaultAPI.send(VaultAPI.entryPath(id, "/pause"))
         case .resume: try await VaultAPI.send(VaultAPI.entryPath(id, "/retry"))
         case .reanalyzeSpeakers: try await VaultAPI.send(VaultAPI.entryPath(id, "/reanalyze"))
+        case .regenerateSummary: try await VaultAPI.send(VaultAPI.entryPath(id, "/summarize"))
         }
         if action == .trash || action == .deletePermanently { entries.removeAll { $0.id == id } }
         if action == .restore || action == .deletePermanently { trash.removeAll { $0.id == id } }

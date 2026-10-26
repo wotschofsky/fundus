@@ -576,6 +576,60 @@ async fn speaker_reanalysis_preserves_transcription_and_manual_identities() {
 }
 
 #[tokio::test]
+async fn summary_regenerates_alone_and_keeps_the_speakers() {
+    use tower::ServiceExt;
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "summary").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    sqlx::query("INSERT INTO people(id,name)VALUES('manual-person','Synthetic person')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    voice::assign(&app, &entry, "A", Some("manual-person"))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE entries SET summary='Old summary',warnings='[\"Summary unavailable: synthetic\"]' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let chats = provider.chats.lock().unwrap().len();
+    let token = transcript_vault::auth::issue(&app, "test", "admin")
+        .await
+        .unwrap();
+    let response =
+        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+            .oneshot(
+                axum::http::Request::post(format!("/api/v1/entries/{entry}/summarize"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(stage(&app, &entry).await, "queued");
+    pipeline::regenerate_summary(&app, &entry).await.unwrap();
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(detail["stage"], "complete");
+    assert_eq!(
+        detail["summary"],
+        "Synthetic person plans the launch with Speaker 2."
+    );
+    assert_eq!(detail["warnings"], serde_json::json!([]));
+    assert_eq!(provider.chats.lock().unwrap().len(), chats + 1);
+    // No voice work ran: the owner's assignment stands.
+    let identity: (String, String) =
+        sqlx::query_as("SELECT person_id,state FROM speakers WHERE entry_id=? AND label='A'")
+            .bind(&entry)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(identity, ("manual-person".into(), "manual".into()));
+    task.abort();
+}
+
+#[tokio::test]
 async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
     let (dir, app, _provider, task) = setup(Options::default()).await;
     let entry = entry(&app, dir.path(), "legacy").await;

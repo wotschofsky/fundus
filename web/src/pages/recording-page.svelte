@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
-  import { FileAudio, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { FileAudio, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
   import {
     ApiError,
     api,
@@ -140,6 +140,14 @@
         >
           <RefreshCw size={14} aria-hidden="true" />
           Reanalyze speakers
+        </button>
+        <button
+          disabled={busy}
+          onclick={post('summarize')}
+          title="Write the title and summary again; the speakers stay as they are"
+        >
+          <Sparkles size={14} aria-hidden="true" />
+          Regenerate summary
         </button>
       {/if}
       <button class="danger" onclick={moveToTrash}>

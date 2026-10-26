@@ -113,6 +113,7 @@ fn library_routes(prefix: &str) -> Router<App> {
         .route(&at("/entries/{id}/retry"), post(retry))
         .route(&at("/entries/{id}/pause"), post(pause))
         .route(&at("/entries/{id}/reanalyze"), post(reanalyze))
+        .route(&at("/entries/{id}/summarize"), post(summarize))
         .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))
         .route(&at("/source-history"), get(source_history))
         .route(&at("/people"), get(people).post(create_person))
@@ -492,26 +493,42 @@ async fn reanalyze(
     Extension(access): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
+    queue_rework(&app, &access, &id, "speakers", "identity-analysis.json").await
+}
+/// A fresh title (unless set by hand) and summary; the speakers stay as they are.
+async fn summarize(
+    State(app): State<App>,
+    Extension(access): Extension<Access>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>> {
+    queue_rework(&app, &access, &id, "summary", "summary.json").await
+}
+/// Queues `work` on a transcribed recording and drops its cached notes, so they are written afresh.
+async fn queue_rework(
+    app: &App,
+    access: &Access,
+    id: &str,
+    work: &str,
+    cache: &str,
+) -> Result<Json<Value>> {
     access.admin()?;
     let _lock = app.mutations.lock().await;
-    let row = sqlx::query("SELECT stage,(SELECT count(*) FROM segments WHERE entry_id=entries.id) AS segments FROM entries WHERE id=? AND trashed_at IS NULL").bind(&id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
+    let row = sqlx::query("SELECT stage,(SELECT count(*) FROM segments WHERE entry_id=entries.id) AS segments FROM entries WHERE id=? AND trashed_at IS NULL").bind(id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
     if !["complete", "failed", "paused"].contains(&row.get::<String, _>("stage").as_str()) {
         return Err(Error::conflict("Recording is already processing"));
     }
     if row.get::<i64, _>("segments") == 0 {
-        return Err(Error::conflict(
-            "Transcribe the recording before reanalyzing its speakers",
-        ));
+        return Err(Error::conflict("Transcribe the recording first"));
     }
-    match tokio::fs::remove_file(app.entry_dir(&id).join("identity-analysis.json")).await {
+    match tokio::fs::remove_file(app.entry_dir(id).join(cache)).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    sqlx::query("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work='speakers',failure=NULL,updated_at=? WHERE id=?")
-        .bind(now()).bind(id).execute(&app.db).await?;
+    sqlx::query("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,updated_at=? WHERE id=?")
+        .bind(work).bind(now()).bind(id).execute(&app.db).await?;
     app.wake.notify_one();
-    Ok(Json(json!({"stage":"queued","work":"speakers"})))
+    Ok(Json(json!({"stage":"queued","work":work})))
 }
 async fn remove_voice(
     State(app): State<App>,

@@ -149,6 +149,7 @@ struct EntryMenu: View {
             Button("Resume Processing") { Task { await app.setProcessing(.resume, entry: entry.id) } }
         } else {
             Button("Reanalyze Speakers") { Task { await app.setProcessing(.reanalyzeSpeakers, entry: entry.id) } }
+            Button("Regenerate Summary") { Task { await app.setProcessing(.regenerateSummary, entry: entry.id) } }
         }
         Divider()
         Button("Move to Trash", role: .destructive) { app.moveToTrash(entry.id) }

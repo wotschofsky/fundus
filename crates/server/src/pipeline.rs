@@ -88,10 +88,10 @@ async fn claim(app: &App) -> Option<(String, Option<String>)> {
 }
 
 async fn run(app: &App, entry: &str, work: Option<&str>, stop: &CancellationToken) {
-    let result = if work == Some("speakers") {
-        reanalyze_speakers(app, entry).await
-    } else {
-        process_until(app, entry, stop).await
+    let result = match work {
+        Some("speakers") => reanalyze_speakers(app, entry).await,
+        Some("summary") => regenerate_summary(app, entry).await,
+        _ => process_until(app, entry, stop).await,
     };
     if let Err(error) = result {
         tracing::error!(entry=%entry,error=%error,"entry processing failed");
@@ -457,7 +457,7 @@ async fn transcribe(
                 )
                 .await?;
                 // Notes from an earlier transcript name other labels and other text.
-                for stale in ["enrichment.json", "identity-analysis.json"] {
+                for stale in ["enrichment.json", "identity-analysis.json", "summary.json"] {
                     let _ = tokio::fs::remove_file(dir.join(stale)).await;
                 }
                 let mut tx = app.db.begin().await?;
@@ -703,7 +703,27 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
-    complete(app, entry, &warnings, &rendition).await
+    complete(app, entry, &warnings, Some(&rendition)).await
+}
+
+/// A fresh title (unless set by hand) and summary from the current transcript. Speakers are
+/// kept: the transcript already carries merged labels, so the placeholders need no relabeling.
+pub async fn regenerate_summary(app: &App, entry: &str) -> Result<()> {
+    if pause_at_checkpoint(app, entry).await? {
+        return Ok(());
+    }
+    stage(app, entry, "enriching").await?;
+    let previous: String = sqlx::query_scalar("SELECT warnings FROM entries WHERE id=?")
+        .bind(entry)
+        .fetch_one(&app.db)
+        .await?;
+    let mut warnings: Vec<String> = serde_json::from_str(&previous)?;
+    warnings.retain(|warning| !warning.starts_with("Summary unavailable:"));
+    match cached_notes(app, entry, "summary").await {
+        Ok(notes) => save_notes(app, entry, &notes, true).await?,
+        Err(error) => warnings.push(format!("Summary unavailable: {error}")),
+    }
+    complete(app, entry, &warnings, None).await
 }
 
 /// The generated title (unless the owner set one) and summary. Reanalyze `replace`s them with
@@ -726,10 +746,17 @@ async fn save_notes(app: &App, entry: &str, notes: &provider::Notes, replace: bo
     Ok(())
 }
 
-async fn complete(app: &App, entry: &str, warnings: &[String], rendition: &Path) -> Result<()> {
+async fn complete(
+    app: &App,
+    entry: &str,
+    warnings: &[String],
+    rendition: Option<&Path>,
+) -> Result<()> {
     sqlx::query("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=?")
         .bind(serde_json::to_string(warnings)?).bind(now()).bind(entry).execute(&app.db).await?;
-    let _ = tokio::fs::remove_file(rendition).await;
+    if let Some(rendition) = rendition {
+        let _ = tokio::fs::remove_file(rendition).await;
+    }
     Ok(())
 }
 
@@ -812,7 +839,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     if let Err(e) = index(app, entry).await {
         warnings.push(format!("Semantic search unavailable: {e}"));
     }
-    complete(app, entry, &warnings, &rendition).await
+    complete(app, entry, &warnings, Some(&rendition)).await
 }
 
 /// Notes are written while voice analysis may merge labels: point placeholders and name findings
