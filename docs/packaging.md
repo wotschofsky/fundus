@@ -69,7 +69,7 @@ belongs to the external reverse proxy. `compose.yaml` remains the source-build o
 ## Mac bundles
 
 `scripts/package-macos.sh` produces versioned ZIP, DMG and SHA-256 files in `build/`.
-The `-local` suffix identifies bundles that are not notarized: signed with a local
+The `-local` suffix identifies test bundles: signed with a local
 Developer ID or Apple Development identity when the keychain has one, ad hoc
 otherwise (as on CI). CI uploads these as
 `macos-local-bundle`. Version comes from `crates/server/Cargo.toml`, architecture
@@ -83,9 +83,11 @@ NOTARY_PROFILE=your-notary-profile VAULT_BUILD_NUMBER=2 \
 scripts/package-macos.sh --release
 ```
 
-Release mode requires both credentials, signs with the hardened runtime, checks
-Apple's acceptance and staples the app and DMG. It never silently substitutes an
-ad hoc release. Output names omit `-local`. Neither mode publishes artifacts.
+Release mode requires a Developer ID identity, signs with the hardened runtime and a
+secure timestamp, and never silently substitutes an ad hoc release. With
+`NOTARY_PROFILE` it also checks Apple's acceptance and staples the app and DMG.
+Without it the bundle runs on the Mac that built it, but Gatekeeper blocks it on
+other Macs. Output names omit `-local`. Neither mode publishes artifacts.
 
 ## Mobile distribution and validation
 
@@ -98,6 +100,6 @@ keystores or provisioning profiles are not reused.
 The isolated container/restart test passed on Linux AMD64 and ARM64 with the read-only
 runtime restrictions. Mac ZIP/DMG creation, checksums and DMG verification passed.
 Hosted AMD64/ARM64 builds, registry publication and vulnerability scanning need
-the first GitHub workflow run. Developer ID/notarization was not executed.
+the first GitHub workflow run. Notarization was not executed.
 Keep installation-specific domains, credentials, server paths and operational
 runbooks outside this repository.

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Local packages are ad hoc signed. --release requires Developer ID and notarization.
+# Local packages use build-macos.sh's signature. --release requires Developer ID and notarizes when
+# NOTARY_PROFILE is set; without it the bundle runs on this Mac but Gatekeeper blocks it elsewhere.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mode="${1:---local}"
@@ -7,7 +8,6 @@ case "$mode" in
   --local) ;;
   --release)
     : "${MACOS_SIGNING_IDENTITY:?Set a Developer ID Application signing identity}"
-    : "${NOTARY_PROFILE:?Set a notarytool Keychain profile}"
     case "$MACOS_SIGNING_IDENTITY" in
       'Developer ID Application: '*) ;;
       *) echo 'A Developer ID Application identity is required.' >&2; exit 1 ;;
@@ -39,11 +39,13 @@ if [[ "$mode" == --release ]]; then
   suffix="$version-$arch"
   codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$app"
   codesign --verify --deep --strict "$app"
-  ditto -c -k --keepParent "$app" "$work/notary.zip"
-  notarize "$work/notary.zip" "$work/app-notary.json"
-  xcrun stapler staple "$app"
-  xcrun stapler validate "$app"
-  spctl --assess --type execute "$app"
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    ditto -c -k --keepParent "$app" "$work/notary.zip"
+    notarize "$work/notary.zip" "$work/app-notary.json"
+    xcrun stapler staple "$app"
+    xcrun stapler validate "$app"
+    spctl --assess --type execute "$app"
+  fi
 fi
 codesign --verify --deep --strict "$app"
 
@@ -56,9 +58,11 @@ ditto -c -k --keepParent "$app" "$work/TranscriptVault-$suffix.zip"
 hdiutil create -volname 'Transcript Vault' -srcfolder "$staging" -format UDZO "$work/TranscriptVault-$suffix.dmg"
 if [[ "$mode" == --release ]]; then
   codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$work/TranscriptVault-$suffix.dmg"
-  notarize "$work/TranscriptVault-$suffix.dmg" "$work/dmg-notary.json"
-  xcrun stapler staple "$work/TranscriptVault-$suffix.dmg"
-  xcrun stapler validate "$work/TranscriptVault-$suffix.dmg"
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    notarize "$work/TranscriptVault-$suffix.dmg" "$work/dmg-notary.json"
+    xcrun stapler staple "$work/TranscriptVault-$suffix.dmg"
+    xcrun stapler validate "$work/TranscriptVault-$suffix.dmg"
+  fi
   codesign --verify --strict "$work/TranscriptVault-$suffix.dmg"
 fi
 hdiutil verify "$work/TranscriptVault-$suffix.dmg"
@@ -70,5 +74,7 @@ cp "$work/TranscriptVault-$suffix.zip" "$work/TranscriptVault-$suffix.dmg" build
 )
 printf 'Packaged build/TranscriptVault-%s.{zip,dmg,sha256}\n' "$suffix"
 if [[ "$mode" == --local ]]; then
-  echo 'Local test bundle only: ad hoc signed, not notarized for distribution.'
+  echo 'Local test bundle only: not notarized for distribution.'
+elif [[ -z "${NOTARY_PROFILE:-}" ]]; then
+  echo 'Not notarized (NOTARY_PROFILE unset): runs on this Mac; Gatekeeper blocks it on other Macs.'
 fi

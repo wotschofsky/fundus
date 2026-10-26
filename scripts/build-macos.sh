@@ -35,6 +35,11 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+<key>NSRemovableVolumesUsageDescription</key><string>Needed to read recordings from your microphone. Recordings are never modified or deleted.</string>
+<key>NSNetworkVolumesUsageDescription</key><string>Needed to read recordings from the folder you choose. Nothing in it is changed.</string>
+<key>NSDesktopFolderUsageDescription</key><string>Needed to read recordings from the folder you choose. Nothing in it is changed.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>Needed to read recordings from the folder you choose. Nothing in it is changed.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>Needed to read recordings from the folder you choose. Nothing in it is changed.</string>
 </dict></plist>
 PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
