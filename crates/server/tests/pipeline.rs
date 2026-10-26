@@ -547,6 +547,17 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
         .execute(&app.db)
         .await
         .unwrap();
+    // An earlier job's "A", named and enrolled: the new job's "A" may be someone else.
+    sqlx::query("INSERT INTO speakers(entry_id,label,person_id,state)VALUES(?,'A','p','manual')")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO voice_samples(id,person_id,entry_id,speaker,model,vector_json,provenance,created_at)VALUES('s','p',?,'A','m','[1]','manual','2026-01-01')")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
     for position in 0..5 {
         sqlx::query("INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text)VALUES(?,?,?,'1:A',0,1,'old')")
             .bind(format!("{entry}:{position}"))
@@ -599,6 +610,14 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
             .await
             .unwrap();
     assert_eq!(speakers, vec!["A", "B"]);
+    let named: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM speakers WHERE entry_id=?1 AND person_id IS NOT NULL)+(SELECT count(*) FROM voice_samples WHERE entry_id=?1)",
+    )
+    .bind(&entry)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(named, 0);
     let segments: i64 = sqlx::query_scalar("SELECT count(*) FROM segments WHERE entry_id=?")
         .bind(&entry)
         .fetch_one(&app.db)
@@ -712,7 +731,7 @@ async fn read_tokens_cannot_list_trash() {
 #[tokio::test]
 async fn long_transcripts_are_summarized_by_section_in_the_main_language() {
     let (_dir, app, provider, task) = setup(Options::default()).await;
-    let lines: Vec<String> = (0..1000)
+    let lines: Vec<String> = (0..6000)
         .map(|i| format!("[A] Sentence {i} about the cedar launch plan and the next proposal."))
         .collect();
     let notes = transcript_vault::provider::enrich(&app, &lines)

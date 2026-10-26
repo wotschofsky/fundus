@@ -291,20 +291,19 @@ async fn stage(app: &App, entry: &str, stage: &str) -> Result<()> {
 }
 
 /// Decodes the entry's sources once, applies the sample-exact trim, and writes whatever is
-/// missing of the browser playback file and the 16 kHz mono FLAC used for transcription and
-/// voice probes. Returns the FLAC.
-async fn render(app: &App, entry: &str, playback: bool) -> Result<PathBuf> {
+/// missing of the playback file (also the source of voice probes) and, for an `upload`, the
+/// 16 kHz mono FLAC sent to AssemblyAI. Returns the FLAC's path.
+async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
     let _cpu = app.cpu.acquire().await?;
     let dir = app.entry_dir(entry);
     tokio::fs::create_dir_all(&dir).await?;
     let rendition = dir.join("transcription.flac");
-    let playback = playback && !dir.join("playback.m4a").exists();
     let mut targets: Vec<(&str, &str, Vec<&str>)> = vec![];
-    if playback {
+    if !dir.join("playback.m4a").exists() {
         let codec = vec!["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"];
         targets.push(("playback.partial.m4a", "playback.m4a", codec));
     }
-    if !rendition.exists() {
+    if upload && !rendition.exists() {
         let codec = vec![
             "-ac",
             "1",
@@ -457,21 +456,30 @@ async fn transcribe(
                     &dir.join("transcription.json"),
                 )
                 .await?;
+                // Notes from an earlier transcript name other labels and other text.
+                for stale in ["enrichment.json", "identity-analysis.json"] {
+                    let _ = tokio::fs::remove_file(dir.join(stale)).await;
+                }
+                let mut tx = app.db.begin().await?;
                 sqlx::query(
                     "UPDATE transcriptions SET state='complete',utterances=? WHERE entry_id=?",
                 )
                 .bind(serde_json::to_string(&utterances)?)
                 .bind(entry)
-                .execute(&app.db)
+                .execute(&mut *tx)
                 .await?;
-                // Notes from an earlier transcript name other labels and other text.
-                for stale in ["enrichment.json", "identity-analysis.json"] {
-                    let _ = tokio::fs::remove_file(dir.join(stale)).await;
+                // A new job's "A" can be someone else: names and voices of the earlier labels go.
+                for table in ["speakers", "voice_samples", "voice_probes"] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE entry_id=?"))
+                        .bind(entry)
+                        .execute(&mut *tx)
+                        .await?;
                 }
                 sqlx::query("UPDATE entries SET summary=NULL WHERE id=?")
                     .bind(entry)
-                    .execute(&app.db)
+                    .execute(&mut *tx)
                     .await?;
+                tx.commit().await?;
                 // The vault keeps the result; AssemblyAI need not keep the audio or transcript.
                 if let Err(error) = provider::delete(app, &job).await {
                     tracing::warn!(%entry, %job, %error, "could not delete the job at AssemblyAI");
@@ -635,6 +643,7 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     }
     stage(app, entry, "preparing").await?;
     let rendition = render(app, entry, false).await?;
+    let playback = app.entry_dir(entry).join("playback.m4a");
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
@@ -651,7 +660,7 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     });
     // As in processing: both at once, results written afterwards.
     let (voice, notes) = tokio::join!(
-        voice::analyze(app, entry, &rendition),
+        voice::analyze(app, entry, &playback),
         cached_notes(app, entry, "identity-analysis")
     );
     if let Err(error) = voice {
@@ -718,7 +727,14 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     .await?;
     ensure!(ambiguous.is_none(), AMBIGUOUS);
     stage(app, entry, "preparing").await?;
-    let rendition = render(app, entry, true).await?;
+    // Once uploaded, AssemblyAI has the audio: a resumed or retried entry needs no new FLAC.
+    let uploaded: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE entry_id=?)")
+            .bind(entry)
+            .fetch_one(&app.db)
+            .await?;
+    let rendition = render(app, entry, !uploaded).await?;
+    let playback = app.entry_dir(entry).join("playback.m4a");
     // Playback is ready: listen while the rest is processed.
     sqlx::query("UPDATE entries SET audio_path='playback.m4a',updated_at=? WHERE id=?")
         .bind(now())
@@ -742,7 +758,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         // Voice analysis is local and the notes come from Groq: both run at once, and their
         // results are written afterwards, so neither overwrites the other's speaker evidence.
         let (voice, notes) = tokio::join!(
-            voice::analyze(app, entry, &rendition),
+            voice::analyze(app, entry, &playback),
             cached_notes(app, entry, "enrichment")
         );
         if let Err(e) = voice {
