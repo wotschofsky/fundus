@@ -25,10 +25,13 @@ struct TranscriptView: View {
                 speakerBar
                 if model.rows.isEmpty {
                     placeholder(entry)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     TranscriptList(model: model, newPerson: askForPerson)
                 }
-                PlayerBar(player: model.player, clock: model.clock(atSeconds:))
+                if entry.audioAvailable {
+                    PlayerBar(player: model.player, clock: model.clock(atSeconds:))
+                }
             }
         }
         .navigationTitle(model.entry?.displayTitle ?? "Transcript")
@@ -158,7 +161,7 @@ struct TranscriptView: View {
                                    description: Text("The recording was transcribed, but it contains no speech."))
         } else {
             ContentUnavailableView {
-                Label(entry.isProcessing ? entry.status : "Not Transcribed Yet", systemImage: "text.bubble")
+                Label("No Transcript Yet", systemImage: "text.bubble")
             } description: {
                 Text(entry.audioAvailable ? "You can already listen while the vault works on the transcript."
                      : "The transcript appears here when the vault has processed the recording.")
