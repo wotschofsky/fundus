@@ -221,7 +221,7 @@ pub async fn apply(
         if let Some((person, score)) = candidates.first()
             && *score >= thresholds.borderline
         {
-            evidence.push(json!({"source":"voice","person_id":person,"score":(score * 1000.).round() / 1000.,"model":voice::MODEL,"applied":decision.voice_applied}));
+            evidence.push(json!({"source":"voice","person_id":person,"score":(f64::from(*score) * 1000.).round() / 1000.,"model":voice::MODEL,"applied":decision.voice_applied}));
         }
         if let Some((name, quote)) = intros.get(&label) {
             evidence.push(json!({"source":"transcript","name":name,"quote":quote,"applied":decision.intro_applied}));
