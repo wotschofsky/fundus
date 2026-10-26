@@ -11,14 +11,56 @@
   --danger: #b42318;
   --danger-hover: #912018;
   --danger-line: #f0c6c2;
+  --bg: #fff;
+  --on-fill: #fff;
+  --focus: #52525b;
+  --selection: #e4e4e7;
+  --placeholder: #8a8a93;
+  --underline: #b5b5bd;
+  --speaker: #3f3f46;
+  --rule-strong: #b9b9c2;
+  --scroll-thumb: #d4d4d8;
+  --shadow: 0 16px 48px rgba(24, 24, 27, 0.18);
+  --backdrop: rgba(24, 24, 27, 0.28);
   --radius: 6px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   color: var(--ink);
-  background: #fff;
-  color-scheme: light;
+  background: var(--bg);
+  color-scheme: light dark;
+}
+/* Follows the system setting: same contrast as light, no shadows. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #fafafa;
+    --ink-hover: #e4e4e7;
+    --text: #e4e4e7;
+    --body: #a1a1aa;
+    --muted: #8e8e97;
+    --line: #27272a;
+    --control: #3f3f46;
+    --control-hover: #52525b;
+    --subtle: #1c1c1f;
+    --danger: #f97066;
+    --danger-hover: #fda29b;
+    --danger-line: #7a271a;
+    --bg: #121214;
+    --on-fill: #18181b;
+    --focus: #a1a1aa;
+    --selection: #3f3f46;
+    --placeholder: #71717a;
+    --underline: #52525b;
+    --speaker: #d4d4d8;
+    --rule-strong: #52525b;
+    --scroll-thumb: #3f3f46;
+    --shadow: none;
+    --backdrop: rgba(0, 0, 0, 0.6);
+  }
+  dialog.confirm {
+    border: 1px solid var(--line);
+  }
 }
 * {
   box-sizing: border-box;
@@ -44,12 +86,12 @@ select {
   touch-action: manipulation;
 }
 :focus-visible {
-  outline: 2px solid #52525b;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 ::selection {
   color: var(--ink);
-  background: #e4e4e7;
+  background: var(--selection);
 }
 h1,
 h2,
@@ -98,7 +140,7 @@ a.button {
   padding: 7px 12px;
   border: 1px solid var(--control);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--bg);
   color: var(--text);
   font-size: 13px;
   font-weight: 500;
@@ -114,7 +156,7 @@ a.button:hover {
 button.primary {
   background: var(--ink);
   border-color: var(--ink);
-  color: #fff;
+  color: var(--on-fill);
 }
 button.primary:hover:not(:disabled) {
   background: var(--ink-hover);
@@ -125,12 +167,12 @@ button.danger {
 }
 button.danger:hover:not(:disabled) {
   border-color: var(--danger-line);
-  background: #fff;
+  background: var(--bg);
 }
 .confirm button.danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-fill);
 }
 .confirm button.danger:hover:not(:disabled) {
   background: var(--danger-hover);
@@ -179,7 +221,7 @@ textarea {
   padding: 7px 10px;
   border: 1px solid var(--control);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--bg);
   font-size: 14px;
   caret-color: var(--ink);
 }
@@ -190,7 +232,7 @@ textarea {
 }
 input::placeholder,
 textarea::placeholder {
-  color: #8a8a93;
+  color: var(--placeholder);
 }
 input[type='checkbox'],
 input[type='range'] {
@@ -413,7 +455,7 @@ nav a.active {
 .search-result:hover h3 {
   text-decoration: underline;
   text-underline-offset: 4px;
-  text-decoration-color: #b5b5bd;
+  text-decoration-color: var(--underline);
 }
 .recording p,
 .search-result p {
@@ -539,7 +581,7 @@ mark {
   margin-bottom: 32px;
   padding: 14px 0 12px;
   border-bottom: 1px solid var(--line);
-  background: #fff;
+  background: var(--bg);
 }
 .player audio {
   display: block;
@@ -633,7 +675,7 @@ mark {
   font-size: 13px;
   font-weight: 600;
   line-height: 26px;
-  color: #3f3f46;
+  color: var(--speaker);
 }
 .turn p {
   max-width: 72ch;
@@ -716,7 +758,7 @@ mark {
   align-items: center;
   gap: 12px;
   padding-bottom: 10px;
-  border-bottom: 1px solid #b9b9c2;
+  border-bottom: 1px solid var(--rule-strong);
 }
 .search-form > svg {
   flex-shrink: 0;
@@ -903,11 +945,12 @@ dialog.confirm {
   padding: 24px;
   border: 0;
   border-radius: 10px;
-  box-shadow: 0 16px 48px rgba(24, 24, 27, 0.18);
+  box-shadow: var(--shadow);
   color: var(--ink);
+  background: var(--bg);
 }
 dialog.confirm::backdrop {
-  background: rgba(24, 24, 27, 0.28);
+  background: var(--backdrop);
 }
 dialog.confirm h2 {
   font-size: 16px;
@@ -980,11 +1023,11 @@ dialog.confirm p {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #fff;
+  background: var(--bg);
 }
 ::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
-  border: 3px solid #fff;
+  background: var(--scroll-thumb);
+  border: 3px solid var(--bg);
   border-radius: 6px;
 }
 

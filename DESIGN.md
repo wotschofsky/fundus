@@ -139,6 +139,8 @@ The palette is white and neutral gray, with red reserved for errors, failed proc
 - **Fine boundaries:** `line` separates archive rows and sections. `control-border` outlines fields and buttons; `control-border-hover` reinforces button hover. `subtle` provides secondary-button feedback and the current transcript turn.
 - **Error signal:** `danger` marks errors, failed processing, and destructive verbs; `error-border` outlines error notices and destructive-button hover without a filled panel. Only the confirming button inside a destructive dialog is filled red.
 
+**Dark mode** follows the system setting (`prefers-color-scheme`); there is no toggle. A dark set of the same custom properties keeps the light mode's contrast: a near-black ground, light ink, zinc grays, a lighter red for `danger`, and dark text on filled buttons. The dialog drops its shadow for a fine `line` border; native controls, scrollbars and the audio player follow through `color-scheme`.
+
 **The White Ground Rule.** Keep the archive on white; use neutral text and thin boundaries for hierarchy, with status color reserved for explicit problems and destructive actions.
 
 ## Typography
@@ -164,7 +166,7 @@ The header scrolls with the page. The audio player is sticky at the viewport top
 
 ## Elevation & Depth
 
-There are no decorative shadows, gradients, raised cards, or filled panels. White space and fine borders separate content. The one elevated surface is the confirmation dialog: a soft shadow over a translucent ink backdrop, no border. Only the current transcript turn receives a pale neutral fill.
+There are no decorative shadows, gradients, raised cards, or filled panels. White space and fine borders separate content. The one elevated surface is the confirmation dialog: a soft shadow over a translucent ink backdrop, no border (in dark mode a fine border instead of the shadow). Only the current transcript turn receives a pale neutral fill.
 
 **The Divider Rule.** Use whitespace and fine dividers to organize archive content; preserve an open reading surface instead of adding decorative containers.
 
