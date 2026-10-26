@@ -1,4 +1,4 @@
-//! Local stand-ins for AssemblyAI, Groq and the embeddings endpoint. No real provider is called.
+//! Local stand-ins for AssemblyAI and OpenAI's chat completions and embeddings. No real provider is called.
 #![allow(dead_code)]
 use axum::{
     Json, Router,
@@ -36,7 +36,7 @@ pub struct Provider {
     pub jobs: Mutex<Vec<(String, String)>>,
     /// Bodies of transcript creation requests.
     pub transcripts: Mutex<Vec<Value>>,
-    /// Bodies of Groq chat completion requests.
+    /// Bodies of chat completion requests.
     pub chats: Mutex<Vec<Value>>,
 }
 impl Provider {
@@ -150,8 +150,6 @@ pub async fn connect(
     let config = Arc::make_mut(&mut app.config);
     config.assemblyai_url = address.clone();
     config.assemblyai_key = "synthetic-only".into();
-    config.groq_url = address.clone();
-    config.groq_key = "synthetic-only".into();
     config.openai_url = address;
     config.openai_key = "synthetic-only".into();
     config.poll_interval = std::time::Duration::from_millis(10);

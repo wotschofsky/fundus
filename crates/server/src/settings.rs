@@ -70,7 +70,7 @@ fn view(app: &App, settings: &Settings) -> Value {
         "voice_thresholds": settings.voice_thresholds,
         "models": {
             "transcription": format!("AssemblyAI {}", c.transcription_models.join(", ")),
-            "text": configured(!c.groq_key.is_empty(), format!("Groq {}", c.text_model)),
+            "text": configured(!c.openai_key.is_empty(), format!("OpenAI {}", c.text_model)),
             "embedding": configured(!c.openai_key.is_empty(), format!("OpenAI {}", c.embedding_model)),
             "voice": configured(c.voice_model.is_some(), format!("Local {}", voice::MODEL)),
         },

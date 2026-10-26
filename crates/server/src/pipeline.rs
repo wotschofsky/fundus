@@ -16,8 +16,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const AMBIGUOUS: &str = "A transcription request may have been submitted. Retry explicitly to authorize another request.";
-/// Entries processed at the same time. Most of a job is waiting for AssemblyAI or Groq; local
-/// CPU work and Groq requests have their own limits on `App`.
+/// Entries processed at the same time. Most of a job is waiting for AssemblyAI or OpenAI; local
+/// CPU work has its own limit on `App`.
 const CONCURRENCY: usize = 6;
 /// AssemblyAI's limit for one job.
 const MAX_DURATION_MS: i64 = 10 * 60 * 60 * 1000;
@@ -778,7 +778,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     let mut warnings: Vec<String> = vec![];
     if !utterances.is_empty() {
         stage(app, entry, "recognizing").await?;
-        // Voice analysis is local and the notes come from Groq: both run at once, and their
+        // Voice analysis is local and the notes come from OpenAI: both run at once, and their
         // results are written afterwards, so neither overwrites the other's speaker evidence.
         let (voice, notes) = tokio::join!(
             voice::analyze(app, entry, &playback),

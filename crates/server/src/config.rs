@@ -14,13 +14,12 @@ pub struct Config {
     pub transcription_languages: Vec<String>,
     /// How often a submitted AssemblyAI job is polled.
     pub poll_interval: std::time::Duration,
-    pub groq_url: String,
-    /// Empty: no titles, summaries or name evidence; entries get a visible warning.
-    pub groq_key: String,
-    pub text_model: String,
-    /// OpenAI-compatible embeddings for semantic search. Empty key: keyword search only.
+    /// OpenAI-compatible endpoint for the notes (titles, summaries, name evidence) and the
+    /// embeddings for semantic search. Empty key: neither; entries get a visible warning and
+    /// search uses keywords only.
     pub openai_url: String,
     pub openai_key: String,
+    pub text_model: String,
     pub embedding_model: String,
     pub voice_model: Option<PathBuf>,
     /// Built web app, served from memory.
@@ -40,13 +39,10 @@ impl Config {
             "No web app in {}: run pnpm build or set VAULT_WEB_DIR",
             self.web.display()
         );
-        if self.groq_key.is_empty() {
-            tracing::warn!(
-                "GROQ_API_KEY is not set: recordings get no titles, summaries or name evidence"
-            );
-        }
         if self.openai_key.is_empty() {
-            tracing::info!("OPENAI_API_KEY is not set: search uses keywords only");
+            tracing::warn!(
+                "OPENAI_API_KEY is not set: recordings get no titles, summaries or name evidence, and search uses keywords only"
+            );
         }
         Ok(())
     }
@@ -87,11 +83,9 @@ impl Config {
             transcription_models: list("VAULT_TRANSCRIPTION_MODEL", "universal-3-5-pro"),
             transcription_languages: list("VAULT_TRANSCRIPTION_LANGUAGES", "de,en"),
             poll_interval: std::time::Duration::from_secs(5),
-            groq_url: base_url("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
-            groq_key: secret("GROQ_API_KEY"),
-            text_model: std::env::var("VAULT_TEXT_MODEL").unwrap_or("openai/gpt-oss-120b".into()),
             openai_url: base_url("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             openai_key: secret("OPENAI_API_KEY"),
+            text_model: std::env::var("VAULT_TEXT_MODEL").unwrap_or("gpt-6-luna".into()),
             embedding_model: std::env::var("VAULT_EMBEDDING_MODEL")
                 .unwrap_or("text-embedding-3-small".into()),
             voice_model: std::env::var_os("VAULT_VOICE_MODEL").map(PathBuf::from),
@@ -127,9 +121,6 @@ pub struct App {
     /// Local CPU-heavy steps (decoding, rendering, voice analysis) running at once. The
     /// container has 1.5 CPUs and 1.5 GB; everything else is waiting on providers.
     pub cpu: Arc<Semaphore>,
-    /// Groq requests in flight across all recordings, so parallel work stays under its
-    /// per-minute limits instead of retrying through them.
-    pub groq: Arc<Semaphore>,
     pub upload_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub mutations: Arc<Mutex<()>>,
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
@@ -163,7 +154,6 @@ impl App {
                 .build()?,
             wake: Arc::new(Notify::new()),
             cpu: Arc::new(Semaphore::new(2)),
-            groq: Arc::new(Semaphore::new(4)),
             upload_locks: Default::default(),
             mutations: Default::default(),
             login_attempts: Default::default(),

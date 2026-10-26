@@ -24,7 +24,7 @@ Passed so far:
 - AssemblyAI checkpoint regressions against a local mock: one job per entry with a pending poll; graceful shutdown waits for an in-flight job creation, saves its ID, stops waiting, and a restarted worker polls the same job to completion without resubmitting; pause keeps the job ID and resume polls it; a crash during submission requires explicit Retry, which never clears a saved job ID; a job reported as failed is resubmitted on Retry. Also checked end to end with the debug binary: SIGTERM while a job was pending stopped the server at once and the restart completed the same job.
 - Two entries processed concurrently with an atomic claim; playback becomes available before transcription finishes.
 - Voice recognition across several entries in one server process (one shared ONNX Runtime environment; previously only the first analysis per process succeeded).
-- Without Groq: entries complete with a visible summary warning. Without an embeddings key: keyword-only search, not reported as partial.
+- Without an OpenAI key: entries complete with a visible summary warning, and search is keyword-only, not reported as partial.
 - Container smoke test with a synthetic local provider: HTTP/tus upload, real packaged WeSpeaker inference and enrollment, hybrid retrieval, and authenticated audio Range all passed without processing warnings.
 - Reusable isolated container smoke test passed on Linux AMD64 and ARM64 with a read-only root filesystem, dropped capabilities, no external provider access, and archive persistence after restart.
 - Proxy-mode AMD64 container smoke test passed without owner initialization: browser access, password login disabled, anonymous upload/MCP rejection, cross-origin mutation rejection, full synthetic ingestion, and restart persistence.
@@ -36,7 +36,7 @@ Still to exercise on physical devices/account:
 
 - USB storage visibility for the intended DJI microphone, cables, and OS document pickers.
 - Long recordings and storage pressure, real disconnects, airplane mode, background execution, force quit, relaunch, token revocation during transfer, and final server receipts on signed native apps.
-- Live AssemblyAI and Groq access: the exact request shapes (`speech_models: ["universal-3-5-pro"]` with `language_codes`, `prompt`; Groq strict `json_schema` with `openai/gpt-oss-120b`) follow the MicIngest client and the providers' documentation but were exercised only against local mocks. Also billing, languages, diarization quality, and transcript accuracy.
+- Live AssemblyAI and OpenAI access: the exact request shapes (`speech_models: ["universal-3-5-pro"]` with `language_codes`, `prompt`; OpenAI strict `json_schema` with `gpt-6-luna`) follow the MicIngest client and the providers' documentation but were exercised only against local mocks. Also billing, languages, diarization quality, and transcript accuracy.
 - Voice thresholds on enrolled real voices, noisy/overlapping speech, and deliberate unknown speakers. Synthetic inference validates integration, not recognition accuracy.
 - Hosted chat-client and native-owner OAuth sign-in against the production proxy, profile switching/relaunch with real Keychain storage, and restore into a clean server. These checks require the generic native discovery and `/api/native/*` routes to be externally reachable while enforcing owner OAuth; browser consent stays behind browser authentication.
 - First hosted AMD64/ARM64 container workflow, GHCR publication and vulnerability scan; Developer ID signing/notarization and signed mobile distribution.

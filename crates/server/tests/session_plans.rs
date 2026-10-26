@@ -729,7 +729,7 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let saved = transcript_vault::settings::load(&reloaded).await.unwrap();
     assert_eq!(saved.recording_context, "Synthetic vocabulary context");
     assert!((saved.voice_thresholds.strong - 0.9).abs() < 0.00001);
-    // The context describes the audio to AssemblyAI and is background for Groq's notes.
+    // The context describes the audio to AssemblyAI and is background for the notes.
     let (provider, task) = common::connect(&mut app, Default::default()).await;
     let audio = _dir.path().join("context.wav");
     wav(&audio, 1000);
@@ -749,8 +749,7 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let transcript = provider.transcripts.lock().unwrap()[0].clone();
     assert_eq!(transcript["prompt"], "Synthetic vocabulary context");
     let chat = provider.chats.lock().unwrap()[0].clone();
-    assert_eq!(chat["model"], "openai/gpt-oss-120b");
-    assert_eq!(chat["temperature"], 0);
+    assert_eq!(chat["model"], "gpt-6-luna");
     assert_eq!(chat["response_format"]["json_schema"]["strict"], true);
     assert!(
         chat["messages"][0]["content"]

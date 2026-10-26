@@ -385,7 +385,6 @@ async fn failed_job_clears_its_checkpoint_so_retry_resubmits() {
 async fn optional_providers_degrade_to_keyword_search_and_a_visible_warning() {
     let (dir, mut app, provider, task) = setup(Options::default()).await;
     let config = Arc::make_mut(&mut app.config);
-    config.groq_key = String::new();
     config.openai_key = String::new();
     let entry = entry(&app, dir.path(), "optional").await;
     pipeline::process(&app, &entry).await.unwrap();
@@ -400,7 +399,7 @@ async fn optional_providers_degrade_to_keyword_search_and_a_visible_warning() {
     assert!(
         warnings
             .iter()
-            .any(|w| w.starts_with("Summary unavailable") && w.contains("GROQ_API_KEY"))
+            .any(|w| w.starts_with("Summary unavailable") && w.contains("OPENAI_API_KEY"))
     );
     assert!(
         !warnings.iter().any(|w| w.starts_with("Semantic search")),
@@ -782,28 +781,21 @@ async fn read_tokens_cannot_list_trash() {
 }
 
 #[tokio::test]
-async fn long_transcripts_are_summarized_by_section_in_the_main_language() {
+async fn long_transcripts_are_summarized_in_one_request() {
     let (_dir, app, provider, task) = setup(Options::default()).await;
     let lines: Vec<String> = (0..6000)
         .map(|i| format!("[A] Sentence {i} about the cedar launch plan and the next proposal."))
         .collect();
-    let notes = transcript_vault::provider::enrich(&app, &lines)
+    transcript_vault::provider::enrich(&app, &lines)
         .await
         .unwrap();
     let chats = provider.chats.lock().unwrap().clone();
-    let system =
-        |chat: &serde_json::Value| chat["messages"][0]["content"].as_str().unwrap().to_owned();
-    let sections = chats
-        .iter()
-        .filter(|c| !system(c).contains("section summaries"))
-        .count();
-    assert!(sections > 3, "{sections} section requests");
-    let reduce: Vec<_> = chats
-        .iter()
-        .filter(|c| system(c).contains("section summaries"))
-        .collect();
-    assert_eq!(reduce.len(), 1);
-    assert!(system(reduce[0]).ends_with("Write the title and summary in english."));
-    assert_eq!(notes.language, "english");
+    assert_eq!(chats.len(), 1);
+    assert!(
+        chats[0]["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .ends_with("Sentence 5999 about the cedar launch plan and the next proposal.")
+    );
     task.abort();
 }

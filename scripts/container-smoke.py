@@ -29,7 +29,7 @@ FIXTURE_IMAGE = "python:3.12-slim-bookworm"
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
-    """AssemblyAI, Groq and embeddings stand-in. Jobs complete on their second poll."""
+    """AssemblyAI and OpenAI (chat completions, embeddings) stand-in. Jobs complete on their second poll."""
     polls = {}
 
     def log_message(self, *_args):
@@ -209,7 +209,7 @@ def run_image(image, proxy=False):
                FIXTURE_IMAGE, "python3", "/fixture.py", "mock", stdout=subprocess.DEVNULL)
         docker("run", "-d", "--name", name + "-server", "--network", network,
                "--network-alias=vault", *restrictions, "-v", volume + ":/data",
-               *[arg for name in ("ASSEMBLYAI", "GROQ", "OPENAI") for arg in (
+               *[arg for name in ("ASSEMBLYAI", "OPENAI") for arg in (
                    "-e", name + "_API_KEY=synthetic-only", "-e", name + "_BASE_URL=http://provider:3119")],
                "-e", "VAULT_PUBLIC_URL=" + BASE,
                "-e", "VAULT_AUTH_MODE=" + ("proxy" if proxy else "password"),
