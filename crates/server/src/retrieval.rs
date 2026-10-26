@@ -70,10 +70,24 @@ fn filter<'a>(q: &mut QueryBuilder<'a, Sqlite>, f: &Filters) -> Result<()> {
     }
     Ok(())
 }
-fn entry(row: &sqlx::sqlite::SqliteRow) -> Value {
-    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary"),"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
+/// Summaries refer to speakers as `{A}`, so each shows the speaker's current name, or the
+/// "Speaker 2" the clients show, numbered in label order like the entry's speaker list.
+fn with_names(summary: String, speakers: &str) -> String {
+    let mut speakers: Vec<(String, Option<String>)> =
+        serde_json::from_str(speakers).unwrap_or_default();
+    speakers.sort();
+    speakers
+        .into_iter()
+        .enumerate()
+        .fold(summary, |text, (i, (label, name))| {
+            let name = name.unwrap_or_else(|| format!("Speaker {}", i + 1));
+            text.replace(&format!("{{{label}}}"), &name)
+        })
 }
-const SELECT: &str = "SELECT e.*,(SELECT json_group_array(label) FROM entry_labels WHERE entry_id=e.id) AS labels FROM entries e WHERE 1=1";
+fn entry(row: &sqlx::sqlite::SqliteRow) -> Value {
+    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
+}
+const SELECT: &str = "SELECT e.*,(SELECT json_group_array(label) FROM entry_labels WHERE entry_id=e.id) AS labels,(SELECT json_group_array(json_array(s.label,p.name)) FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=e.id) AS speaker_names FROM entries e WHERE 1=1";
 pub async fn list(app: &App, f: Filters) -> Result<Value> {
     let limit = f.limit.unwrap_or(30).clamp(1, 100);
     let offset = f.cursor.unwrap_or(0);
@@ -271,6 +285,16 @@ mod tests {
         assert_eq!(
             lexical("he said: \"hello\" AND (world)*"),
             "\"he\" OR \"said\" OR \"hello\" OR \"AND\" OR \"world\""
+        );
+    }
+    #[test]
+    fn summaries_show_current_speaker_names() {
+        assert_eq!(
+            with_names(
+                "{C} fragt {A}, ob {B} kommt; {D} bleibt.".into(),
+                r#"[["B",null],["C","Lena"],["A","Daniel"]]"#
+            ),
+            "Lena fragt Daniel, ob Speaker 2 kommt; {D} bleibt."
         );
     }
 }

@@ -648,13 +648,36 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     }
     stage(app, entry, "enriching").await?;
     match cached_notes(app, entry, "identity-analysis").await {
-        Ok(notes) => apply_name_evidence(app, entry, &notes.names).await?,
+        Ok(notes) => {
+            save_notes(app, entry, &notes, true).await?;
+            apply_name_evidence(app, entry, &notes.names).await?
+        }
         Err(error) => warnings.push(format!("Speaker name analysis unavailable: {error}")),
     }
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
     complete(app, entry, &warnings, &rendition).await
+}
+
+/// The generated title (unless the owner set one) and summary. Reanalyze `replace`s them with
+/// fresh notes; processing keeps a summary that is already there.
+async fn save_notes(app: &App, entry: &str, notes: &provider::Notes, replace: bool) -> Result<()> {
+    if notes.title.trim().is_empty() {
+        return Ok(());
+    }
+    let mut tx = app.db.begin().await?;
+    sqlx::query("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND (? OR summary IS NULL)")
+        .bind(notes.title.trim().chars().take(240).collect::<String>()).bind(notes.summary.trim()).bind(entry).bind(replace).execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE passage_fts SET title=(SELECT title FROM entries WHERE id=?) WHERE entry_id=?",
+    )
+    .bind(entry)
+    .bind(entry)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn complete(app: &App, entry: &str, warnings: &[String], rendition: &Path) -> Result<()> {
@@ -711,9 +734,7 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         stage(app, entry, "enriching").await?;
         match cached_notes(app, entry, "enrichment").await {
             Ok(notes) => {
-                if !notes.title.trim().is_empty() {
-                    sqlx::query("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND summary IS NULL").bind(notes.title.trim().chars().take(240).collect::<String>()).bind(notes.summary.trim()).bind(entry).execute(&app.db).await?;
-                }
+                save_notes(app, entry, &notes, false).await?;
                 apply_name_evidence(app, entry, &notes.names).await?;
             }
             Err(e) => warnings.push(format!("Summary unavailable: {e}")),
@@ -736,19 +757,21 @@ async fn apply_name_evidence(app: &App, entry: &str, names: &[NameFinding]) -> R
     let mut valid = vec![];
     for finding in names {
         let name = finding.name.trim();
+        // The model sometimes repeats the transcript's brackets: "[A]" for speaker A.
+        let speaker = finding.speaker.trim().trim_matches(['[', ']']);
         if name.is_empty() || name.len() > 120 || finding.quote.is_empty() {
             continue;
         }
         let spoken: Vec<String> =
             sqlx::query_scalar("SELECT text FROM segments WHERE entry_id=? AND speaker=?")
                 .bind(entry)
-                .bind(&finding.speaker)
+                .bind(speaker)
                 .fetch_all(&app.db)
                 .await?;
         if spoken.iter().any(|text| text.contains(&finding.quote))
             && finding.quote.to_lowercase().contains(&name.to_lowercase())
         {
-            valid.push((finding.speaker.as_str(), name.to_lowercase(), finding));
+            valid.push((speaker, name.to_lowercase(), finding));
         }
     }
     let mut applied = HashSet::new();

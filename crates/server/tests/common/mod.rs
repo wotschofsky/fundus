@@ -131,8 +131,8 @@ pub async fn connect(
                 let state = chat.clone();
                 async move {
                     state.chats.lock().unwrap().push(body);
-                    let notes = json!({"title": "Cedar launch planning", "summary": "Discussed the launch and the next proposal.",
-                        "names": [{"speaker": "A", "name": "Morgan", "quote": "I'm Morgan."}]});
+                    let notes = json!({"language": "English", "title": "Cedar launch planning", "summary": "{A} plans the launch with {B}.",
+                        "names": [{"speaker": "[A]", "name": "Morgan", "quote": "I'm Morgan."}]});
                     Json(json!({"choices": [{"message": {"role": "assistant", "content": notes.to_string()}}]}))
                 }
             }),

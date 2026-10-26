@@ -15,7 +15,11 @@ export function PersonRow({
   const qc = useQueryClient();
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(person.name);
-  const refresh = () => qc.invalidateQueries({ queryKey: ['people'] });
+  // Names also appear in transcripts and summaries.
+  const refresh = () =>
+    Promise.all(
+      ['people', 'entry', 'entries'].map((key) => qc.invalidateQueries({ queryKey: [key] })),
+    );
   const rename = useMutation({
     mutationFn: () => api(`/v1/people/${person.id}`, send('PATCH', { name: name.trim() })),
     onSuccess: async () => {
@@ -93,10 +97,7 @@ export function PersonRow({
                   text: 'Their voice profile is deleted and their speakers become unidentified. Transcript text is kept.',
                   action: 'Delete person',
                   danger: true,
-                  run: () =>
-                    api(`/v1/people/${person.id}`, send('DELETE')).then(() =>
-                      Promise.all([refresh(), qc.invalidateQueries({ queryKey: ['entry'] })]),
-                    ),
+                  run: () => api(`/v1/people/${person.id}`, send('DELETE')).then(refresh),
                 })
               }
             >

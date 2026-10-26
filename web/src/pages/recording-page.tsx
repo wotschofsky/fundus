@@ -86,10 +86,12 @@ export function RecordingPage() {
       `/v1/entries/${id}/speakers/${encodeURIComponent(label)}`,
       send('PATCH', { person_id: person }),
     );
-    await Promise.all([
-      qc.invalidateQueries({ queryKey: ['entry', id] }),
-      qc.invalidateQueries({ queryKey: ['people'] }),
-    ]);
+    // Summaries show speaker names too, also in the recordings list.
+    await Promise.all(
+      [['entry', id], ['entries'], ['people']].map((queryKey) =>
+        qc.invalidateQueries({ queryKey }),
+      ),
+    );
   };
 
   if (entry.isPending) return <LoadingState label="Loading recording…" />;
@@ -130,7 +132,11 @@ export function RecordingPage() {
             Edit details
           </button>
           {!processing && rows.length > 0 && (
-            <button disabled={busy} onClick={post('reanalyze')}>
+            <button
+              disabled={busy}
+              onClick={post('reanalyze')}
+              title="Recognize the speakers again and rewrite the title and summary"
+            >
               <RefreshCw size={14} aria-hidden />
               Reanalyze speakers
             </button>

@@ -487,6 +487,22 @@ async fn speaker_reanalysis_preserves_transcription_and_manual_identities() {
     voice::assign(&app, &entry, "A", Some("manual-person"))
         .await
         .unwrap();
+    // The summary names speakers by placeholder, so it follows the assignment.
+    let summary = |app: App, entry: String| async move {
+        transcript_vault::retrieval::get(&app, &entry)
+            .await
+            .unwrap()["summary"]
+            .clone()
+    };
+    assert_eq!(
+        summary(app.clone(), entry.clone()).await,
+        "Synthetic person plans the launch with Speaker 2."
+    );
+    sqlx::query("UPDATE entries SET summary='Old summary' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
     let transcript: Vec<(String, String)> =
         sqlx::query_as("SELECT id,text FROM segments WHERE entry_id=? ORDER BY position")
             .bind(&entry)
@@ -509,6 +525,11 @@ async fn speaker_reanalysis_preserves_transcription_and_manual_identities() {
             .await
             .unwrap();
     assert_eq!(identity, ("manual-person".into(), "manual".into()));
+    // Reanalyze writes fresh notes, e.g. for summaries from before placeholders.
+    assert_eq!(
+        summary(app.clone(), entry.clone()).await,
+        "Synthetic person plans the launch with Speaker 2."
+    );
     task.abort();
 }
 
@@ -560,7 +581,7 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
     pipeline::process(&app, &entry).await.unwrap();
     assert_eq!(
         text(&app, "SELECT summary FROM entries WHERE id=?", &entry).await,
-        "Discussed the launch and the next proposal."
+        "{A} plans the launch with {B}."
     );
     assert!(
         text(
