@@ -4,6 +4,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod grouping;
+pub mod identity;
 pub mod mcp;
 pub mod pipeline;
 pub mod provider;

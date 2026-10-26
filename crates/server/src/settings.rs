@@ -9,9 +9,23 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+/// Cosine bands calibrated on German speech in mic-ingest (docs/voice-threshold-calibration.md there).
 pub struct VoiceThresholds {
+    /// At or above, with `margin` over the next person: the voice alone names the speaker.
     pub strong: f32,
     pub margin: f32,
+    /// From here up to `strong`, a voice match counts only with the speaker's own introduction.
+    #[serde(default = "borderline")]
+    pub borderline: f32,
+    /// At or above: an automatic voice match may also join the person's profile.
+    #[serde(default = "enroll")]
+    pub enroll: f32,
+}
+fn borderline() -> f32 {
+    0.50
+}
+fn enroll() -> f32 {
+    0.82
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -25,12 +39,14 @@ impl Default for Settings {
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
-            .unwrap_or(0.82);
+            .unwrap_or(0.78);
         Self {
             recording_context: String::new(),
             voice_thresholds: VoiceThresholds {
                 strong,
                 margin: 0.10,
+                borderline: borderline(),
+                enroll: enroll(),
             },
         }
     }
@@ -92,11 +108,13 @@ pub async fn update(
         settings.recording_context = context;
     }
     if let Some(thresholds) = update.voice_thresholds {
-        if !thresholds.strong.is_finite()
-            || !thresholds.margin.is_finite()
-            || !(0.0..=1.0).contains(&thresholds.strong)
-            || !(0.0..=1.0).contains(&thresholds.margin)
-        {
+        let values = [
+            thresholds.strong,
+            thresholds.margin,
+            thresholds.borderline,
+            thresholds.enroll,
+        ];
+        if values.iter().any(|v| !(0.0..=1.0).contains(v)) {
             return Err(Error::bad("Voice thresholds must be between 0 and 1"));
         }
         settings.voice_thresholds = thresholds;

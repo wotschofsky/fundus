@@ -45,11 +45,18 @@
   const suggestions = $derived(
     speaker.evidence.filter((x) => x.name && !x.applied && speaker.state !== 'manual'),
   );
+  // A speaker is named automatically by their voice or by introducing themselves.
+  const how = $derived(
+    speaker.state === 'automatic' &&
+      !speaker.evidence.some((x) => x.source === 'voice' && x.applied !== false)
+      ? 'Introduced themselves'
+      : STATES[speaker.state],
+  );
 </script>
 
 <div class="speaker">
   <span class="speaker-name">{name}</span>
-  <small>{STATES[speaker.state]}</small>
+  <small>{how}</small>
   <ErrorNotice {error} />
   {#if adding}
     <form

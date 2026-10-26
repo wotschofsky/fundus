@@ -17,6 +17,9 @@ pub struct Utterance {
     pub start: i64,
     pub end: i64,
     pub text: String,
+    /// Missing in results saved before it was kept.
+    #[serde(default)]
+    pub confidence: Option<f64>,
 }
 
 /// A provider request that did not succeed. Messages never contain credentials or request bodies.
@@ -230,6 +233,26 @@ pub async fn submit(app: &App, audio_url: &str, prompt: Option<&str>) -> Result<
     Ok(decode::<Created>("AssemblyAI", &body)?.id)
 }
 
+/// A malformed utterance is dropped rather than failing a paid job's result.
+fn usable(utterances: Option<Vec<Utterance>>) -> Vec<Utterance> {
+    utterances
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|u| {
+            !u.text.trim().is_empty()
+                && u.start >= 0
+                && u.end >= u.start
+                && !u.speaker.is_empty()
+                && u.speaker.len() <= 128
+        })
+        .collect()
+}
+
+/// The utterances of a completed job's saved response (`transcription.json`).
+pub fn saved_utterances(raw: &[u8]) -> Result<Vec<Utterance>> {
+    Ok(usable(decode::<Status>("AssemblyAI", raw)?.utterances))
+}
+
 /// Errors are `ProviderError`s (`not_found()`, `transient()`) or an unreadable response.
 pub async fn poll(app: &App, id: &str) -> Result<Job> {
     let path = format!("/v2/transcript/{id}");
@@ -239,22 +262,10 @@ pub async fn poll(app: &App, id: &str) -> Result<Job> {
     .await?;
     let status: Status = decode("AssemblyAI", &raw)?;
     Ok(match status.status.as_str() {
-        "completed" => {
-            // A malformed utterance is dropped rather than failing a paid job's result.
-            let utterances = status
-                .utterances
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|u| {
-                    !u.text.trim().is_empty()
-                        && u.start >= 0
-                        && u.end >= u.start
-                        && !u.speaker.is_empty()
-                        && u.speaker.len() <= 128
-                })
-                .collect();
-            Job::Completed { utterances, raw }
-        }
+        "completed" => Job::Completed {
+            utterances: usable(status.utterances),
+            raw,
+        },
         "error" => Job::Failed(status.error.unwrap_or_else(|| "unknown error".into())),
         _ => Job::Pending,
     })

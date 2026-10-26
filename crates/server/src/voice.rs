@@ -3,10 +3,10 @@ use crate::{
     config::{App, id, now},
 };
 use anyhow::{Context, Result, ensure};
-use serde_json::json;
 use sqlx::Row;
 use std::{
     collections::BTreeMap,
+    ops::Bound,
     path::{Path, PathBuf},
 };
 pub const MODEL: &str = "wespeaker-resnet34-lm-onnx-kaldi-v1";
@@ -28,12 +28,105 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         a.iter().map(|x| x * x).sum::<f32>().sqrt() * b.iter().map(|x| x * x).sum::<f32>().sqrt();
     if n > 0. { d / n } else { 0. }
 }
-pub fn match_person(
-    probe: &[f32],
-    profiles: &BTreeMap<String, Vec<Vec<f32>>>,
-    strong: f32,
-    margin: f32,
-) -> Option<(String, f32)> {
+/// Clean speech for comparing voices, as calibrated in mic-ingest: turns of 3 s or more, transcribed
+/// with confidence 0.6 or more, not overlapping a neighbouring turn of someone else; at most 10 s each.
+const EXCERPT_MIN_MS: i64 = 3000;
+const EXCERPT_MAX_MS: i64 = 10000;
+const MIN_CONFIDENCE: f64 = 0.6;
+/// Spread over the whole recording, so a label is measured in every surrounding it occurs in.
+const EXCERPTS: usize = 24;
+/// Two labels this similar are one voice. In real recordings different people in one room scored
+/// up to 0.59 and halves of one label 0.63-0.99; in mic-ingest's calibration no impostor reached it.
+pub const SAME_VOICE: f32 = 0.78;
+
+/// Up to `EXCERPTS` clean excerpts per label as (start, duration), from rows of (label, start, end,
+/// confidence) in transcript order. A label needs two excerpts and 10 s of them to be compared.
+fn excerpts(rows: &[(String, i64, i64, Option<f64>)]) -> BTreeMap<String, Vec<(i64, i64)>> {
+    let mut found: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+    for (i, (speaker, start, end, confidence)) in rows.iter().enumerate() {
+        // Turns are ordered: overlap can only involve the neighbours.
+        let overlaps = |j: usize| {
+            rows.get(j)
+                .is_some_and(|(other, s, e, _)| other != speaker && s < end && e > start)
+        };
+        if end - start < EXCERPT_MIN_MS
+            || confidence.is_some_and(|c| c < MIN_CONFIDENCE)
+            || overlaps(i.wrapping_sub(1))
+            || overlaps(i + 1)
+        {
+            continue;
+        }
+        found
+            .entry(speaker.clone())
+            .or_default()
+            .push((*start, (end - start).min(EXCERPT_MAX_MS)));
+    }
+    found.retain(|_, times| times.len() >= 2 && times.iter().map(|(_, d)| d).sum::<i64>() >= 10000);
+    for times in found.values_mut() {
+        if times.len() > EXCERPTS {
+            let n = times.len();
+            *times = (0..EXCERPTS).map(|k| times[k * n / EXCERPTS]).collect();
+        }
+    }
+    found
+}
+
+/// One label's voice: the sum of its excerpts' unit embeddings, their number, and the label's speech.
+#[derive(Clone, Debug)]
+pub struct Cluster {
+    pub sum: Vec<f32>,
+    pub excerpts: usize,
+    pub speech_ms: i64,
+}
+
+/// Merges labels that are one voice, the most similar pair first, while a pair reaches `SAME_VOICE`.
+/// The label the owner decided, else the one with more speech, absorbs the other; labels the owner
+/// decided differently never merge. Returns (absorbed, absorbing) pairs in merge order.
+pub fn merge_labels(
+    clusters: &mut BTreeMap<String, Cluster>,
+    decided: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut merged = vec![];
+    loop {
+        let mut best: Option<(f32, String, String)> = None;
+        for (a, x) in clusters.iter() {
+            for (b, y) in clusters.range::<String, _>((Bound::Excluded(a), Bound::Unbounded)) {
+                if decided
+                    .get(a)
+                    .zip(decided.get(b))
+                    .is_some_and(|(p, q)| p != q)
+                {
+                    continue;
+                }
+                let score = cosine(&x.sum, &y.sum);
+                if score >= SAME_VOICE && best.as_ref().is_none_or(|(s, _, _)| score > *s) {
+                    best = Some((score, a.clone(), b.clone()));
+                }
+            }
+        }
+        let Some((_, a, b)) = best else {
+            return merged;
+        };
+        let keep_a = match (decided.contains_key(&a), decided.contains_key(&b)) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => clusters[&a].speech_ms >= clusters[&b].speech_ms,
+        };
+        let (from, into) = if keep_a { (b, a) } else { (a, b) };
+        let gone = clusters.remove(&from).expect("label present");
+        let kept = clusters.get_mut(&into).expect("label present");
+        for (x, y) in kept.sum.iter_mut().zip(&gone.sum) {
+            *x += y;
+        }
+        kept.excerpts += gone.excerpts;
+        kept.speech_ms += gone.speech_ms;
+        merged.push((from, into));
+    }
+}
+
+/// Every known person's similarity to `probe`, closest first. A person scores their closest stored
+/// sample, so a profile from several surroundings matches in any of them.
+pub fn candidates(probe: &[f32], profiles: &BTreeMap<String, Vec<Vec<f32>>>) -> Vec<(String, f32)> {
     let mut scores: Vec<_> = profiles
         .iter()
         .map(|(p, s)| {
@@ -44,18 +137,14 @@ pub fn match_person(
         })
         .collect();
     scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    let best = scores.first()?;
-    if best.1 >= strong && (scores.len() == 1 || best.1 - scores[1].1 >= margin) {
-        Some(best.clone())
-    } else {
-        None
-    }
+    scores
 }
 /// ONNX Runtime allows one environment per process, ever: it is created on first use and kept.
 static ENVIRONMENT: std::sync::LazyLock<Result<ort::environment::Environment, String>> =
     std::sync::LazyLock::new(|| ort::init().build().map_err(|error| error.to_string()));
 
-fn embed(model: &Path, clips: Vec<(String, Vec<PathBuf>)>) -> Result<Vec<(String, Vec<f32>)>> {
+/// Unit embeddings of each label's clips.
+fn embed(model: &Path, clips: Vec<(String, Vec<PathBuf>)>) -> Result<Vec<(String, Vec<Vec<f32>>)>> {
     use kaldi_fbank::{FbankOptions, OnlineFbank, WindowType};
     use ort::{session::Session, value::Tensor};
     let environment = ENVIRONMENT
@@ -109,18 +198,29 @@ fn embed(model: &Path, clips: Vec<(String, Vec<PathBuf>)>) -> Result<Vec<(String
             vectors.push(normalized(v.to_vec()));
         }
         if !vectors.is_empty() {
-            let mut mean = vec![0.; 256];
-            for v in vectors {
-                for (i, x) in v.iter().enumerate() {
-                    mean[i] += x;
-                }
-            }
-            result.push((speaker, normalized(mean)));
+            result.push((speaker, vectors));
         }
     }
     Ok(result)
 }
-pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
+/// What voice analysis found in one recording.
+#[derive(Default)]
+pub struct Analysis {
+    /// Labels found to be one voice, already merged in the transcript: (absorbed, absorbing).
+    pub merged: Vec<(String, String)>,
+    /// The remaining labels with enough clean speech to compare.
+    pub labels: BTreeMap<String, LabelVoice>,
+}
+pub struct LabelVoice {
+    pub vector: Vec<f32>,
+    pub excerpts: usize,
+    /// Known people from other recordings, closest first.
+    pub candidates: Vec<(String, f32)>,
+}
+
+/// Measures each label's voice in `audio_path` (the playback file), merges labels that are one
+/// voice and compares the rest with known people. Who a speaker is gets decided in `identity`.
+pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<Analysis> {
     let _cpu = app.cpu.acquire().await?;
     let model = app
         .config
@@ -128,30 +228,14 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
         .clone()
         .context("Configure VAULT_VOICE_MODEL and ONNX Runtime for local recognition")?;
     ensure!(model.is_file(), "Speaker model file is missing");
-    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
-        "SELECT speaker,start_ms,end_ms FROM segments WHERE entry_id=? ORDER BY position",
+    let rows: Vec<(String, i64, i64, Option<f64>)> = sqlx::query_as(
+        "SELECT speaker,start_ms,end_ms,confidence FROM segments WHERE entry_id=? ORDER BY position",
     )
     .bind(entry)
     .fetch_all(&app.db)
     .await?;
-    let mut excerpts: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
-    for (speaker, start, end) in &rows {
-        // Only clean speech: long enough and not overlapping anyone else.
-        // ponytail: O(n²) over utterances, ~25M cheap comparisons for a long day; sort by start if it shows.
-        if end - start < 3000
-            || rows
-                .iter()
-                .any(|(other, s, e)| other != speaker && s < end && e > start)
-        {
-            continue;
-        }
-        excerpts
-            .entry(speaker.clone())
-            .or_default()
-            .push((*start, (end - start).min(10000)));
-    }
     let dir = app.entry_dir(entry);
-    let result = probe_and_match(app, entry, audio_path, model, excerpts).await;
+    let result = measure(app, entry, audio_path, model, excerpts(&rows)).await;
     // Keep only durable vectors, also after a failure; excerpts can be rebuilt from the archive.
     let mut items = tokio::fs::read_dir(&dir).await?;
     while let Some(item) = items.next_entry().await? {
@@ -159,32 +243,58 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
             let _ = tokio::fs::remove_file(item.path()).await;
         }
     }
-    result
-}
-async fn probe_and_match(
-    app: &App,
-    entry: &str,
-    audio_path: &Path,
-    model: PathBuf,
-    excerpts: BTreeMap<String, Vec<(i64, i64)>>,
-) -> Result<()> {
-    let mut clips = vec![];
-    let dir = app.entry_dir(entry);
-    for (speaker, mut times) in excerpts {
-        times.sort_by_key(|(_, d)| std::cmp::Reverse(*d));
-        times.truncate(8);
-        if times.len() < 2 || times.iter().map(|(_, d)| d).sum::<i64>() < 10000 {
-            continue;
+    let mut clusters = result?;
+    for (speaker, start, end, _) in &rows {
+        if let Some(cluster) = clusters.get_mut(speaker) {
+            cluster.speech_ms += end - start;
         }
-        let mut files = vec![];
-        for (i, (start, duration)) in times.into_iter().enumerate() {
-            let path = dir.join(format!("voice-{}-{i}.wav", crate::auth::hash(&speaker)));
-            audio::excerpt(audio_path, start, duration, &path).await?;
-            files.push(path);
-        }
-        clips.push((speaker, files));
     }
-    let outputs = tokio::task::spawn_blocking(move || embed(&model, clips)).await??;
+    let decided: BTreeMap<String, String> = sqlx::query_as(
+        "SELECT label,COALESCE(person_id,'') FROM speakers WHERE entry_id=? AND state IN ('manual','manual_unknown')",
+    )
+    .bind(entry)
+    .fetch_all(&app.db)
+    .await?
+    .into_iter()
+    .collect();
+    let merged = merge_labels(&mut clusters, &decided);
+    let mut tx = app.db.begin().await?;
+    for (from, into) in &merged {
+        tracing::info!(%entry, %from, %into, "merged speaker labels with one voice");
+        sqlx::query("UPDATE segments SET speaker=? WHERE entry_id=? AND speaker=?")
+            .bind(into)
+            .bind(entry)
+            .bind(from)
+            .execute(&mut *tx)
+            .await?;
+        for (table, column) in [
+            ("speakers", "label"),
+            ("voice_probes", "speaker"),
+            ("voice_samples", "speaker"),
+        ] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE entry_id=? AND {column}=?"
+            ))
+            .bind(entry)
+            .bind(from)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    let mut labels = BTreeMap::new();
+    for (label, cluster) in clusters {
+        let vector = normalized(cluster.sum);
+        sqlx::query("INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,?,?,?) ON CONFLICT(entry_id,speaker,model)DO UPDATE SET vector_json=excluded.vector_json").bind(entry).bind(&label).bind(MODEL).bind(serde_json::to_string(&vector)?).execute(&mut *tx).await?;
+        labels.insert(
+            label,
+            LabelVoice {
+                vector,
+                excerpts: cluster.excerpts,
+                candidates: vec![],
+            },
+        );
+    }
+    tx.commit().await?;
     let samples = sqlx::query(
         "SELECT vs.person_id,vs.vector_json FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.entry_id!=? AND vs.model=? AND e.trashed_at IS NULL",
     )
@@ -200,16 +310,47 @@ async fn probe_and_match(
             .or_default()
             .push(vector);
     }
-    let thresholds = crate::settings::load(app).await?.voice_thresholds;
-    let strong = thresholds.strong;
-    let margin = thresholds.margin;
-    for (label, vector) in outputs {
-        sqlx::query("INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,?,?,?) ON CONFLICT(entry_id,speaker,model)DO UPDATE SET vector_json=excluded.vector_json").bind(entry).bind(&label).bind(MODEL).bind(serde_json::to_string(&vector)?).execute(&app.db).await?;
-        if let Some((person, score)) = match_person(&vector, &profiles, strong, margin) {
-            sqlx::query("UPDATE speakers SET person_id=?,state='automatic',evidence=? WHERE entry_id=? AND label=? AND state NOT IN ('manual','manual_unknown')").bind(person).bind(json!([{"source":"voice","score":score,"model":MODEL}]).to_string()).bind(entry).bind(label).execute(&app.db).await?;
-        }
+    for voice in labels.values_mut() {
+        voice.candidates = candidates(&voice.vector, &profiles);
     }
-    Ok(())
+    Ok(Analysis { merged, labels })
+}
+async fn measure(
+    app: &App,
+    entry: &str,
+    audio_path: &Path,
+    model: PathBuf,
+    excerpts: BTreeMap<String, Vec<(i64, i64)>>,
+) -> Result<BTreeMap<String, Cluster>> {
+    let mut clips = vec![];
+    let dir = app.entry_dir(entry);
+    for (speaker, times) in excerpts {
+        let mut files = vec![];
+        for (i, (start, duration)) in times.into_iter().enumerate() {
+            let path = dir.join(format!("voice-{}-{i}.wav", crate::auth::hash(&speaker)));
+            audio::excerpt(audio_path, start, duration, &path).await?;
+            files.push(path);
+        }
+        clips.push((speaker, files));
+    }
+    let outputs = tokio::task::spawn_blocking(move || embed(&model, clips)).await??;
+    Ok(outputs
+        .into_iter()
+        .map(|(speaker, vectors)| {
+            let mut sum = vec![0.; vectors[0].len()];
+            for v in &vectors {
+                for (x, y) in sum.iter_mut().zip(v) {
+                    *x += y;
+                }
+            }
+            let cluster = Cluster {
+                sum,
+                excerpts: vectors.len(),
+                speech_ms: 0,
+            };
+            (speaker, cluster)
+        })
+        .collect())
 }
 pub async fn assign(app: &App, entry: &str, label: &str, person: Option<&str>) -> Result<()> {
     let mut tx = app.db.begin().await?;
@@ -258,22 +399,81 @@ pub async fn assign(app: &App, entry: &str, label: &str, person: Option<&str>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn reject_ambiguous_and_unknown() {
-        let p = BTreeMap::from([
-            ("a".into(), vec![vec![1., 0.]]),
-            ("b".into(), vec![vec![0.99, 0.01]]),
-        ]);
-        assert!(match_person(&[1., 0.], &p, 0.8, 0.1).is_none());
-        assert!(match_person(&[0., 1.], &p, 0.8, 0.1).is_none());
+    fn cluster(sum: Vec<f32>, speech_ms: i64) -> Cluster {
+        Cluster {
+            sum,
+            excerpts: 4,
+            speech_ms,
+        }
     }
     #[test]
-    fn clear_known_voice_matches() {
-        let p = BTreeMap::from([
-            ("a".into(), vec![vec![1., 0.]]),
-            ("b".into(), vec![vec![0., 1.]]),
+    fn excerpts_are_clean_long_turns_spread_over_the_recording() {
+        let row = |s: &str, start: i64, end: i64, c: Option<f64>| (s.to_string(), start, end, c);
+        let mut rows = vec![
+            row("A", 0, 2_000, None),            // too short
+            row("A", 2_000, 8_000, Some(0.4)),   // unsure transcription
+            row("A", 8_000, 14_000, None),       // overlaps B's next turn
+            row("B", 13_000, 20_000, Some(0.9)), // overlaps A
+            row("B", 20_000, 26_000, Some(0.9)), // too little in total for B
+            row("C", 26_000, 31_000, Some(0.9)),
+            row("C", 31_000, 50_000, Some(0.9)), // capped at 10 s
+        ];
+        let found = excerpts(&rows);
+        assert_eq!(found.keys().collect::<Vec<_>>(), ["C"]);
+        assert_eq!(found["C"], [(26_000, 5_000), (31_000, 10_000)]);
+        // A long day contributes excerpts from all of it, not only from its start.
+        rows = (0..100)
+            .map(|i| row("D", i * 60_000, i * 60_000 + 5_000, None))
+            .collect();
+        let spread = &excerpts(&rows)["D"];
+        assert_eq!(spread.len(), EXCERPTS);
+        assert!(spread.last().unwrap().0 > 90 * 60_000);
+    }
+    #[test]
+    fn one_voice_under_several_labels_is_merged_into_the_main_label() {
+        let mut clusters = BTreeMap::from([
+            ("A".to_string(), cluster(vec![1., 0., 0.], 60_000)),
+            ("B".to_string(), cluster(vec![0., 1., 0.], 50_000)),
+            // Same voice as A, less speech: absorbed by A. Different people stay apart.
+            ("C".to_string(), cluster(vec![0.95, 0.1, 0.], 5_000)),
+            ("D".to_string(), cluster(vec![0.5, 0.5, 0.707], 5_000)),
         ]);
-        assert_eq!(match_person(&[1., 0.], &p, 0.8, 0.1).unwrap().0, "a");
+        let merged = merge_labels(&mut clusters, &BTreeMap::new());
+        assert_eq!(merged, [("C".to_string(), "A".to_string())]);
+        assert_eq!(clusters.keys().collect::<Vec<_>>(), ["A", "B", "D"]);
+        assert_eq!(clusters["A"].speech_ms, 65_000);
+    }
+    #[test]
+    fn the_owners_decisions_win_and_are_never_merged_across() {
+        let decided = BTreeMap::from([("B".to_string(), "lena".to_string())]);
+        let mut clusters = BTreeMap::from([
+            ("A".to_string(), cluster(vec![1., 0.], 90_000)),
+            ("B".to_string(), cluster(vec![0.99, 0.05], 1_000)),
+        ]);
+        // The named label keeps its name, even with less speech.
+        assert_eq!(
+            merge_labels(&mut clusters, &decided),
+            [("A".to_string(), "B".to_string())]
+        );
+        let decided = BTreeMap::from([
+            ("A".to_string(), "felix".to_string()),
+            ("B".to_string(), "lena".to_string()),
+        ]);
+        let mut clusters = BTreeMap::from([
+            ("A".to_string(), cluster(vec![1., 0.], 90_000)),
+            ("B".to_string(), cluster(vec![0.99, 0.05], 1_000)),
+        ]);
+        assert!(merge_labels(&mut clusters, &decided).is_empty());
+    }
+    #[test]
+    fn candidates_score_a_persons_closest_sample() {
+        let profiles = BTreeMap::from([
+            ("a".into(), vec![vec![0., 1.], vec![1., 0.]]),
+            ("b".into(), vec![vec![0.6, 0.8]]),
+        ]);
+        let found = candidates(&[1., 0.], &profiles);
+        assert_eq!(found[0], ("a".into(), 1.));
+        assert_eq!(found[1].0, "b");
     }
 }
 
@@ -310,7 +510,7 @@ mod runtime_test {
             ],
         )
         .unwrap();
-        assert_eq!(vectors[0].1.len(), 256);
-        assert!(cosine(&vectors[0].1, &vectors[1].1) > 0.999);
+        assert_eq!(vectors[0].1[0].len(), 256);
+        assert!(cosine(&vectors[0].1[0], &vectors[1].1[0]) > 0.999);
     }
 }

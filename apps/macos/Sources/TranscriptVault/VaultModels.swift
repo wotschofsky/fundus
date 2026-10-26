@@ -91,8 +91,12 @@ struct Speaker: Decodable, Hashable, Sendable {
     var explanations: [String] {
         if state == "manual" { return ["Assigned by you"] }
         return evidence.compactMap { item in
-            if item.source == "voice" { return "Voice matches a saved profile" }
-            if let quote = item.quote, !quote.isEmpty { return "Possibly \(item.name ?? "named"): “\(quote)”" }
+            // Evidence saved before `applied` existed was always applied.
+            let applied = item.applied ?? true
+            if item.source == "voice" { return applied ? "Voice matches a saved profile" : "Voice resembles a saved profile" }
+            if let quote = item.quote, !quote.isEmpty {
+                return applied ? "Introduced as \(item.name ?? "named"): “\(quote)”" : "Possibly \(item.name ?? "named"): “\(quote)”"
+            }
             return nil
         }
     }
@@ -131,7 +135,7 @@ struct ProcessingSettings: Codable, Sendable {
     struct Thresholds: Codable, Equatable, Sendable {
         var strong: Double
         var margin: Double
-        static let `default` = Thresholds(strong: 0.82, margin: 0.10)
+        static let `default` = Thresholds(strong: 0.78, margin: 0.10)
     }
 }
 

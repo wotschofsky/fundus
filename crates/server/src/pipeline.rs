@@ -2,12 +2,12 @@ use crate::{
     audio,
     config::{App, id, now},
     grouping::{self, Source},
-    provider::{self, Job, NameFinding, ProviderError, Utterance},
-    voice,
+    identity,
+    provider::{self, Job, ProviderError, Utterance},
+    voice::{self, Analysis},
 };
 use anyhow::{Result, bail, ensure};
 use futures_util::future::join_all;
-use serde_json::json;
 use sqlx::Row;
 use std::{
     collections::{HashMap, HashSet},
@@ -578,7 +578,7 @@ async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Res
             .bind(&utterance.speaker)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text)VALUES(?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text,confidence)VALUES(?,?,?,?,?,?,?,?)")
             .bind(format!("{entry}:{position}"))
             .bind(entry)
             .bind(position as i64)
@@ -586,6 +586,7 @@ async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Res
             .bind(utterance.start.min(duration))
             .bind(utterance.end.min(duration))
             .bind(utterance.text.trim())
+            .bind(utterance.confidence)
             .execute(&mut *tx)
             .await?;
     }
@@ -648,6 +649,22 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
         return Ok(());
     }
     stage(app, entry, "recognizing").await?;
+    // Labels merged by an earlier analysis are split again and decided afresh.
+    let saved: Option<String> = sqlx::query_scalar(
+        "SELECT utterances FROM transcriptions WHERE entry_id=? AND utterances IS NOT NULL",
+    )
+    .bind(entry)
+    .fetch_optional(&app.db)
+    .await?;
+    if let Some(saved) = saved {
+        // The job's full response also has each utterance's confidence, which older rows lack.
+        let utterances =
+            match tokio::fs::read(app.entry_dir(entry).join("transcription.json")).await {
+                Ok(raw) => provider::saved_utterances(&raw)?,
+                Err(_) => serde_json::from_str(&saved)?,
+            };
+        store_segments(app, entry, &utterances).await?;
+    }
     sqlx::query("UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE entry_id=? AND state NOT IN ('manual','manual_unknown')").bind(entry).execute(&app.db).await?;
     let previous: String = sqlx::query_scalar("SELECT warnings FROM entries WHERE id=?")
         .bind(entry)
@@ -663,20 +680,26 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
         voice::analyze(app, entry, &playback),
         cached_notes(app, entry, "identity-analysis")
     );
-    if let Err(error) = voice {
+    let analysis = voice.unwrap_or_else(|error| {
         warnings.push(format!("Speaker recognition unavailable: {error}"));
-    }
+        Analysis::default()
+    });
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
     stage(app, entry, "enriching").await?;
-    match notes {
-        Ok(notes) => {
+    let names = match notes {
+        Ok(mut notes) => {
+            relabel(&mut notes, &analysis.merged);
             save_notes(app, entry, &notes, true).await?;
-            apply_name_evidence(app, entry, &notes.names).await?
+            notes.names
         }
-        Err(error) => warnings.push(format!("Speaker name analysis unavailable: {error}")),
-    }
+        Err(error) => {
+            warnings.push(format!("Speaker name analysis unavailable: {error}"));
+            vec![]
+        }
+    };
+    identity::apply(app, entry, &analysis, &names).await?;
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
@@ -761,20 +784,26 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
             voice::analyze(app, entry, &playback),
             cached_notes(app, entry, "enrichment")
         );
-        if let Err(e) = voice {
+        let analysis = voice.unwrap_or_else(|e| {
             warnings.push(format!("Speaker recognition unavailable: {e}"));
-        }
+            Analysis::default()
+        });
         if pause_at_checkpoint(app, entry).await? {
             return Ok(());
         }
         stage(app, entry, "enriching").await?;
-        match notes {
-            Ok(notes) => {
+        let names = match notes {
+            Ok(mut notes) => {
+                relabel(&mut notes, &analysis.merged);
                 save_notes(app, entry, &notes, false).await?;
-                apply_name_evidence(app, entry, &notes.names).await?;
+                notes.names
             }
-            Err(e) => warnings.push(format!("Summary unavailable: {e}")),
-        }
+            Err(e) => {
+                warnings.push(format!("Summary unavailable: {e}"));
+                vec![]
+            }
+        };
+        identity::apply(app, entry, &analysis, &names).await?;
         if pause_at_checkpoint(app, entry).await? {
             return Ok(());
         }
@@ -786,54 +815,19 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     complete(app, entry, &warnings, &rendition).await
 }
 
-/// A model finding is evidence for review, never an automatic voice enrollment. It counts only
-/// when the quote was spoken by that speaker and contains the name, and only when no other
-/// finding names that speaker differently or gives the name to another speaker.
-async fn apply_name_evidence(app: &App, entry: &str, names: &[NameFinding]) -> Result<()> {
-    let mut valid = vec![];
-    for finding in names {
-        let name = finding.name.trim();
-        // The model sometimes repeats the transcript's brackets: "[A]" for speaker A.
-        let speaker = finding.speaker.trim().trim_matches(['[', ']']);
-        if name.is_empty() || name.len() > 120 || finding.quote.is_empty() {
-            continue;
-        }
-        let spoken: Vec<String> =
-            sqlx::query_scalar("SELECT text FROM segments WHERE entry_id=? AND speaker=?")
-                .bind(entry)
-                .bind(speaker)
-                .fetch_all(&app.db)
-                .await?;
-        if spoken.iter().any(|text| text.contains(&finding.quote))
-            && finding.quote.to_lowercase().contains(&name.to_lowercase())
-        {
-            valid.push((speaker, name.to_lowercase(), finding));
+/// Notes are written while voice analysis may merge labels: point placeholders and name findings
+/// of an absorbed label at the label it joined, in merge order so chains resolve.
+fn relabel(notes: &mut provider::Notes, merged: &[(String, String)]) {
+    for (from, into) in merged {
+        notes.summary = notes
+            .summary
+            .replace(&format!("{{{from}}}"), &format!("{{{into}}}"));
+        for finding in &mut notes.names {
+            if finding.speaker.trim().trim_matches(['[', ']']) == from {
+                finding.speaker = into.clone();
+            }
         }
     }
-    let mut applied = HashSet::new();
-    for (speaker, name, finding) in &valid {
-        let contradicted = valid
-            .iter()
-            .any(|(other, other_name, _)| (other == speaker) != (other_name == name));
-        if contradicted || !applied.insert(*speaker) {
-            continue;
-        }
-        // Added beside a voice match, never over it; the owner's own decisions stay untouched.
-        let current: Option<String> = sqlx::query_scalar("SELECT evidence FROM speakers WHERE entry_id=? AND label=? AND state NOT IN ('manual','manual_unknown')")
-            .bind(entry).bind(speaker).fetch_optional(&app.db).await?;
-        let Some(current) = current else { continue };
-        let mut evidence: Vec<serde_json::Value> =
-            serde_json::from_str(&current).unwrap_or_default();
-        evidence.retain(|item| item["source"] != "transcript");
-        evidence.push(json!({"source":"transcript","name":finding.name.trim(),"quote":finding.quote,"applied":false}));
-        sqlx::query("UPDATE speakers SET evidence=? WHERE entry_id=? AND label=?")
-            .bind(serde_json::to_string(&evidence)?)
-            .bind(entry)
-            .bind(speaker)
-            .execute(&app.db)
-            .await?;
-    }
-    Ok(())
 }
 
 pub async fn index(app: &App, entry: &str) -> Result<()> {

@@ -5,7 +5,7 @@
   import ErrorNotice from './error-notice.svelte';
 
   /** Server defaults for voice matching. */
-  const DEFAULT_THRESHOLDS = { strong: 0.82, margin: 0.1 };
+  const DEFAULT_THRESHOLDS = { strong: 0.78, margin: 0.1 };
   const MODEL_LABELS: Record<string, string> = {
     transcription: 'Transcription',
     text: 'Titles, summaries and names',

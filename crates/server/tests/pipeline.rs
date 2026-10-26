@@ -122,10 +122,19 @@ async fn audio_to_search_checkpoints_and_pcm_deduplication() {
             .starts_with("Speaker recognition unavailable")
     );
     assert_eq!(detail["speakers"].as_array().unwrap().len(), 2);
-    // Name evidence was validated against speaker A's own words; it never enrolls a voice.
+    // A self-introduction, validated against speaker A's own words, names a new person. Without
+    // a voice model there is no voice to enroll.
     assert_eq!(detail["speakers"][0]["label"], "A");
     assert_eq!(detail["speakers"][0]["evidence"][0]["name"], "Morgan");
-    assert_eq!(detail["speakers"][0]["person_id"], serde_json::Value::Null);
+    assert_eq!(detail["speakers"][0]["evidence"][0]["applied"], true);
+    assert_eq!(detail["speakers"][0]["name"], "Morgan");
+    assert_eq!(detail["speakers"][0]["state"], "automatic");
+    assert_eq!(detail["speakers"][1]["person_id"], serde_json::Value::Null);
+    let samples: i64 = sqlx::query_scalar("SELECT count(*) FROM voice_samples")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(samples, 0);
     let result = retrieval::search(
         &app,
         retrieval::Search {
@@ -610,14 +619,24 @@ async fn retranscribing_a_legacy_entry_replaces_its_part_labels() {
             .await
             .unwrap();
     assert_eq!(speakers, vec!["A", "B"]);
-    let named: i64 = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM speakers WHERE entry_id=?1 AND person_id IS NOT NULL)+(SELECT count(*) FROM voice_samples WHERE entry_id=?1)",
+    // Only the new job's own evidence names anyone: A's introduction, not the old manual name.
+    let named: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s.label,p.name FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=? ORDER BY s.label",
     )
     .bind(&entry)
-    .fetch_one(&app.db)
+    .fetch_all(&app.db)
     .await
     .unwrap();
-    assert_eq!(named, 0);
+    assert_eq!(
+        named,
+        [("A".into(), Some("Morgan".into())), ("B".into(), None)]
+    );
+    let samples: i64 = sqlx::query_scalar("SELECT count(*) FROM voice_samples WHERE entry_id=?")
+        .bind(&entry)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(samples, 0);
     let segments: i64 = sqlx::query_scalar("SELECT count(*) FROM segments WHERE entry_id=?")
         .bind(&entry)
         .fetch_one(&app.db)
