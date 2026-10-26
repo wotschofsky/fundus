@@ -22,7 +22,7 @@ public enum AudioPreparer {
         var operation = "prepare"
         do {
             if !canCompress {
-                try copyAndVerify(source, partial, progress: progress)
+                try clone(source, partial, progress: progress)
             } else {
                 let common: AVAudioCommonFormat = bits <= 16 ? .pcmFormatInt16 : .pcmFormatInt32
                 operation = "open source PCM"
@@ -71,25 +71,13 @@ public enum AudioPreparer {
             hash.update(bufferPointer: UnsafeRawBufferPointer(start: data, count: Int(buffer.frameLength) * Int(buffer.format.streamDescription.pointee.mBytesPerFrame)))
         }
     }
-    private static func copyAndVerify(_ source: URL, _ destination: URL, progress: @escaping @Sendable (Double) -> Void) throws {
-        let input = try FileHandle(forReadingFrom: source)
-        defer { try? input.close() }
-        let total = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 1
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        let output = try FileHandle(forWritingTo: destination)
-        var expected = SHA256(), count = 0
-        do {
-            while let chunk = try input.read(upToCount: 65_536), !chunk.isEmpty {
-                if Task.isCancelled { throw PreparationError.cancelled }
-                expected.update(data: chunk); try output.write(contentsOf: chunk); count += chunk.count
-                progress(Double(count) / Double(max(total, 1)) * 0.6)
-            }
-            try output.synchronize(); try output.close()
-        } catch { try? output.close(); throw error }
-        let check = try FileHandle(forReadingFrom: destination)
-        defer { try? check.close() }
-        var actual = SHA256()
-        while let chunk = try check.read(upToCount: 65_536), !chunk.isEmpty { actual.update(data: chunk) }
-        guard expected.finalize() == actual.finalize() else { throw PreparationError.verificationFailed }
+    /// The source is the queue's own spool copy: on APFS this clones it instead of writing every byte again.
+    /// ponytail: no hash pass, a clone shares the source's blocks; on a non-APFS volume it is a plain copy.
+    private static func clone(_ source: URL, _ destination: URL, progress: @escaping @Sendable (Double) -> Void) throws {
+        if Task.isCancelled { throw PreparationError.cancelled }
+        try FileManager.default.copyItem(at: source, to: destination)
+        let size = { (url: URL) in try url.resourceValues(forKeys: [.fileSizeKey]).fileSize }
+        guard try size(destination) == size(source) else { throw PreparationError.verificationFailed }
+        progress(0.6)
     }
 }
