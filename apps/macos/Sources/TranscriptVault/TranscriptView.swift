@@ -113,8 +113,8 @@ struct TranscriptView: View {
                 Text(entry.status).foregroundStyle(.secondary)
                 Spacer()
                 if entry.isProcessing {
-                    Button("Pause After Current Step") { Task { await app.setProcessing(.pause, entry: entry.id); await model.refresh() } }
-                        .disabled(entry.pauseRequested)
+                    Button("Move to Trash") { app.moveToTrash(entry.id) }
+                        .help("Stop processing and move the recording to Trash")
                 } else {
                     Button("Resume Processing") { Task { await app.setProcessing(.resume, entry: entry.id); await model.refresh() } }
                 }

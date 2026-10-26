@@ -485,6 +485,40 @@ async fn pause_waits_for_the_job_id_and_resume_polls_the_same_job() {
 }
 
 #[tokio::test]
+async fn trash_cancels_processing_at_the_next_checkpoint() {
+    use tower::ServiceExt;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (dir, app, provider, task) = setup(Options {
+        gate: Some(gate.clone()),
+        pending_polls: 1,
+        ..Default::default()
+    })
+    .await;
+    let entry = entry(&app, dir.path(), "cancel").await;
+    let (work_app, work_entry) = (app.clone(), entry.clone());
+    let process = tokio::spawn(async move { pipeline::process(&work_app, &work_entry).await });
+    until(|| provider.submits() == 1).await;
+    let token = transcript_vault::auth::issue(&app, "test", "admin")
+        .await
+        .unwrap();
+    let response =
+        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+            .oneshot(
+                axum::http::Request::post(format!("/api/v1/entries/{entry}/trash"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(response.status(), 204);
+    gate.notify_one();
+    process.await.unwrap().unwrap();
+    assert_eq!(stage(&app, &entry).await, "paused");
+    task.abort();
+}
+
+#[tokio::test]
 async fn speaker_reanalysis_preserves_transcription_and_manual_identities() {
     let (dir, app, provider, task) = setup(Options::default()).await;
     let entry = entry(&app, dir.path(), "identity").await;

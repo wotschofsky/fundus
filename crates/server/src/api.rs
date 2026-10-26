@@ -560,22 +560,12 @@ async fn trash_entry(
 ) -> Result<StatusCode> {
     access.admin()?;
     let _lock = app.mutations.lock().await;
-    let stage: Option<String> = sqlx::query_scalar("SELECT stage FROM entries WHERE id=?")
-        .bind(&id)
-        .fetch_optional(&app.db)
-        .await?;
-    let stage = stage.ok_or_else(Error::not_found)?;
-    if !["complete", "failed", "queued", "paused"].contains(&stage.as_str()) {
-        return Err(Error::conflict(
-            "Pause or finish processing before moving the recording to Trash",
-        ));
-    }
-    let updated=sqlx::query("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=? AND stage IN ('complete','failed','queued','paused')")
+    // Trashing also cancels: a queued entry pauses now, a running one finishes its current step
+    // and pauses at the worker's next checkpoint, which stops at a trashed entry.
+    let updated=sqlx::query("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=?")
         .bind(now()).bind(now()).bind(id).execute(&app.db).await?;
     if updated.rows_affected() == 0 {
-        return Err(Error::conflict(
-            "Processing started; pause it before moving the recording to Trash",
-        ));
+        return Err(Error::not_found());
     }
     Ok(StatusCode::NO_CONTENT)
 }

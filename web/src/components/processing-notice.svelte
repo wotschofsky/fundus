@@ -1,15 +1,10 @@
-<!-- Status of an unfinished recording, with Pause while it runs and Resume/Retry once stopped. -->
+<!-- Status of an unfinished recording, with Resume/Retry once stopped. Move to Trash cancels it. -->
 <script lang="ts">
-  import { LoaderCircle, Pause, Play } from '@lucide/svelte';
+  import { LoaderCircle, Play } from '@lucide/svelte';
   import { isProcessing, type Entry } from '../api';
   import { stageName } from '../format';
 
-  let {
-    entry,
-    busy,
-    onpause,
-    onresume,
-  }: { entry: Entry; busy: boolean; onpause: () => void; onresume: () => void } = $props();
+  let { entry, busy, onresume }: { entry: Entry; busy: boolean; onresume: () => void } = $props();
   const processing = $derived(isProcessing(entry));
 </script>
 
@@ -28,12 +23,7 @@
             : 'Processing is paused. Resume to continue where it stopped.')}
       </p>
     </div>
-    {#if processing}
-      <button disabled={busy || entry.pause_requested} onclick={onpause}>
-        <Pause size={14} aria-hidden="true" />
-        Pause
-      </button>
-    {:else}
+    {#if !processing}
       <button disabled={busy} onclick={onresume}>
         <Play size={14} aria-hidden="true" />
         {entry.stage === 'failed' ? 'Retry' : 'Resume'}

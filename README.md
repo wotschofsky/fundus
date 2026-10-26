@@ -138,7 +138,7 @@ docker compose up -d
 
 Or locally: `transcript-vault backup /path/to/new-backup`. Backups include a SQLite snapshot and archived audio directories, including unfinished uploads. Restore into an empty data directory while the server is stopped; preserve file ownership, then start the same or a newer compatible binary. Backups contain credential hashes and password hashes: treat them as private.
 
-Moving an entry to Trash hides it from the library and MCP retrieval until restored. Permanent deletion removes its transcript, indexes, voice contributions, owned source blobs, and working/playback files. It does not touch originals on the recorder or copies in older backups. Unfinished/orphan uploads are retained; no automatic age-based deletion is enabled.
+Moving an entry to Trash hides it from the library and MCP retrieval until restored. It also cancels processing: the worker finishes its current step and stops at the next checkpoint, so a recording trashed before transcription is never sent to AssemblyAI. Permanent deletion removes its transcript, indexes, voice contributions, owned source blobs, and working/playback files. It does not touch originals on the recorder or copies in older backups. Unfinished/orphan uploads are retained; no automatic age-based deletion is enabled.
 
 ## Checks
 

@@ -96,7 +96,7 @@
   const moveToTrash = () =>
     (confirming = {
       title: 'Move this recording to Trash?',
-      text: 'It disappears from your library, search and chat apps. You can restore it from Trash.',
+      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps. You can restore it from Trash.`,
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
@@ -142,19 +142,17 @@
           Reanalyze speakers
         </button>
       {/if}
-      {#if ['complete', 'failed', 'queued', 'paused'].includes(e.stage)}
-        <button class="danger" onclick={moveToTrash}>
-          <Trash2 size={14} aria-hidden="true" />
-          Move to Trash
-        </button>
-      {/if}
+      <button class="danger" onclick={moveToTrash}>
+        <Trash2 size={14} aria-hidden="true" />
+        Move to Trash
+      </button>
     </div>
   </header>
   {#if editing}
     <EditDetailsForm entry={e} onsave={save} oncancel={() => (editing = false)} />
   {/if}
   <ErrorNotice error={actionError} />
-  <ProcessingNotice entry={e} {busy} onpause={post('pause')} onresume={post('retry')} />
+  <ProcessingNotice entry={e} {busy} onresume={post('retry')} />
   {#if e.warnings.length > 0}
     <details class="notice">
       <summary>{e.warnings.length} processing note{e.warnings.length !== 1 ? 's' : ''}</summary>

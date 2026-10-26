@@ -220,6 +220,12 @@ final class AppModel {
         }
     }
 
+    /// Also cancels processing: the vault stops the recording after its current step.
+    func moveToTrash(_ id: String) {
+        if selection == .entry(id) { selection = .importer }
+        Task { await setProcessing(.trash, entry: id) }
+    }
+
     func setProcessing(_ action: Library.Action, entry id: String) async {
         do {
             try await library.perform(action, on: id)

@@ -88,9 +88,8 @@ private struct Sidebar: View {
         }
         .listStyle(.sidebar)
         .onDeleteCommand {
-            guard case .entry(let id) = app.selection, app.library.entry(id)?.isProcessing == false else { return }
-            app.selection = .importer
-            Task { await app.setProcessing(.trash, entry: id) }
+            guard case .entry(let id) = app.selection else { return }
+            app.moveToTrash(id)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { VaultSwitcher() }
     }
@@ -152,11 +151,7 @@ struct EntryMenu: View {
             Button("Reanalyze Speakers") { Task { await app.setProcessing(.reanalyzeSpeakers, entry: entry.id) } }
         }
         Divider()
-        Button("Move to Trash", role: .destructive) {
-            if app.selection == .entry(entry.id) { app.selection = .importer }
-            Task { await app.setProcessing(.trash, entry: entry.id) }
-        }
-        .disabled(entry.isProcessing)
+        Button("Move to Trash", role: .destructive) { app.moveToTrash(entry.id) }
     }
 }
 

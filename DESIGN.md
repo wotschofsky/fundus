@@ -194,7 +194,7 @@ Labels are informational tags: (12px) text, fine border, chip radius. They wrap,
 
 ### Rows and containers
 
-Archive, trash, people, token, connection, and search rows are plain rows separated by dividers. Metadata (time, duration, processing state with a small spinner) precedes the title and bounded preview. Linked rows underline the title on hover; they do not fill. Notices are outlined; the processing notice pairs the state with Pause, Resume, or Retry. Edit forms and inline renames replace the row in place between rules rather than opening a panel. Empty states are a plain heading, a sentence, and at most one action.
+Archive, trash, people, token, connection, and search rows are plain rows separated by dividers. Metadata (time, duration, processing state with a small spinner) precedes the title and bounded preview. Linked rows underline the title on hover; they do not fill. Notices are outlined; the processing notice pairs the state with Resume or Retry once stopped; Move to Trash cancels a running one. Edit forms and inline renames replace the row in place between rules rather than opening a panel. Empty states are a plain heading, a sentence, and at most one action.
 
 ### Dialog
 
