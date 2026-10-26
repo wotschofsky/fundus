@@ -708,3 +708,30 @@ async fn read_tokens_cannot_list_trash() {
     }
     task.abort();
 }
+
+#[tokio::test]
+async fn long_transcripts_are_summarized_by_section_in_the_main_language() {
+    let (_dir, app, provider, task) = setup(Options::default()).await;
+    let lines: Vec<String> = (0..1000)
+        .map(|i| format!("[A] Sentence {i} about the cedar launch plan and the next proposal."))
+        .collect();
+    let notes = transcript_vault::provider::enrich(&app, &lines)
+        .await
+        .unwrap();
+    let chats = provider.chats.lock().unwrap().clone();
+    let system =
+        |chat: &serde_json::Value| chat["messages"][0]["content"].as_str().unwrap().to_owned();
+    let sections = chats
+        .iter()
+        .filter(|c| !system(c).contains("section summaries"))
+        .count();
+    assert!(sections > 3, "{sections} section requests");
+    let reduce: Vec<_> = chats
+        .iter()
+        .filter(|c| system(c).contains("section summaries"))
+        .collect();
+    assert_eq!(reduce.len(), 1);
+    assert!(system(reduce[0]).ends_with("Write the title and summary in english."));
+    assert_eq!(notes.language, "english");
+    task.abort();
+}

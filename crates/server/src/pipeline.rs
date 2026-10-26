@@ -6,6 +6,7 @@ use crate::{
     voice,
 };
 use anyhow::{Result, bail, ensure};
+use futures_util::future::join_all;
 use serde_json::json;
 use sqlx::Row;
 use std::{
@@ -15,8 +16,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const AMBIGUOUS: &str = "A transcription request may have been submitted. Retry explicitly to authorize another request.";
-/// Entries processed at the same time. Most of a job is waiting for AssemblyAI.
-const CONCURRENCY: usize = 2;
+/// Entries processed at the same time. Most of a job is waiting for AssemblyAI or Groq; local
+/// CPU work and Groq requests have their own limits on `App`.
+const CONCURRENCY: usize = 6;
 /// AssemblyAI's limit for one job.
 const MAX_DURATION_MS: i64 = 10 * 60 * 60 * 1000;
 
@@ -116,12 +118,18 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
         .bind(batch)
         .fetch_all(&app.db)
         .await?;
+    // Decoding is the slow part: verify the uploads in parallel, then record them in order.
+    let verified = join_all(rows.iter().map(|row| async move {
+        let _cpu = app.cpu.acquire().await?;
+        audio::verify(&app.upload_path(&row.get::<String, _>("id"))).await
+    }))
+    .await;
     let mut sources = vec![];
     let mut seen = HashSet::new();
-    for row in rows {
+    for (row, verified) in rows.into_iter().zip(verified) {
         let uid: String = row.get("id");
         let original: String = row.get("original_name");
-        let (format, hash) = match audio::verify(&app.upload_path(&uid)).await {
+        let (format, hash) = match verified {
             Ok(verified) => verified,
             Err(error) => {
                 sqlx::query("UPDATE uploads SET state='invalid',failure=? WHERE id=?")
@@ -286,6 +294,7 @@ async fn stage(app: &App, entry: &str, stage: &str) -> Result<()> {
 /// missing of the browser playback file and the 16 kHz mono FLAC used for transcription and
 /// voice probes. Returns the FLAC.
 async fn render(app: &App, entry: &str, playback: bool) -> Result<PathBuf> {
+    let _cpu = app.cpu.acquire().await?;
     let dir = app.entry_dir(entry);
     tokio::fs::create_dir_all(&dir).await?;
     let rendition = dir.join("transcription.flac");
@@ -640,14 +649,19 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
         !warning.starts_with("Speaker recognition unavailable:")
             && !warning.starts_with("Speaker name analysis unavailable:")
     });
-    if let Err(error) = voice::analyze(app, entry, &rendition).await {
+    // As in processing: both at once, results written afterwards.
+    let (voice, notes) = tokio::join!(
+        voice::analyze(app, entry, &rendition),
+        cached_notes(app, entry, "identity-analysis")
+    );
+    if let Err(error) = voice {
         warnings.push(format!("Speaker recognition unavailable: {error}"));
     }
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
     stage(app, entry, "enriching").await?;
-    match cached_notes(app, entry, "identity-analysis").await {
+    match notes {
         Ok(notes) => {
             save_notes(app, entry, &notes, true).await?;
             apply_name_evidence(app, entry, &notes.names).await?
@@ -725,14 +739,20 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     let mut warnings: Vec<String> = vec![];
     if !utterances.is_empty() {
         stage(app, entry, "recognizing").await?;
-        if let Err(e) = voice::analyze(app, entry, &rendition).await {
+        // Voice analysis is local and the notes come from Groq: both run at once, and their
+        // results are written afterwards, so neither overwrites the other's speaker evidence.
+        let (voice, notes) = tokio::join!(
+            voice::analyze(app, entry, &rendition),
+            cached_notes(app, entry, "enrichment")
+        );
+        if let Err(e) = voice {
             warnings.push(format!("Speaker recognition unavailable: {e}"));
         }
         if pause_at_checkpoint(app, entry).await? {
             return Ok(());
         }
         stage(app, entry, "enriching").await?;
-        match cached_notes(app, entry, "enrichment").await {
+        match notes {
             Ok(notes) => {
                 save_notes(app, entry, &notes, false).await?;
                 apply_name_evidence(app, entry, &notes.names).await?;
@@ -838,8 +858,14 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
     let mut embedding_error = None;
     if provider::semantic_search(app) {
         let texts: Vec<String> = chunks.iter().map(|(_, _, t)| t.clone()).collect();
-        for (batch, values) in texts.chunks(32).enumerate() {
-            match provider::embeddings(app, values, true).await {
+        let batches = join_all(
+            texts
+                .chunks(32)
+                .map(|values| provider::embeddings(app, values, true)),
+        )
+        .await;
+        for (batch, result) in batches.into_iter().enumerate() {
+            match result {
                 Ok(v) => {
                     for (i, x) in v.into_iter().enumerate() {
                         vectors.insert(batch * 32 + i, x);

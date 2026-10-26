@@ -3,6 +3,7 @@
 //! endpoint receives passage text for semantic search. Nothing else leaves the server.
 use crate::config::App;
 use anyhow::{Context, Result, ensure};
+use futures_util::future::try_join_all;
 use reqwest::{RequestBuilder, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -319,6 +320,7 @@ async fn structured<T: DeserializeOwned>(
         "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": true, "schema": schema}},
     });
     let url = format!("{}/chat/completions", app.config.groq_url);
+    let _slot = app.groq.acquire().await?;
     let raw = with_retry("Groq", 4, || {
         Ok(app
             .client
@@ -382,17 +384,24 @@ pub async fn enrich(app: &App, lines: &[String]) -> Result<Notes> {
         )
         .await;
     }
+    // Sections are summarized in parallel (`App::groq` bounds the requests) and kept in order.
+    let parts =
+        try_join_all(sections.iter().enumerate().map(|(number, range)| {
+            let user = format!(
+                "Section {} of {} of a longer recording. Summarize this section only.\n\n{}",
+                number + 1,
+                sections.len(),
+                lines[range.clone()].join("\n")
+            );
+            let system = &system;
+            async move {
+                structured::<Notes>(app, system, &user, "recording_notes", notes_schema()).await
+            }
+        }))
+        .await?;
     let (mut summaries, mut names) = (vec![], vec![]);
     let mut spoken: HashMap<String, usize> = HashMap::new();
-    for (number, range) in sections.iter().enumerate() {
-        let user = format!(
-            "Section {} of {} of a longer recording. Summarize this section only.\n\n{}",
-            number + 1,
-            sections.len(),
-            lines[range.clone()].join("\n")
-        );
-        let notes: Notes =
-            structured(app, &system, &user, "recording_notes", notes_schema()).await?;
+    for ((number, range), notes) in sections.iter().enumerate().zip(parts) {
         let characters: usize = lines[range.clone()].iter().map(String::len).sum();
         *spoken
             .entry(notes.language.trim().to_lowercase())

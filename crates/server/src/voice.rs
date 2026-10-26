@@ -121,6 +121,7 @@ fn embed(model: &Path, clips: Vec<(String, Vec<PathBuf>)>) -> Result<Vec<(String
     Ok(result)
 }
 pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<()> {
+    let _cpu = app.cpu.acquire().await?;
     let model = app
         .config
         .voice_model

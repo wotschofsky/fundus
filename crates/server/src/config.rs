@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::{path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 #[derive(Clone)]
 pub struct Config {
@@ -116,6 +116,12 @@ pub struct App {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
     pub wake: Arc<Notify>,
+    /// Local CPU-heavy steps (decoding, rendering, voice analysis) running at once. The
+    /// container has 1.5 CPUs and 1.5 GB; everything else is waiting on providers.
+    pub cpu: Arc<Semaphore>,
+    /// Groq requests in flight across all recordings, so parallel work stays under its
+    /// per-minute limits instead of retrying through them.
+    pub groq: Arc<Semaphore>,
     pub upload_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub mutations: Arc<Mutex<()>>,
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
@@ -136,7 +142,7 @@ impl App {
             .synchronous(SqliteSynchronous::Full)
             .busy_timeout(std::time::Duration::from_secs(10));
         let db = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(10)
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&db).await?;
@@ -148,6 +154,8 @@ impl App {
                 .timeout(std::time::Duration::from_secs(1200))
                 .build()?,
             wake: Arc::new(Notify::new()),
+            cpu: Arc::new(Semaphore::new(2)),
+            groq: Arc::new(Semaphore::new(4)),
             upload_locks: Default::default(),
             mutations: Default::default(),
             login_attempts: Default::default(),
