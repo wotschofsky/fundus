@@ -19,8 +19,10 @@ app="build/Transcript Vault.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/TranscriptVault"
-xcrun actool apps/macos/Resources/AppIcon.icon --compile "$app/Contents/Resources" --platform macosx \
-  --minimum-deployment-target 15.0 --app-icon AppIcon --output-partial-info-plist .cache/AppIcon.plist >/dev/null
+# Absolute paths: actool hands the work to a long-lived helper that resolves relative ones against
+# whichever directory it was first started from.
+xcrun actool "$PWD/apps/macos/Resources/AppIcon.icon" --compile "$PWD/$app/Contents/Resources" --platform macosx \
+  --minimum-deployment-target 15.0 --app-icon AppIcon --output-partial-info-plist "$PWD/.cache/AppIcon.plist" >/dev/null
 # The bundle identifier predates the rename; changing it would orphan saved connections and settings.
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
