@@ -46,6 +46,7 @@ final class AppModel {
     @ObservationIgnored private var historySignature = ""
     @ObservationIgnored private var lastRefresh = Date.distantPast
     @ObservationIgnored private var subscriptions: Set<AnyCancellable> = []
+    @ObservationIgnored private let recorderPrompt = RecorderPrompt()
 
     init() {
         let snapshot = TransferQueue.shared.snapshot
@@ -64,6 +65,7 @@ final class AppModel {
         native.$server.removeDuplicates().sink { [weak self] in self?.vaultChanged($0) }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in Task { await self?.refreshIfStale() } }.store(in: &subscriptions)
+        sources.onArrival = { [weak self] in self?.recorderConnected() }
     }
 
     var vaultName: String { URL(string: server)?.host ?? "Choose Vault" }
@@ -194,6 +196,12 @@ final class AppModel {
         panel.message = "Choose recordings to send to \(uploadVaultName). The files themselves are not changed."
         guard panel.runModal() == .OK else { return }
         importFiles(panel.urls)
+    }
+
+    /// A mic was plugged in while the app runs: offer its new recordings in a small window.
+    private func recorderConnected() {
+        sessions.update(sources.shownFiles, server: uploadServer)
+        if !sessions.proposed(server: uploadServer).isEmpty { recorderPrompt.show(self) }
     }
 
     func importSessions(_ selected: [RecordingSession]) {

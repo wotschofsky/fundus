@@ -26,19 +26,41 @@ final class RecorderSourcesTests: XCTestCase {
         let inventory = Inventory([first])
         let notifications = NotificationCenter()
         let source = RecorderSources(notifications: notifications, discover: { _ in await inventory.read() }, eject: { _ in })
+        var arrivals = 0
+        source.onArrival = { arrivals += 1 }
         defer { source.stop() }
         source.start(timezone: "UTC")
         try await eventually { !source.isScanning }
         XCTAssertEqual(source.devices, [first])
+        XCTAssertEqual(arrivals, 0, "a recorder connected at launch is not announced")
 
         await inventory.replace([first, second])
         notifications.post(name: NSWorkspace.didMountNotification, object: nil, userInfo: [NSWorkspace.volumeURLUserInfoKey: second.url])
         try await eventually { source.devices.count == 2 }
         XCTAssertEqual(source.devices, [first, second])
+        XCTAssertEqual(arrivals, 1)
 
         await inventory.replace([second])
         notifications.post(name: NSWorkspace.didUnmountNotification, object: nil, userInfo: [NSWorkspace.volumeURLUserInfoKey: first.url])
         try await eventually { source.devices == [second] && !source.isScanning }
+        source.refresh()
+        try await eventually { !source.isScanning }
+        XCTAssertEqual(arrivals, 1, "unplugging and rescanning announce nothing")
+    }
+
+    func testProposesLongSessionsTheVaultDoesNotHaveYet() {
+        let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let files = [recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
+                     recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 5),
+                     recording("TX01_MIC003_20261020_140000_orig.wav", seconds: 900)]
+            .map { RecorderFile(url: $0.url, size: $0.fileSize, modified: nil, recorded: $0.start, transmitter: $0.transmitter, recording: $0) }
+        sessions.update(files, server: "https://vault")
+        XCTAssertEqual(sessions.proposed(server: "https://vault").map(\.recordings[0].filename),
+                       ["TX01_MIC001_20261020_100000_orig.wav", "TX01_MIC003_20261020_140000_orig.wav"])
+
+        sessions.register([sessions.sessions[0]], server: "https://vault", importID: "import")
+        XCTAssertEqual(sessions.proposed(server: "https://vault").map(\.recordings[0].filename), ["TX01_MIC003_20261020_140000_orig.wav"])
+        XCTAssertEqual(sessions.proposed(server: "https://other").count, 2, "imports are per vault")
     }
 
     func testEjectsAllRecordersAndPreservesFailuresForRetry() async throws {

@@ -49,10 +49,18 @@ final class SourceSessions {
         problems = files.compactMap { file in file.inspectionError.map { SourceProblem(filename: file.name, message: $0) } }
         sessions = grouper.group(recordings, overrides: overrides)
         selected.formIntersection(recordings.map(\.fingerprint))
-        for session in sessions where session.duration >= 120 && record(for: session, server: server) == nil {
+        for session in sessions where session.duration >= Self.worthImporting && record(for: session, server: server) == nil {
             let new = session.recordings.map(\.fingerprint).filter { !old.contains($0) }
             selected.formUnion(new)
         }
+    }
+
+    /// Seconds; shorter sessions are usually a stray button press and are not ticked by themselves.
+    static let worthImporting: TimeInterval = 120
+
+    /// What the window shown on plugging in a mic offers: long enough, and not in this vault yet, even in part.
+    func proposed(server: String) -> [RecordingSession] {
+        sessions.filter { $0.duration >= Self.worthImporting && record(for: $0, server: server) == nil && !partlyImported($0, server: server) }
     }
 
     func isSelected(_ session: RecordingSession) -> Bool { session.recordings.allSatisfy { selected.contains($0.fingerprint) } }

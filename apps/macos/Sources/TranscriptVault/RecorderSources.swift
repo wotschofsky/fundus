@@ -141,6 +141,9 @@ final class RecorderSources {
     private(set) var isEjecting = false
     /// The folder was chosen after the current recorders connected.
     private var prefersFolder = false
+    /// A recorder was plugged in while the app runs; not called for those connected at launch.
+    @ObservationIgnored var onArrival: (@MainActor () -> Void)?
+    @ObservationIgnored private var hasScanned = false
     @ObservationIgnored private var timezone = TimeZone.current
     @ObservationIgnored private let notifications: NotificationCenter
     @ObservationIgnored private let discover: @Sendable (TimeZone) async -> [RecorderDevice]
@@ -225,9 +228,12 @@ final class RecorderSources {
             let devices = await discover(timezone)
             guard let self, !Task.isCancelled, self.generation == generation else { return }
             // A recorder that was not there before takes over from a chosen folder.
-            if !Set(devices.map(\.id)).subtracting(self.devices.map(\.id)).isEmpty { self.prefersFolder = false }
+            let arrived = !Set(devices.map(\.id)).subtracting(self.devices.map(\.id)).isEmpty
+            if arrived { self.prefersFolder = false }
             self.devices = devices
             self.isScanning = false
+            if arrived && self.hasScanned { self.onArrival?() }
+            self.hasScanned = true
         }
     }
 
