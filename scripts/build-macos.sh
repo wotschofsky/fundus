@@ -33,6 +33,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+<key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 <key>NSRemovableVolumesUsageDescription</key><string>Needed to read recordings from your microphone. Recordings are never modified or deleted.</string>

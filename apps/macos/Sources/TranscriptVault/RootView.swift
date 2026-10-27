@@ -27,8 +27,6 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .disabled(app.sources.isEjecting)
-        .task { await app.start() }
-        .task { await app.run() }
         // A recorder that was just plugged in is what the person wants to look at.
         .onChange(of: app.sources.devices.map(\.id)) { old, new in
             if !Set(new).subtracting(old).isEmpty { app.selection = .importer }
