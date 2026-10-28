@@ -42,7 +42,8 @@ final class AppModel {
 
     @ObservationIgnored let queue = TransferQueue.shared
     @ObservationIgnored let native = NativeVaultSession.shared
-    @ObservationIgnored private var pendingSessions: [RecordingSession] = []
+    /// Handed to the queue, until it gives them an import ID.
+    private var pendingSessions: [RecordingSession] = []
     /// Asked for from the mic window while another upload runs: they go next, together.
     private(set) var waitingSessions: [RecordingSession] = []
     @ObservationIgnored private var historySignature = ""
@@ -212,6 +213,11 @@ final class AppModel {
     func importNext(_ session: RecordingSession) {
         waitingSessions.append(session)
         importWaiting()
+    }
+
+    /// Asked for, but not yet in the queue's import.
+    func isQueued(_ session: RecordingSession) -> Bool {
+        waitingSessions.contains { $0.id == session.id } || pendingSessions.contains { $0.id == session.id }
     }
 
     private func importWaiting() {

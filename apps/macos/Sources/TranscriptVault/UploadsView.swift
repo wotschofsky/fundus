@@ -84,6 +84,21 @@ struct TransferSummary: View {
     }
 }
 
+/// A session's upload as a circle that fills up; empty while it waits its turn. Its own view, so
+/// only it redraws with every progress tick.
+struct UploadCircle: View {
+    let record: SessionImportRecord?
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let progress = record.flatMap { $0.importID == app.transfer.importID ? Upload.progress(app.transfer) : nil } ?? 0
+        ProgressView(value: progress)
+            .progressViewStyle(.circular)
+            .help(record == nil ? "Waiting for the current upload" : "Uploading, \(Int(progress * 100))%")
+            .accessibilityLabel("Upload")
+    }
+}
+
 enum Upload {
     /// Whole-batch progress: preparation counts for a third of a file, the upload for the rest.
     static func progress(_ state: QueueState) -> Double {

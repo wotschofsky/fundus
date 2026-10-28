@@ -147,22 +147,21 @@ private struct RecorderPromptView: View {
     }
 
     @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?) -> some View {
-        if let record {
-            if record.stage == "complete" {
-                Label("Imported", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else {
-                HStack(spacing: 6) {
-                    if !["failed", "paused"].contains(record.stage) { ProgressView().controlSize(.mini) }
-                    Text(Entry.describe(stage: record.stage, activeStage: record.activeStage, pauseRequested: record.pauseRequested))
-                }
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        if let record, record.stage == "complete" {
+            Label("Imported", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else if let record, record.stage != "uploading" {
+            HStack(spacing: 6) {
+                if !["failed", "paused"].contains(record.stage) { ProgressView().controlSize(.mini) }
+                Text(Entry.describe(stage: record.stage, activeStage: record.activeStage, pauseRequested: record.pauseRequested))
             }
-        } else if app.waitingSessions.contains(where: { $0.id == session.id }) {
-            Label("Waiting", systemImage: "hourglass")
-                .foregroundStyle(.secondary)
-                .help("Imports when the current upload is done")
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        } else if record != nil || app.isQueued(session) {
+            // Where the Import button was, from the moment it is pressed.
+            UploadCircle(record: record)
+                .controlSize(.small)
+                .frame(width: 24, height: 24)
         } else {
             Button("Import", systemImage: "square.and.arrow.down") { app.importNext(session) }
                 .labelStyle(.iconOnly)

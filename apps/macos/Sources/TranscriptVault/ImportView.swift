@@ -251,8 +251,12 @@ private struct SessionRow: View {
                         .buttonStyle(.link)
                 }
             } else {
-                ProgressView().controlSize(.mini)
-                Text(text).foregroundStyle(.secondary)
+                if record.stage == "uploading" {
+                    UploadCircle(record: record).controlSize(.small)
+                } else {
+                    ProgressView().controlSize(.mini)
+                    Text(text).foregroundStyle(.secondary)
+                }
                 if let id = record.entryID, record.pauseRequested != true {
                     Button("Pause") { Task { await app.setProcessing(.pause, entry: id) } }
                         .buttonStyle(.link)
