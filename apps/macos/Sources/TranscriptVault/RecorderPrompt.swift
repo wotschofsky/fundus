@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The small window that appears when a DJI mic is plugged in: its new recordings, ticked, and one
+/// The small window that appears when a DJI mic is plugged in: its recordings, each with its own
 /// Import button. A floating panel instead of a SwiftUI scene, so it opens whatever the main window
 /// is doing, and it does not take the keyboard from the app in front.
 @MainActor
@@ -21,9 +21,10 @@ final class RecorderPrompt {
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        // A fresh view each time, so recordings unticked last time are offered again.
         let host = NSHostingController(rootView: RecorderPromptView(close: { [weak panel] in panel?.close() }).environment(app))
         host.sizingOptions = .preferredContentSize
+        // The hidden title bar would otherwise add its height above the header.
+        host.safeAreaRegions = []
         panel.contentViewController = host
         panel.center()
         panel.orderFrontRegardless()
@@ -33,43 +34,72 @@ final class RecorderPrompt {
 private struct RecorderPromptView: View {
     let close: () -> Void
     @Environment(AppModel.self) private var app
-    @State private var skipped: Set<String> = []
-    @State private var greeted = false
 
+    /// Newest first, imported ones too; fragments too short to be worth importing are left out.
+    private var listed: [RecordingSession] {
+        guard app.sources.showsRecorders else { return [] }
+        return app.sessions.sessions.filter { $0.duration >= SourceSessions.worthImporting }.sorted { $0.start > $1.start }
+    }
     private var proposed: [RecordingSession] { app.sources.showsRecorders ? app.sessions.proposed(server: app.uploadServer) : [] }
-    private var chosen: [RecordingSession] { proposed.filter { !skipped.contains($0.id) } }
     private func length(_ session: RecordingSession) -> TimeInterval { app.sessions.trim(for: session)?.duration ?? session.duration }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             recordings
-            footer
+            HStack {
+                if app.uploadServer.isEmpty {
+                    Label("Connect a vault in Settings", systemImage: "exclamationmark.circle")
+                } else {
+                    Label(app.uploadVaultName, systemImage: "books.vertical")
+                }
+                Spacer(minLength: 8)
+                let zone = TimeZone(identifier: app.transfer.timezone) ?? .current
+                Label("Recorder clock \(Format.utcOffset(zone))", systemImage: "clock")
+                    .help("Recording times are read in \(zone.identifier). Change it in Settings.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
         }
         .padding(24)
         .frame(width: 400)
+        .overlay(alignment: .topTrailing) {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(.quaternary, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .keyboardShortcut(.cancelAction)
+            // On the same lines as the header's top and the list's edge.
+            .padding(24)
+            .help("Close")
+            .accessibilityLabel("Close")
+        }
         .onChange(of: app.sources.shownFiles) { _, files in app.sessions.update(files, server: app.uploadServer) }
-        // Unplugged, or imported from the main window meanwhile: nothing left to offer.
-        .onChange(of: proposed.isEmpty) { _, empty in if empty { close() } }
+        // Unplugged: nothing left to show.
+        .onChange(of: listed.isEmpty) { _, empty in if empty { close() } }
     }
 
     private var header: some View {
         HStack(spacing: 16) {
-            Image(systemName: "mic.fill")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 48, height: 48)
-                .background(Color.accentColor.gradient, in: Circle())
-                .symbolEffect(.bounce, value: greeted)
-                .task {
-                    try? await Task.sleep(for: .milliseconds(250))
-                    greeted = true
-                }
+            // App icons have a transparent margin: drawn larger, the icon itself fills the 48 points
+            // laid out for it, level with the close button.
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 60, height: 60)
+                .padding(-6)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text("DJI Mic connected")
                     .font(.title3.weight(.semibold))
-                Text("\(proposed.count == 1 ? "1 new recording" : "\(proposed.count) new recordings") · \(Format.duration(proposed.map(length).reduce(0, +)))")
+                Text(proposed.isEmpty ? "Everything is imported"
+                     : "\(proposed.count == 1 ? "1 new recording" : "\(proposed.count) new recordings") · \(Format.duration(proposed.map(length).reduce(0, +)))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -78,76 +108,69 @@ private struct RecorderPromptView: View {
     }
 
     private var recordings: some View {
-        let showsMic = Set(proposed.map(\.transmitter)).count > 1
-        return VStack(spacing: 0) {
-            ForEach(Array(proposed.enumerated()), id: \.element.id) { index, session in
-                if index > 0 { Divider().padding(.leading, 44) }
-                row(session, showsMic: showsMic)
+        let showsMic = Set(listed.map(\.transmitter)).count > 1
+        return ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(listed.enumerated()), id: \.element.id) { index, session in
+                    if index > 0 { Divider().padding(.leading, 12) }
+                    row(session, showsMic: showsMic)
+                }
             }
         }
+        .frame(maxHeight: 330)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func row(_ session: RecordingSession, showsMic: Bool) -> some View {
-        let isChosen = !skipped.contains(session.id)
         let trim = app.sessions.trim(for: session)
         let start = session.start(trimmedBy: trim), end = session.end(trimmedBy: trim)
-        return Button {
-            if isChosen { skipped.insert(session.id) } else { skipped.remove(session.id) }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: isChosen ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isChosen ? Color.accentColor : Color.secondary)
-                    .contentTransition(.symbolEffect(.replace))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(Format.timeRange(start, end))
-                        .fontWeight(.medium)
-                    Text(showsMic ? "\(day(start)) · \(session.transmitter)" : day(start))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(Format.duration(length(session)))
+        let record = app.sessions.record(for: session, server: app.uploadServer)
+        let partly = record == nil && app.sessions.partlyImported(session, server: app.uploadServer)
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Format.timeRange(start, end))
+                    .fontWeight(.medium)
+                    .foregroundStyle(record?.stage == "complete" ? .secondary : .primary)
+                Text([day(start), Format.duration(length(session)), showsMic ? session.transmitter : nil, partly ? "partly imported" : nil]
+                    .compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .monospacedDigit()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            Spacer(minLength: 8)
+            status(session, record: record)
         }
-        .buttonStyle(.plain)
-        .accessibilityValue(isChosen ? "Will be imported" : "Skipped")
+        .monospacedDigit()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Group {
-                if app.uploadServer.isEmpty {
-                    Label("Connect a vault in Settings", systemImage: "exclamationmark.circle")
-                } else if !app.canImport {
-                    Label("Waiting for the current upload", systemImage: "hourglass")
-                } else {
-                    Label(app.uploadVaultName, systemImage: "books.vertical")
+    @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?) -> some View {
+        if let record {
+            if record.stage == "complete" {
+                Label("Imported", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                HStack(spacing: 6) {
+                    if !["failed", "paused"].contains(record.stage) { ProgressView().controlSize(.mini) }
+                    Text(Entry.describe(stage: record.stage, activeStage: record.activeStage, pauseRequested: record.pauseRequested))
                 }
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            Spacer(minLength: 8)
-            Button("Not Now", action: close)
-                .keyboardShortcut(.cancelAction)
-            Button("Import \(chosen.count)") {
-                app.importSessions(chosen)
-                close()
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(chosen.isEmpty || !app.canImport)
+        } else if app.waitingSessions.contains(where: { $0.id == session.id }) {
+            Label("Waiting", systemImage: "hourglass")
+                .foregroundStyle(.secondary)
+                .help("Imports when the current upload is done")
+        } else {
+            Button("Import", systemImage: "square.and.arrow.down") { app.importNext(session) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .disabled(app.uploadServer.isEmpty)
+                .help("Import into \(app.uploadVaultName)")
         }
-        .controlSize(.large)
     }
 
     /// `Today`, `Yesterday`, or `Oct 24`.

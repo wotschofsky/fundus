@@ -43,6 +43,8 @@ final class AppModel {
     @ObservationIgnored let queue = TransferQueue.shared
     @ObservationIgnored let native = NativeVaultSession.shared
     @ObservationIgnored private var pendingSessions: [RecordingSession] = []
+    /// Asked for from the mic window while another upload runs: they go next, together.
+    private(set) var waitingSessions: [RecordingSession] = []
     @ObservationIgnored private var historySignature = ""
     @ObservationIgnored private var lastRefresh = Date.distantPast
     @ObservationIgnored private var subscriptions: Set<AnyCancellable> = []
@@ -94,6 +96,7 @@ final class AppModel {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
+            importWaiting()
             let busy = library.isProcessing || isTransferring || !sessions.pendingImportIDs(server: uploadServer).isEmpty
             if busy || Date.now.timeIntervalSince(lastRefresh) > 60 { await refresh() }
         }
@@ -202,6 +205,23 @@ final class AppModel {
     private func recorderConnected() {
         sessions.update(sources.shownFiles, server: uploadServer)
         if !sessions.proposed(server: uploadServer).isEmpty { recorderPrompt.show(self) }
+    }
+
+    /// One session from the mic window: now, or after the current upload, as the queue takes one
+    /// import at a time.
+    func importNext(_ session: RecordingSession) {
+        waitingSessions.append(session)
+        importWaiting()
+    }
+
+    private func importWaiting() {
+        guard !waitingSessions.isEmpty, canImport, pendingSessions.isEmpty else { return }
+        // Imported meanwhile, or the mic was unplugged.
+        let next = waitingSessions.filter { waiting in
+            sessions.record(for: waiting, server: uploadServer) == nil && sessions.sessions.contains { $0.id == waiting.id }
+        }
+        waitingSessions = []
+        if !next.isEmpty { importSessions(next) }
     }
 
     func importSessions(_ selected: [RecordingSession]) {
