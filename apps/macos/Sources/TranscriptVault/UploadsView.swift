@@ -92,10 +92,19 @@ struct UploadCircle: View {
 
     var body: some View {
         let progress = record.flatMap { $0.importID == app.transfer.importID ? Upload.progress(app.transfer) : nil } ?? 0
-        ProgressView(value: progress)
-            .progressViewStyle(.circular)
-            .help(record == nil ? "Waiting for the current upload" : "Uploading, \(Int(progress * 100))%")
+        // Drawn by hand: the system's circular progress has a fixed, heavier line.
+        ZStack {
+            Circle().stroke(.quaternary, lineWidth: 1.5)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 15, height: 15)
+        .animation(.linear, value: progress)
+        .help(record == nil ? "Waiting for the current upload" : "Uploading, \(Int(progress * 100))%")
             .accessibilityLabel("Upload")
+            .accessibilityValue("\(Int(progress * 100))%")
     }
 }
 

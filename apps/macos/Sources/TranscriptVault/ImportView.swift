@@ -252,7 +252,7 @@ private struct SessionRow: View {
                 }
             } else {
                 if record.stage == "uploading" {
-                    UploadCircle(record: record).controlSize(.small)
+                    UploadCircle(record: record)
                 } else {
                     ProgressView().controlSize(.mini)
                     Text(text).foregroundStyle(.secondary)

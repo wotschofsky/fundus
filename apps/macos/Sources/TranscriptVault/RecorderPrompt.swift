@@ -160,7 +160,6 @@ private struct RecorderPromptView: View {
         } else if record != nil || app.isQueued(session) {
             // Where the Import button was, from the moment it is pressed.
             UploadCircle(record: record)
-                .controlSize(.small)
                 .frame(width: 24, height: 24)
         } else {
             Button("Import", systemImage: "square.and.arrow.down") { app.importNext(session) }
