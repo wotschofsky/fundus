@@ -1,4 +1,4 @@
-# Transcript Vault
+# Fundus
 
 A private recording archive: native apps prepare and upload audio, a Rust server runs the processing pipeline, and a web library or any compatible MCP agent retrieves the results. Each person runs their own deployment.
 
@@ -10,7 +10,7 @@ The server accepts **HTTP only**. Put your existing HTTPS reverse proxy in front
 cp .env.example .env
 # Edit .env: external URL, AssemblyAI and OpenAI API keys, recorder timezone.
 docker compose build
-python3 -c 'import getpass; print(getpass.getpass("Vault password: "))' | docker compose run --rm -T server init
+python3 -c 'import getpass; print(getpass.getpass("Fundus password: "))' | docker compose run --rm -T server init
 docker compose up -d
 ```
 
@@ -41,8 +41,8 @@ pnpm install --frozen-lockfile
 pnpm build
 cargo build --locked --release
 # Export configuration from .env in your shell (the binary does not auto-load it).
-python3 -c 'import getpass; print(getpass.getpass("Vault password: "))' | target/release/transcript-vault init
-target/release/transcript-vault serve
+python3 -c 'import getpass; print(getpass.getpass("Fundus password: "))' | target/release/fundus init
+target/release/fundus serve
 ```
 
 Default local bind is `127.0.0.1:3000`, public URL `http://localhost:3000`, data directory `data`, and web app `web/dist` (`VAULT_WEB_DIR`). A release server reads the built web app at startup (a debug build on every request) and refuses to serve without it, so UI changes need no Rust compile. `ASSEMBLYAI_API_KEY` is required: the server refuses to start when it is missing or blank. `OPENAI_API_KEY` is recommended: without it, recordings get no titles, summaries or name evidence and show a warning, and search uses keywords only. Initialization, backup, and other administrative commands do not need an API key.
@@ -53,7 +53,7 @@ For prebuilt GHCR deployment, multi-platform CI and versioned native bundles, se
 [packaging and releases](docs/packaging.md). `compose.image.yaml` runs a published
 image without compiling on the server; `compose.yaml` builds from source.
 
-**Mac:** `scripts/build-macos.sh` builds `build/Transcript Vault.app`; `scripts/package-macos.sh` also creates versioned ZIP/DMG bundles and checksums. The app runs on macOS 15+ and is built with Xcode 26 or newer, which supplies the Liquid Glass design. The build signs with `MACOS_SIGNING_IDENTITY`, otherwise with the first Developer ID Application or Apple Development identity in your keychain, and only falls back to ad hoc signing without one. Keep the identity stable: Keychain access to saved connections is tied to it, so every ad hoc build asks again. Connect your server in Settings (⌘,) and approve owner access in your browser. Credentials are stored per vault in Keychain; saved vaults are listed at the bottom of the sidebar. A manual upload-token fallback is available for older servers. Use `scripts/package-macos.sh --release` with your own Developer ID identity for a production build; add a notarization profile for distribution to other Macs.
+**Mac:** `scripts/build-macos.sh` builds `build/Fundus.app`; `scripts/package-macos.sh` also creates versioned ZIP/DMG bundles and checksums. The app runs on macOS 15+ and is built with Xcode 26 or newer, which supplies the Liquid Glass design. The build signs with `MACOS_SIGNING_IDENTITY`, otherwise with the first Developer ID Application or Apple Development identity in your keychain, and only falls back to ad hoc signing without one. Keep the identity stable: Keychain access to saved connections is tied to it, so every ad hoc build asks again. Connect your server in Settings (⌘,) and approve owner access in your browser. Credentials are stored per vault in Keychain; saved vaults are listed at the bottom of the sidebar. A manual upload-token fallback is available for older servers. Use `scripts/package-macos.sh --release` with your own Developer ID identity for a production build; add a notarization profile for distribution to other Macs.
 
 The Mac app keeps the Mic Ingest layout: an Import screen for the connected recorder or a chosen folder, and the vault's transcripts in the sidebar. It preserves the recorder workflow: automatic discovery at startup and mount, per-microphone tabs, grouped rollover sessions, short-fragment filtering, manual merge/split, seamless multi-clip preview, frame-based trim selection, and safe eject after copying. Plugging in a mic while the app is open brings up a small window listing its recordings of two minutes or more, newest first, each with its own Import button; those already in the vault are marked Imported. Individual files can be imported with ⌘O. Grouping and trim decisions are metadata sent with the import; the server performs the actual merge, trim, transcription, and indexing. Source-history receipts show prior imports and remote processing progress. Transcripts stream their audio from the vault as you listen, follow processing while it runs, and support title/label/date edits, people and speaker corrections, Markdown export, and recoverable Trash. Settings cover the vault connection, recorder clock, recording context, people, and voice-match thresholds. Closing the window keeps the app running in the menu bar, where it still notices a plugged-in mic; it opens there at login (switch that off in its menu bar menu). The app polls the vault every few seconds while something is uploading or processing, and otherwise once a minute and when it becomes active.
 
@@ -116,7 +116,7 @@ The server supports OAuth authorization code flow with PKCE S256, dynamic client
 For older clients without OAuth, create a **read** token under Settings and use their Bearer-token setting. For example, a Codex configuration can read a manually provisioned token from the client environment:
 
 ```toml
-[mcp_servers.transcript_vault]
+[mcp_servers.fundus]
 url = "https://your-vault.example/mcp"
 bearer_token_env_var = "VAULT_READ_TOKEN"
 ```
@@ -136,7 +136,7 @@ docker compose run --rm -v "$PWD/backups:/backup" server backup /backup/first
 docker compose up -d
 ```
 
-Or locally: `transcript-vault backup /path/to/new-backup`. Backups include a SQLite snapshot and archived audio directories, including unfinished uploads. Restore into an empty data directory while the server is stopped; preserve file ownership, then start the same or a newer compatible binary. Backups contain credential hashes and password hashes: treat them as private.
+Or locally: `fundus backup /path/to/new-backup`. Backups include a SQLite snapshot and archived audio directories, including unfinished uploads. Restore into an empty data directory while the server is stopped; preserve file ownership, then start the same or a newer compatible binary. Backups contain credential hashes and password hashes: treat them as private.
 
 Moving an entry to Trash hides it from the library and MCP retrieval until restored. It also cancels processing: the worker finishes its current step and stops at the next checkpoint, so a recording trashed before transcription is never sent to AssemblyAI. Permanent deletion removes its transcript, indexes, voice contributions, owned source blobs, and working/playback files. It does not touch originals on the recorder or copies in older backups. Unfinished/orphan uploads are retained; no automatic age-based deletion is enabled.
 

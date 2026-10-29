@@ -419,11 +419,12 @@ private struct AdvancedSettings: View {
                 }
                 LabeledContent("Upload cache") {
                     Button("Show in Finder") {
+                        // Match the shared queue's legacy location so existing imports stay visible.
                         NSWorkspace.shared.open(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                             .appendingPathComponent("TranscriptVault/Queue", isDirectory: true))
                     }
                 }
-                LabeledContent("Logs", value: "Console.app, subsystem TranscriptVault")
+                LabeledContent("Logs", value: "Console.app, subsystem Fundus")
             }
         }
         .formStyle(.grouped)

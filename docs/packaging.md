@@ -35,10 +35,10 @@ FFmpeg, speaker model and ONNX Runtime come from independent stages: a UI-only
 change rebuilds neither the binary nor the model download.
 
 ```sh
-docker build -t transcript-vault:local .
-python3 scripts/container-smoke.py transcript-vault:local
+docker build -t fundus:local .
+python3 scripts/container-smoke.py fundus:local
 # Also verify proxy authentication without initializing an owner password:
-python3 scripts/container-smoke.py transcript-vault:local --proxy
+python3 scripts/container-smoke.py fundus:local --proxy
 ```
 
 The smoke check creates and removes disposable containers, an internal network

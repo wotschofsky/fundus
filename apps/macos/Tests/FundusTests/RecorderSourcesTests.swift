@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import TranscriptVault
+@testable import Fundus
 
 private actor Inventory {
     var devices: [RecorderDevice]

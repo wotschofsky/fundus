@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the shipped image on an internal Docker network using synthetic data.
 
-Usage: python3 scripts/container-smoke.py transcript-vault:local
+Usage: python3 scripts/container-smoke.py fundus:local
 Only the fixture script is mounted. No account data or real API keys are used.
 The same file serves the mock provider and runs the HTTP client in Python containers.
 """
@@ -220,7 +220,7 @@ def run_image(image, proxy=False):
             docker("run", "--rm", "--name", name + "-client", "--network", network,
                    "--read-only", "--cap-drop=ALL", *fixture_mount,
                    FIXTURE_IMAGE, "python3", "/fixture.py", mode, *( ["--proxy"] if proxy else []))
-            docker("exec", name + "-server", "transcript-vault", "healthcheck")
+            docker("exec", name + "-server", "fundus", "healthcheck")
         print("Container smoke passed; no external provider requests were possible.")
     except BaseException:
         subprocess.run(["docker", "logs", name + "-server"], check=False, timeout=15)
@@ -232,7 +232,7 @@ def run_image(image, proxy=False):
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "transcript-vault:local"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "fundus:local"
     if mode == "mock":
         http.server.ThreadingHTTPServer(("0.0.0.0", 3119), Provider).serve_forever()
     elif mode in ("client", "restarted"):

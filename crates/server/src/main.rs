@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use transcript_vault::{
+use fundus::{
     auth,
     config::{App, Config},
 };
 #[derive(Parser)]
 #[command(
-    name = "transcript-vault",
+    name = "fundus",
     version,
     about = "A private recording archive with native upload clients and MCP retrieval"
 )]
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or("transcript_vault=info,tower_http=warn".into()),
+                .unwrap_or("fundus=info,tower_http=warn".into()),
         )
         .init();
     let cli = Cli::parse();
@@ -118,17 +118,14 @@ async fn main() -> Result<()> {
                 .await?;
             anyhow::ensure!(
                 app.config.proxy_auth || owner.is_some(),
-                "Run transcript-vault init first (password from stdin or VAULT_OWNER_PASSWORD)"
+                "Run fundus init first (password from stdin or VAULT_OWNER_PASSWORD)"
             );
             let listener = tokio::net::TcpListener::bind(&app.config.bind)
                 .await
                 .context("Could not bind HTTP listener")?;
             let shutdown = tokio_util::sync::CancellationToken::new();
-            let worker = tokio::spawn(transcript_vault::pipeline::worker(
-                app.clone(),
-                shutdown.clone(),
-            ));
-            let router = transcript_vault::api::router(app.clone(), shutdown.clone());
+            let worker = tokio::spawn(fundus::pipeline::worker(app.clone(), shutdown.clone()));
+            let router = fundus::api::router(app.clone(), shutdown.clone());
             tracing::info!(address=%app.config.bind,"HTTP server listening; TLS belongs to the reverse proxy");
             let stop = shutdown.clone();
             axum::serve(listener, router)

@@ -1,11 +1,11 @@
 mod common;
 use common::{Options, Provider, until};
-use std::sync::Arc;
-use transcript_vault::{
+use fundus::{
     audio,
     config::{App, Config, now},
     pipeline, retrieval, voice,
 };
+use std::sync::Arc;
 
 fn wav(path: &std::path::Path) {
     let mut writer = hound::WavWriter::create(
@@ -329,11 +329,10 @@ async fn ambiguous_submission_requires_explicit_retry_and_saved_jobs_resume() {
     let error = pipeline::process(&app, "interrupted").await.unwrap_err();
     assert!(error.to_string().contains("Retry explicitly"));
     // The explicit Retry clears only an ambiguous marker; a saved job ID survives it.
-    let admin = transcript_vault::auth::issue(&app, "test owner", "admin")
+    let admin = fundus::auth::issue(&app, "test owner", "admin")
         .await
         .unwrap();
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     sqlx::query("UPDATE entries SET stage='failed' WHERE id IN ('interrupted','resumable')")
         .execute(&app.db)
         .await
@@ -497,19 +496,16 @@ async fn trash_cancels_processing_at_the_next_checkpoint() {
     let (work_app, work_entry) = (app.clone(), entry.clone());
     let process = tokio::spawn(async move { pipeline::process(&work_app, &work_entry).await });
     until(|| provider.submits() == 1).await;
-    let token = transcript_vault::auth::issue(&app, "test", "admin")
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::post(format!("/api/v1/entries/{entry}/trash"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let response =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
-            .oneshot(
-                axum::http::Request::post(format!("/api/v1/entries/{entry}/trash"))
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
     assert_eq!(response.status(), 204);
     gate.notify_one();
     process.await.unwrap().unwrap();
@@ -531,10 +527,7 @@ async fn speaker_reanalysis_preserves_transcription_and_manual_identities() {
         .unwrap();
     // The summary names speakers by placeholder, so it follows the assignment.
     let summary = |app: App, entry: String| async move {
-        transcript_vault::retrieval::get(&app, &entry)
-            .await
-            .unwrap()["summary"]
-            .clone()
+        fundus::retrieval::get(&app, &entry).await.unwrap()["summary"].clone()
     };
     assert_eq!(
         summary(app.clone(), entry.clone()).await,
@@ -594,19 +587,16 @@ async fn summary_regenerates_alone_and_keeps_the_speakers() {
         .await
         .unwrap();
     let chats = provider.chats.lock().unwrap().len();
-    let token = transcript_vault::auth::issue(&app, "test", "admin")
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::post(format!("/api/v1/entries/{entry}/summarize"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let response =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
-            .oneshot(
-                axum::http::Request::post(format!("/api/v1/entries/{entry}/summarize"))
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(stage(&app, &entry).await, "queued");
     pipeline::regenerate_summary(&app, &entry).await.unwrap();
@@ -813,12 +803,9 @@ async fn recordings_over_assemblyais_limit_are_refused_before_upload() {
 async fn read_tokens_cannot_list_trash() {
     use tower::ServiceExt;
     let (_dir, app, _provider, task) = setup(Options::default()).await;
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     for (scope, expected) in [("read", 403), ("admin", 200)] {
-        let token = transcript_vault::auth::issue(&app, "test", scope)
-            .await
-            .unwrap();
+        let token = fundus::auth::issue(&app, "test", scope).await.unwrap();
         let response = router
             .clone()
             .oneshot(
@@ -840,9 +827,7 @@ async fn long_transcripts_are_summarized_in_one_request() {
     let lines: Vec<String> = (0..6000)
         .map(|i| format!("[A] Sentence {i} about the cedar launch plan and the next proposal."))
         .collect();
-    transcript_vault::provider::enrich(&app, &lines)
-        .await
-        .unwrap();
+    fundus::provider::enrich(&app, &lines).await.unwrap();
     let chats = provider.chats.lock().unwrap().clone();
     assert_eq!(chats.len(), 1);
     assert!(

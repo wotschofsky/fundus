@@ -72,7 +72,7 @@
 {:else}
   <div class="shell">
     <header class="app-header">
-      <a class="brand" href="/">Vault</a>
+      <a class="brand" href="/">Fundus</a>
       <nav aria-label="Main">
         {#each nav as [to, label] (to)}
           <a

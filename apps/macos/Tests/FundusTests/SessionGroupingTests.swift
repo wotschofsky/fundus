@@ -1,5 +1,5 @@
 import XCTest
-@testable import TranscriptVault
+@testable import Fundus
 
 final class DJIFilenameTests: XCTestCase {
     func testParsesStandardName() throws {

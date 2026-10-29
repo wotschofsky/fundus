@@ -1,16 +1,16 @@
 mod common;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
-use std::sync::Arc;
-use tower::ServiceExt;
-use transcript_vault::{
+use fundus::{
     auth,
     config::{App, Config, now},
     grouping::{self, SessionPlan},
     pipeline,
 };
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use std::sync::Arc;
+use tower::ServiceExt;
 
 async fn setup() -> (tempfile::TempDir, App) {
     let dir = tempfile::tempdir().unwrap();
@@ -186,7 +186,7 @@ async fn remote_trim_is_sample_exact_across_the_source_boundary() {
     common::until(|| provider.submits() == 1).await;
     // The uploaded rendition holds exactly the kept second: half of each source, 16 kHz mono.
     let decoded = dir.path().join("rendition.wav");
-    transcript_vault::audio::ffmpeg(&[
+    fundus::audio::ffmpeg(&[
         "-i".into(),
         app.entry_dir(&entry)
             .join("transcription.flac")
@@ -268,8 +268,7 @@ async fn request(
 async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let (_dir, app) = setup().await;
     let token = auth::issue(&app, "test uploader", "upload").await.unwrap();
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let bad = request(
         &router,
         "POST",
@@ -394,14 +393,13 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
         "INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,'0:A',?,'[1,0,0]')",
     )
     .bind(&entry)
-    .bind(transcript_vault::voice::MODEL)
+    .bind(fundus::voice::MODEL)
     .execute(&app.db)
     .await
     .unwrap();
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let history = request(
         &router,
         "GET",
@@ -595,8 +593,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     .await
     .unwrap();
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let trash = request(
         &router,
         "POST",
@@ -607,18 +604,14 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     )
     .await;
     assert_eq!(trash.status(), StatusCode::NO_CONTENT);
-    assert!(
-        transcript_vault::retrieval::get(&app, &entry)
-            .await
-            .is_err()
-    );
-    let normal = transcript_vault::retrieval::list(&app, Default::default())
+    assert!(fundus::retrieval::get(&app, &entry).await.is_err());
+    let normal = fundus::retrieval::list(&app, Default::default())
         .await
         .unwrap();
     assert!(normal["entries"].as_array().unwrap().is_empty());
-    let trash = transcript_vault::retrieval::list(
+    let trash = fundus::retrieval::list(
         &app,
-        transcript_vault::retrieval::Filters {
+        fundus::retrieval::Filters {
             trash: Some(true),
             ..Default::default()
         },
@@ -665,7 +658,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     )
     .await;
     assert_eq!(restored.status(), StatusCode::OK);
-    assert!(transcript_vault::retrieval::get(&app, &entry).await.is_ok());
+    assert!(fundus::retrieval::get(&app, &entry).await.is_ok());
     let _ = request(
         &router,
         "POST",
@@ -686,7 +679,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     .await;
     pipeline::finalize(&app, "trash-reimport").await.unwrap();
     assert_eq!(count(&app).await, 1);
-    assert!(transcript_vault::retrieval::get(&app, &entry).await.is_ok());
+    assert!(fundus::retrieval::get(&app, &entry).await.is_ok());
     let history = request(
         &router,
         "GET",
@@ -709,8 +702,7 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let (_dir, mut app) = setup().await;
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
-    let router =
-        transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let blocked = request(&router, "GET", "/api/v1/settings", &read, Value::Null, None).await;
     assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
     let bad = request(
@@ -726,7 +718,7 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let good=request(&router,"PATCH","/api/v1/settings",&admin,json!({"recording_context":"Synthetic vocabulary context","voice_thresholds":{"strong":0.9,"margin":0.2}}),None).await;
     assert_eq!(good.status(), StatusCode::OK);
     let reloaded = App::new((*app.config).clone()).await.unwrap();
-    let saved = transcript_vault::settings::load(&reloaded).await.unwrap();
+    let saved = fundus::settings::load(&reloaded).await.unwrap();
     assert_eq!(saved.recording_context, "Synthetic vocabulary context");
     assert!((saved.voice_thresholds.strong - 0.9).abs() < 0.00001);
     // The context describes the audio to AssemblyAI and is background for the notes.

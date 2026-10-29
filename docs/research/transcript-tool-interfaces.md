@@ -1,4 +1,4 @@
-# Transcript vault: comparable tool interfaces
+# Fundus: comparable tool interfaces
 
 Researched 2026-10-24. Scope: publicly documented first-party MCP interfaces and closely related APIs. No authenticated customer tools were invoked. Published documentation and vendor source establish design precedents, not a guarantee that every account exposes the same tools. Subsequent decision: Rust for the backend.
 

@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "TranscriptVault",
+    name: "Fundus",
     platforms: [.macOS(.v15)],
     dependencies: [.package(path: "../../native/apple")],
     targets: [
-        .executableTarget(name: "TranscriptVault", dependencies: [.product(name: "VaultNative", package: "apple")]),
-        .testTarget(name: "TranscriptVaultTests", dependencies: ["TranscriptVault"]),
+        .executableTarget(name: "Fundus", dependencies: [.product(name: "VaultNative", package: "apple")]),
+        .testTarget(name: "FundusTests", dependencies: ["Fundus"]),
     ]
 )

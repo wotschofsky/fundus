@@ -13,7 +13,7 @@
 </script>
 
 <main class="login">
-  <h1>Vault</h1>
+  <h1>Fundus</h1>
   <p>Sign in to your recording archive.</p>
   <form
     onsubmit={(e) => {

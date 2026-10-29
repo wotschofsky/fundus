@@ -4,7 +4,7 @@ fn server_rejects_missing_and_blank_api_key_before_touching_storage() {
     for key in [None, Some("  \n\t ")] {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("must-not-be-created");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_transcript-vault"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fundus"));
         command
             .arg("serve")
             .env("VAULT_DATA_DIR", &data)

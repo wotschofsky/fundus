@@ -2,13 +2,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
-use tower::ServiceExt;
-use transcript_vault::{
+use fundus::{
     auth,
     config::{App, Config},
 };
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
 async fn setup() -> (tempfile::TempDir, App, axum::Router, String, String) {
     let dir = tempfile::tempdir().unwrap();
     let mut c = Config::from_env().unwrap();
@@ -22,7 +22,7 @@ async fn setup() -> (tempfile::TempDir, App, axum::Router, String, String) {
         .unwrap();
     let upload = auth::issue(&app, "test uploader", "upload").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
-    let r = transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let r = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     (dir, app, r, upload, read)
 }
 async fn call(
@@ -146,7 +146,7 @@ async fn tus_offsets_survive_restart_and_finalization_is_idempotent() {
         assert_eq!(response.status(), expected);
     }
     let reopened = App::new((*app.config).clone()).await.unwrap();
-    let rr = transcript_vault::api::router(reopened, tokio_util::sync::CancellationToken::new());
+    let rr = fundus::api::router(reopened, tokio_util::sync::CancellationToken::new());
     let response = rr
         .oneshot(
             Request::builder()
@@ -298,7 +298,7 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     let session = auth::issue(&app, "old browser session", "session")
         .await
         .unwrap();
-    let r = transcript_vault::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let r = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let (status, me) = call(&r, "GET", "/api/v1/me", None, json!(null)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["auth_mode"], "proxy");

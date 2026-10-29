@@ -2,7 +2,7 @@ import ServiceManagement
 import SwiftUI
 
 @main
-struct TranscriptVaultApp: App {
+struct FundusApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var app: AppModel
 
@@ -15,7 +15,7 @@ struct TranscriptVaultApp: App {
     }
 
     var body: some Scene {
-        Window("Transcript Vault", id: "main") {
+        Window("Fundus", id: "main") {
             RootView()
                 .environment(app)
                 .frame(minWidth: 780, minHeight: 480)
@@ -94,7 +94,7 @@ private struct MenuBarMenu: View {
     @State private var opensAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
-        Button("Open Transcript Vault") { showWindow(openWindow) }
+        Button("Open Fundus") { showWindow(openWindow) }
         Toggle("Open at Login", isOn: Binding(get: { opensAtLogin }, set: { on in
             do { try on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister() } catch {
                 Log.app.error("Could not change opening at login: \(error.localizedDescription, privacy: .public)")
@@ -102,7 +102,7 @@ private struct MenuBarMenu: View {
             opensAtLogin = SMAppService.mainApp.status == .enabled
         }))
         Divider()
-        Button("Quit Transcript Vault") { NSApp.terminate(nil) }
+        Button("Quit Fundus") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 }

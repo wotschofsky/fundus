@@ -7,16 +7,16 @@ use axum::{
     routing::get,
 };
 use base64::Engine;
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use tower::ServiceExt;
-use transcript_vault::{
+use fundus::{
     api,
     auth::{self, Access},
     config::{App, Config},
     oauth,
 };
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tower::ServiceExt;
 const ORIGIN: &str = "https://vault.example.com";
 const MCP: &str = "https://vault.example.com/mcp";
 const NATIVE: &str = "https://vault.example.com/api/native";

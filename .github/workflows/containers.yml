@@ -47,15 +47,15 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           load: true
-          tags: vault-test:${{ matrix.arch }}
-          cache-from: type=gha,scope=vault-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=vault-${{ matrix.arch }}
+          tags: fundus-test:${{ matrix.arch }}
+          cache-from: type=gha,scope=fundus-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=fundus-${{ matrix.arch }}
       - name: Test packaged pipeline without external API calls
-        run: python3 scripts/container-smoke.py vault-test:${{ matrix.arch }}
+        run: python3 scripts/container-smoke.py fundus-test:${{ matrix.arch }}
       - name: Scan packaged dependencies
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: vault-test:${{ matrix.arch }}
+          image-ref: fundus-test:${{ matrix.arch }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
@@ -86,7 +86,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=vault-${{ matrix.arch }}
+          cache-from: type=gha,scope=fundus-${{ matrix.arch }}
           provenance: mode=max
           sbom: true
 

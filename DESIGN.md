@@ -1,5 +1,5 @@
 ---
-name: Transcript Vault Web
+name: Fundus Web
 description: A minimalist white interface for a private recording archive.
 colors:
   paper: '#fff'
@@ -107,7 +107,7 @@ components:
     padding: '24px'
 ---
 
-# Design System: Transcript Vault Web
+# Design System: Fundus Web
 
 ## Overview
 
@@ -188,7 +188,7 @@ Fields and selects use white, a fine control border, the control radius, and min
 
 ### Navigation
 
-The header pairs the text brand Vault with labeled Recordings, Search, People, and Settings links; gaps are (26px). The current destination uses neutral ink and a thin bottom border. The same words remain on narrow screens. The library header offers quiet text links to Trash and Connect apps. Keyboard: `/` opens or focuses search; on a recording, Space plays or pauses unless a control has focus.
+The header pairs the text brand Fundus with labeled Recordings, Search, People, and Settings links; gaps are (26px). The current destination uses neutral ink and a thin bottom border. The same words remain on narrow screens. The library header offers quiet text links to Trash and Connect apps. Keyboard: `/` opens or focuses search; on a recording, Space plays or pauses unless a control has focus.
 
 ### Chips
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds build/Transcript Vault.app. Signs with MACOS_SIGNING_IDENTITY, else the first Developer ID
+# Builds build/Fundus.app. Signs with MACOS_SIGNING_IDENTITY, else the first Developer ID
 # Application or Apple Development identity in the keychain, else ad hoc. A stable identity matters:
 # the Keychain ties saved vault connections to the signature, so every ad hoc build asks again.
 set -eu
@@ -13,12 +13,12 @@ case "$build_number" in ''|*[!0-9]*) echo 'VAULT_BUILD_NUMBER must be numeric' >
 sdk="$(xcrun --show-sdk-version)"
 set -- -c release --scratch-path .cache/swift-macos -Xlinker -platform_version -Xlinker macos -Xlinker 15.0 -Xlinker "$sdk"
 swift build --package-path apps/macos "$@"
-binary="$(swift build --package-path apps/macos "$@" --show-bin-path)/TranscriptVault"
+binary="$(swift build --package-path apps/macos "$@" --show-bin-path)/Fundus"
 
-app="build/Transcript Vault.app"
+app="build/Fundus.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary" "$app/Contents/MacOS/TranscriptVault"
+cp "$binary" "$app/Contents/MacOS/Fundus"
 # Absolute paths: actool hands the work to a long-lived helper that resolves relative ones against
 # whichever directory it was first started from.
 xcrun actool "$PWD/apps/macos/Resources/AppIcon.icon" --compile "$PWD/$app/Contents/Resources" --platform macosx \
@@ -26,10 +26,10 @@ xcrun actool "$PWD/apps/macos/Resources/AppIcon.icon" --compile "$PWD/$app/Conte
 # The bundle identifier predates the rename; changing it would orphan saved connections and settings.
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
-<key>CFBundleName</key><string>Transcript Vault</string>
-<key>CFBundleDisplayName</key><string>Transcript Vault</string>
+<key>CFBundleName</key><string>Fundus</string>
+<key>CFBundleDisplayName</key><string>Fundus</string>
 <key>CFBundleIdentifier</key><string>dev.wsky.vaultuploader.macos</string>
-<key>CFBundleExecutable</key><string>TranscriptVault</string>
+<key>CFBundleExecutable</key><string>Fundus</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIconName</key><string>AppIcon</string>

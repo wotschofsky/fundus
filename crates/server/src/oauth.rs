@@ -154,12 +154,12 @@ async fn public_headers(request: Request, next: Next) -> Response {
 }
 async fn protected_metadata(State(app): State<App>) -> Json<Value> {
     Json(
-        json!({"resource":resource(&app),"authorization_servers":[issuer(&app)],"scopes_supported":[SCOPE],"bearer_methods_supported":["header"],"resource_name":"Transcript Vault"}),
+        json!({"resource":resource(&app),"authorization_servers":[issuer(&app)],"scopes_supported":[SCOPE],"bearer_methods_supported":["header"],"resource_name":"Fundus"}),
     )
 }
 async fn native_metadata(State(app): State<App>) -> Json<Value> {
     Json(
-        json!({"resource":native_resource(&app),"authorization_servers":[issuer(&app)],"scopes_supported":[NATIVE_SCOPE],"bearer_methods_supported":["header"],"resource_name":"Transcript Vault native app"}),
+        json!({"resource":native_resource(&app),"authorization_servers":[issuer(&app)],"scopes_supported":[NATIVE_SCOPE],"bearer_methods_supported":["header"],"resource_name":"Fundus native app"}),
     )
 }
 async fn server_metadata(State(app): State<App>) -> Json<Value> {
@@ -197,7 +197,7 @@ fn valid_redirect(value: &str) -> bool {
 }
 async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Result<Response> {
     let scope = body.scope.as_deref().unwrap_or(SCOPE);
-    let name = body.client_name.unwrap_or_else(|| "Vault client".into());
+    let name = body.client_name.unwrap_or_else(|| "Fundus client".into());
     let method = body
         .token_endpoint_auth_method
         .unwrap_or_else(|| "none".into());

@@ -7,12 +7,12 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use fundus::config::App;
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use transcript_vault::config::App;
 
 #[derive(Default, Clone)]
 pub struct Options {

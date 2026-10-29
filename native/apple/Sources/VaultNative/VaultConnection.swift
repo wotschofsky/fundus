@@ -2,6 +2,7 @@ import Foundation
 import Security
 
 public enum VaultCredentials {
+    // Preserve the original fallback service so saved upload tokens remain available to Fundus.
     private static var service: String { (Bundle.main.bundleIdentifier ?? "dev.wsky.transcript-vault") + ".upload" }
     public static func save(_ token: String) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "token"]

@@ -3,14 +3,14 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
 };
 use base64::Engine;
+use fundus::{
+    api,
+    config::{App, Config},
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
-use transcript_vault::{
-    api,
-    config::{App, Config},
-};
 const ORIGIN: &str = "https://vault.example.com";
 const RESOURCE: &str = "https://vault.example.com/mcp";
 const REDIRECT: &str = "https://chat.example.com/callback";

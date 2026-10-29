@@ -21,6 +21,7 @@ struct NativeOAuthCredentials: Codable, Sendable {
 }
 
 @MainActor private struct NativeKeychainStorage: NativeCredentialStorage {
+    // Preserve the original fallback service so existing connections survive the Fundus rename.
     private var service: String { (Bundle.main.bundleIdentifier ?? "dev.wsky.transcript-vault") + ".native-oauth" }
     private func query(_ server: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: server]
@@ -174,7 +175,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         defer { receiver.cancel() }
         let callback = try await receiver.start()
         let registration = try await oauth(server: server, path: "/oauth/register", json: [
-            "client_name": "Transcript Vault for Mac", "redirect_uris": [callback.absoluteString],
+            "client_name": "Fundus for Mac", "redirect_uris": [callback.absoluteString],
             "token_endpoint_auth_method": "none", "scope": "vault:owner",
             "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]
         ])
@@ -407,7 +408,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
                     self.reply(connection, status: "400 Bad Request", message: "This connection request was not recognized.", result: nil)
                     return
                 }
-                self.reply(connection, status: "200 OK", message: "Connection request received. You can close this tab and return to Transcript Vault.", result: url)
+                self.reply(connection, status: "200 OK", message: "Connection request received. You can close this tab and return to Fundus.", result: url)
             }
         }
     }

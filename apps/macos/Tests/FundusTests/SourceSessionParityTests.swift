@@ -1,6 +1,6 @@
 import XCTest
 import AVFoundation
-@testable import TranscriptVault
+@testable import Fundus
 
 @MainActor final class SourceSessionParityTests: XCTestCase {
     func testTrimSelectionAndOverridesPersistAndProduceOrderedRemotePlan() throws {

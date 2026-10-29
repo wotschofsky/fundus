@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Vault Uploader",
-    "slug": "vault-uploader",
+    "name": "Fundus",
+    "slug": "fundus-uploader",
     "scheme": "vault-uploader",
     "version": "0.1.0",
     "userInterfaceStyle": "light",

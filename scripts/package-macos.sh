@@ -18,8 +18,8 @@ esac
 scripts/build-macos.sh
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-app="$work/Transcript Vault.app"
-ditto "build/Transcript Vault.app" "$app"
+app="$work/Fundus.app"
+ditto "build/Fundus.app" "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 arch="$(uname -m)"
 suffix="$version-$arch-local"
@@ -51,28 +51,28 @@ codesign --verify --deep --strict "$app"
 
 staging="$work/dmg-root"
 mkdir "$staging"
-ditto "$app" "$staging/Transcript Vault.app"
+ditto "$app" "$staging/Fundus.app"
 ln -s /Applications "$staging/Applications"
-printf '%s\n' 'Drag Transcript Vault to Applications. Open Settings, enter your vault address and sign in with your browser.' > "$staging/Read Me.txt"
-ditto -c -k --keepParent "$app" "$work/TranscriptVault-$suffix.zip"
-hdiutil create -volname 'Transcript Vault' -srcfolder "$staging" -format UDZO "$work/TranscriptVault-$suffix.dmg"
+printf '%s\n' 'Drag Fundus to Applications. Open Settings, enter your vault address and sign in with your browser.' > "$staging/Read Me.txt"
+ditto -c -k --keepParent "$app" "$work/Fundus-$suffix.zip"
+hdiutil create -volname 'Fundus' -srcfolder "$staging" -format UDZO "$work/Fundus-$suffix.dmg"
 if [[ "$mode" == --release ]]; then
-  codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$work/TranscriptVault-$suffix.dmg"
+  codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$work/Fundus-$suffix.dmg"
   if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-    notarize "$work/TranscriptVault-$suffix.dmg" "$work/dmg-notary.json"
-    xcrun stapler staple "$work/TranscriptVault-$suffix.dmg"
-    xcrun stapler validate "$work/TranscriptVault-$suffix.dmg"
+    notarize "$work/Fundus-$suffix.dmg" "$work/dmg-notary.json"
+    xcrun stapler staple "$work/Fundus-$suffix.dmg"
+    xcrun stapler validate "$work/Fundus-$suffix.dmg"
   fi
-  codesign --verify --strict "$work/TranscriptVault-$suffix.dmg"
+  codesign --verify --strict "$work/Fundus-$suffix.dmg"
 fi
-hdiutil verify "$work/TranscriptVault-$suffix.dmg"
-cp "$work/TranscriptVault-$suffix.zip" "$work/TranscriptVault-$suffix.dmg" build/
+hdiutil verify "$work/Fundus-$suffix.dmg"
+cp "$work/Fundus-$suffix.zip" "$work/Fundus-$suffix.dmg" build/
 (
   cd build
-  shasum -a 256 "TranscriptVault-$suffix.zip" "TranscriptVault-$suffix.dmg" > "TranscriptVault-$suffix.sha256"
-  shasum -a 256 -c "TranscriptVault-$suffix.sha256"
+  shasum -a 256 "Fundus-$suffix.zip" "Fundus-$suffix.dmg" > "Fundus-$suffix.sha256"
+  shasum -a 256 -c "Fundus-$suffix.sha256"
 )
-printf 'Packaged build/TranscriptVault-%s.{zip,dmg,sha256}\n' "$suffix"
+printf 'Packaged build/Fundus-%s.{zip,dmg,sha256}\n' "$suffix"
 if [[ "$mode" == --local ]]; then
   echo 'Local test bundle only: not notarized for distribution.'
 elif [[ -z "${NOTARY_PROFILE:-}" ]]; then

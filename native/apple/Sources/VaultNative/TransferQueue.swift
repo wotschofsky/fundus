@@ -46,6 +46,7 @@ public struct QueueState: Codable, Sendable {
 /// enter URLSession, so a recording never needs to be loaded into JS or memory.
 @MainActor public final class TransferQueue: NSObject, ObservableObject, URLSessionTaskDelegate, URLSessionDataDelegate {
     public static let shared = TransferQueue()
+    // Keep the original background-session identifier so pending uploads reconnect after upgrades.
     public static let sessionIdentifier = "dev.wsky.transcript-vault.uploads"
     @Published public private(set) var snapshot = QueueState()
     @Published public private(set) var activeSourceCopies = 0
@@ -80,6 +81,7 @@ public struct QueueState: Codable, Sendable {
         return URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
     }()
     public override convenience init() {
+        // Fundus keeps the original spool location so queued recordings survive the rename.
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TranscriptVault/Queue", isDirectory: true)
         self.init(folder: folder)
     }
