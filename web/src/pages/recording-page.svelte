@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
-  import { FileAudio, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
+  import { Download, FileAudio, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
   import {
     ApiError,
     api,
@@ -11,7 +11,7 @@
     type Entry,
     type Person,
   } from '../api';
-  import { dateTime, duration, speakerNames } from '../format';
+  import { dateTime, duration, speakerNames, transcriptMarkdown } from '../format';
   import { Playback } from '../playback.svelte';
   import { router } from '../router.svelte';
   import BackLink from '../components/back-link.svelte';
@@ -93,6 +93,15 @@
       ),
     );
   };
+  function download(e: Entry) {
+    const blob = new Blob([transcriptMarkdown(e, rows, names)], { type: 'text/markdown' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${e.title.replaceAll('/', '-')}.md`;
+    link.click();
+    // Revoked a moment later: some browsers cancel a download whose URL is gone before it starts.
+    setTimeout(() => URL.revokeObjectURL(link.href));
+  }
   const moveToTrash = () =>
     (confirming = {
       title: 'Move this recording to Trash?',
@@ -132,6 +141,12 @@
     {/if}
     <div class="detail-actions">
       <button aria-expanded={editing} onclick={() => (editing = !editing)}>Edit details</button>
+      {#if rows.length > 0}
+        <button onclick={() => download(e)} title="Save the transcript as a Markdown file">
+          <Download size={14} aria-hidden="true" />
+          Download
+        </button>
+      {/if}
       {#if !processing && rows.length > 0}
         <button
           disabled={busy}

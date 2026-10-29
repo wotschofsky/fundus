@@ -1,4 +1,4 @@
-import type { Entry, Speaker, Stage } from './api';
+import type { Entry, Segment, Speaker, Stage } from './api';
 
 const STAGES: Record<Stage, string> = {
   queued: 'Queued',
@@ -62,3 +62,22 @@ export const localInput = (iso: string | null) => {
   const d = new Date(iso);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
+
+const escapeMarkdown = (value: string) => value.replace(/[\\*[\]]/g, (c) => `\\${c}`);
+/** The recording as a Markdown file, in the same layout as the Mac app's export. */
+export function transcriptMarkdown(e: Entry, rows: Segment[], names: Map<string, string>) {
+  const lines = [
+    `# ${e.title}`,
+    '',
+    `- Recorded: ${dateTime(e.recorded_at)}`,
+    `- Duration: ${duration(e.duration_ms)}`,
+  ];
+  if (e.labels.length > 0) lines.push(`- Labels: ${e.labels.join(', ')}`);
+  if (e.summary) lines.push('', '## Summary (generated)', '', e.summary);
+  lines.push('', '## Transcript', '');
+  for (const r of rows) {
+    const name = names.get(r.speaker) ?? r.speaker_name ?? 'Speaker';
+    lines.push(`[${timestamp(r.start_ms)}] **${escapeMarkdown(name)}**`, r.text, '');
+  }
+  return lines.join('\n');
+}
