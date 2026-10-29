@@ -1,6 +1,7 @@
 {
   "name": "vault-uploader",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
