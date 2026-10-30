@@ -144,12 +144,13 @@ async fn introductions(
         if name.is_empty() || name.len() > 120 || finding.quote.is_empty() {
             continue;
         }
-        let spoken: Vec<String> =
-            sqlx::query_scalar("SELECT text FROM segments WHERE entry_id=? AND speaker=?")
-                .bind(entry)
-                .bind(speaker)
-                .fetch_all(&app.db)
-                .await?;
+        let spoken: Vec<String> = sqlx::query_scalar!(
+            "SELECT text FROM segments WHERE entry_id=? AND speaker=?",
+            entry,
+            speaker
+        )
+        .fetch_all(&app.db)
+        .await?;
         if spoken.iter().any(|text| text.contains(&finding.quote))
             && finding.quote.to_lowercase().contains(&name.to_lowercase())
         {
@@ -179,22 +180,25 @@ pub async fn apply(
 ) -> Result<()> {
     let thresholds = crate::settings::load(app).await?.voice_thresholds;
     let intros = introductions(app, entry, names).await?;
-    let people: Vec<(String, String)> = sqlx::query_as("SELECT id,name FROM people")
+    let people: Vec<(String, String)> = sqlx::query!("SELECT id AS \"id!\",name FROM people")
         .fetch_all(&app.db)
-        .await?;
-    let profiles: HashSet<String> = sqlx::query_scalar(
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row.name))
+        .collect();
+    let profiles: HashSet<String> = sqlx::query_scalar!(
         "SELECT DISTINCT person_id FROM voice_samples WHERE model=? AND entry_id!=?",
+        voice::MODEL,
+        entry
     )
-    .bind(voice::MODEL)
-    .bind(entry)
     .fetch_all(&app.db)
     .await?
     .into_iter()
     .collect();
-    let labels: Vec<String> = sqlx::query_scalar(
+    let labels: Vec<String> = sqlx::query_scalar!(
         "SELECT label FROM speakers WHERE entry_id=? AND state NOT IN ('manual','manual_unknown')",
+        entry
     )
-    .bind(entry)
     .fetch_all(&app.db)
     .await?;
     let key = |name: &str| name.trim().to_lowercase();
@@ -231,39 +235,49 @@ pub async fn apply(
             Outcome::Person(person) => Some(person),
             Outcome::NewPerson(name) => {
                 let person = id();
-                sqlx::query("INSERT INTO people(id,name)VALUES(?,?)")
-                    .bind(&person)
-                    .bind(name.trim())
-                    .execute(&mut *tx)
-                    .await?;
+                let trimmed_name = name.trim();
+                sqlx::query!(
+                    "INSERT INTO people(id,name)VALUES(?,?)",
+                    person,
+                    trimmed_name
+                )
+                .execute(&mut *tx)
+                .await?;
                 tracing::info!(%entry, %label, "created a person from a self-introduction");
                 Some(person)
             }
         };
-        sqlx::query(
-            "UPDATE speakers SET person_id=?,state=?,evidence=? WHERE entry_id=? AND label=?",
-        )
-        .bind(&person)
-        .bind(if person.is_some() {
+        let speaker_state = if person.is_some() {
             "automatic"
         } else {
             "unknown"
-        })
-        .bind(serde_json::to_string(&evidence)?)
-        .bind(entry)
-        .bind(&label)
+        };
+        let evidence_json = serde_json::to_string(&evidence)?;
+        sqlx::query!(
+            "UPDATE speakers SET person_id=?,state=?,evidence=? WHERE entry_id=? AND label=?",
+            person,
+            speaker_state,
+            evidence_json,
+            entry,
+            label
+        )
         .execute(&mut *tx)
         .await?;
         // Automatic samples follow the current decision; the owner's own are kept by `voice::assign`.
-        sqlx::query("DELETE FROM voice_samples WHERE entry_id=? AND speaker=?")
-            .bind(entry)
-            .bind(&label)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM voice_samples WHERE entry_id=? AND speaker=?",
+            entry,
+            label
+        )
+        .execute(&mut *tx)
+        .await?;
         if let (Some(person), Some(provenance), Some(voice)) = (&person, decision.enrollment, voice)
         {
-            sqlx::query("INSERT INTO voice_samples(id,person_id,entry_id,speaker,model,vector_json,provenance,created_at)VALUES(?,?,?,?,?,?,?,?)").bind(id()).bind(person).bind(entry).bind(&label).bind(voice::MODEL).bind(serde_json::to_string(&voice.vector)?).bind(provenance).bind(now()).execute(&mut *tx).await?;
-            sqlx::query("DELETE FROM voice_samples WHERE person_id=? AND model=? AND id NOT IN(SELECT id FROM voice_samples WHERE person_id=? AND model=? ORDER BY created_at DESC LIMIT 24)").bind(person).bind(voice::MODEL).bind(person).bind(voice::MODEL).execute(&mut *tx).await?;
+            let sample_id = id();
+            let vector_json = serde_json::to_string(&voice.vector)?;
+            let timestamp = now();
+            sqlx::query!("INSERT INTO voice_samples(id,person_id,entry_id,speaker,model,vector_json,provenance,created_at)VALUES(?,?,?,?,?,?,?,?)", sample_id, person, entry, label, voice::MODEL, vector_json, provenance, timestamp).execute(&mut *tx).await?;
+            sqlx::query!("DELETE FROM voice_samples WHERE person_id=? AND model=? AND id NOT IN(SELECT id AS \"id!\" FROM voice_samples WHERE person_id=? AND model=? ORDER BY created_at DESC LIMIT 24)", person, voice::MODEL, person, voice::MODEL).execute(&mut *tx).await?;
         }
     }
     tx.commit().await?;

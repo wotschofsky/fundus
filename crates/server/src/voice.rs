@@ -3,7 +3,6 @@ use crate::{
     config::{App, id, now},
 };
 use anyhow::{Context, Result, ensure};
-use sqlx::Row;
 use std::{
     collections::BTreeMap,
     ops::Bound,
@@ -228,12 +227,15 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<Analys
         .clone()
         .context("Configure VAULT_VOICE_MODEL and ONNX Runtime for local recognition")?;
     ensure!(model.is_file(), "Speaker model file is missing");
-    let rows: Vec<(String, i64, i64, Option<f64>)> = sqlx::query_as(
+    let rows: Vec<(String, i64, i64, Option<f64>)> = sqlx::query!(
         "SELECT speaker,start_ms,end_ms,confidence FROM segments WHERE entry_id=? ORDER BY position",
+        entry
     )
-    .bind(entry)
     .fetch_all(&app.db)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|row| (row.speaker, row.start_ms, row.end_ms, row.confidence))
+    .collect();
     let dir = app.entry_dir(entry);
     let result = measure(app, entry, audio_path, model, excerpts(&rows)).await;
     // Keep only durable vectors, also after a failure; excerpts can be rebuilt from the archive.
@@ -249,42 +251,52 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<Analys
             cluster.speech_ms += end - start;
         }
     }
-    let decided: BTreeMap<String, String> = sqlx::query_as(
-        "SELECT label,COALESCE(person_id,'') FROM speakers WHERE entry_id=? AND state IN ('manual','manual_unknown')",
+    let decided: BTreeMap<String, String> = sqlx::query!(
+        "SELECT label,COALESCE(person_id,'') AS \"person_id!: String\" FROM speakers WHERE entry_id=? AND state IN ('manual','manual_unknown')",
+        entry
     )
-    .bind(entry)
     .fetch_all(&app.db)
     .await?
     .into_iter()
+    .map(|row| (row.label, row.person_id))
     .collect();
     let merged = merge_labels(&mut clusters, &decided);
     let mut tx = app.db.begin().await?;
     for (from, into) in &merged {
         tracing::info!(%entry, %from, %into, "merged speaker labels with one voice");
-        sqlx::query("UPDATE segments SET speaker=? WHERE entry_id=? AND speaker=?")
-            .bind(into)
-            .bind(entry)
-            .bind(from)
-            .execute(&mut *tx)
-            .await?;
-        for (table, column) in [
-            ("speakers", "label"),
-            ("voice_probes", "speaker"),
-            ("voice_samples", "speaker"),
+        sqlx::query!(
+            "UPDATE segments SET speaker=? WHERE entry_id=? AND speaker=?",
+            into,
+            entry,
+            from
+        )
+        .execute(&mut *tx)
+        .await?;
+        for query in [
+            sqlx::query!(
+                "DELETE FROM speakers WHERE entry_id=? AND label=?",
+                entry,
+                from
+            ),
+            sqlx::query!(
+                "DELETE FROM voice_probes WHERE entry_id=? AND speaker=?",
+                entry,
+                from
+            ),
+            sqlx::query!(
+                "DELETE FROM voice_samples WHERE entry_id=? AND speaker=?",
+                entry,
+                from
+            ),
         ] {
-            sqlx::query(&format!(
-                "DELETE FROM {table} WHERE entry_id=? AND {column}=?"
-            ))
-            .bind(entry)
-            .bind(from)
-            .execute(&mut *tx)
-            .await?;
+            query.execute(&mut *tx).await?;
         }
     }
     let mut labels = BTreeMap::new();
     for (label, cluster) in clusters {
         let vector = normalized(cluster.sum);
-        sqlx::query("INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,?,?,?) ON CONFLICT(entry_id,speaker,model)DO UPDATE SET vector_json=excluded.vector_json").bind(entry).bind(&label).bind(MODEL).bind(serde_json::to_string(&vector)?).execute(&mut *tx).await?;
+        let vector_json = serde_json::to_string(&vector)?;
+        sqlx::query!("INSERT INTO voice_probes(entry_id,speaker,model,vector_json)VALUES(?,?,?,?) ON CONFLICT(entry_id,speaker,model)DO UPDATE SET vector_json=excluded.vector_json", entry, label, MODEL, vector_json).execute(&mut *tx).await?;
         labels.insert(
             label,
             LabelVoice {
@@ -295,18 +307,14 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<Analys
         );
     }
     tx.commit().await?;
-    let samples = sqlx::query(
-        "SELECT vs.person_id,vs.vector_json FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.entry_id!=? AND vs.model=? AND e.trashed_at IS NULL",
-    )
-    .bind(entry)
-    .bind(MODEL)
+    let samples = sqlx::query!("SELECT vs.person_id,vs.vector_json FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.entry_id!=? AND vs.model=? AND e.trashed_at IS NULL", entry, MODEL)
     .fetch_all(&app.db)
     .await?;
     let mut profiles: BTreeMap<String, Vec<Vec<f32>>> = BTreeMap::new();
     for row in samples {
-        let vector: Vec<f32> = serde_json::from_str(&row.get::<String, _>("vector_json"))?;
+        let vector: Vec<f32> = serde_json::from_str(&row.vector_json.clone())?;
         profiles
-            .entry(row.get("person_id"))
+            .entry(row.person_id.clone())
             .or_default()
             .push(vector);
     }
@@ -354,43 +362,49 @@ async fn measure(
 }
 pub async fn assign(app: &App, entry: &str, label: &str, person: Option<&str>) -> Result<()> {
     let mut tx = app.db.begin().await?;
-    let existing: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM speakers WHERE entry_id=? AND label=?")
-            .bind(entry)
-            .bind(label)
-            .fetch_one(&mut *tx)
-            .await?;
-    ensure!(existing == 1, "Speaker not found");
-    sqlx::query(
-        "UPDATE speakers SET person_id=?,state=?,evidence='[]' WHERE entry_id=? AND label=?",
+    let existing: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM speakers WHERE entry_id=? AND label=?",
+        entry,
+        label
     )
-    .bind(person)
-    .bind(if person.is_some() {
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(existing == 1, "Speaker not found");
+    let speaker_state = if person.is_some() {
         "manual"
     } else {
         "manual_unknown"
-    })
-    .bind(entry)
-    .bind(label)
+    };
+    sqlx::query!(
+        "UPDATE speakers SET person_id=?,state=?,evidence='[]' WHERE entry_id=? AND label=?",
+        person,
+        speaker_state,
+        entry,
+        label
+    )
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM voice_samples WHERE entry_id=? AND speaker=?")
-        .bind(entry)
-        .bind(label)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM voice_samples WHERE entry_id=? AND speaker=?",
+        entry,
+        label
+    )
+    .execute(&mut *tx)
+    .await?;
     if let Some(person) = person {
-        let vector: Option<String> = sqlx::query_scalar(
+        let vector: Option<String> = sqlx::query_scalar!(
             "SELECT vector_json FROM voice_probes WHERE entry_id=? AND speaker=? AND model=?",
+            entry,
+            label,
+            MODEL
         )
-        .bind(entry)
-        .bind(label)
-        .bind(MODEL)
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(vector) = vector {
-            sqlx::query("INSERT INTO voice_samples(id,person_id,entry_id,speaker,model,vector_json,provenance,created_at)VALUES(?,?,?,?,?,?,'manual',?)").bind(id()).bind(person).bind(entry).bind(label).bind(MODEL).bind(vector).bind(now()).execute(&mut *tx).await?;
-            sqlx::query("DELETE FROM voice_samples WHERE person_id=? AND model=? AND id NOT IN(SELECT id FROM voice_samples WHERE person_id=? AND model=? ORDER BY created_at DESC LIMIT 24)").bind(person).bind(MODEL).bind(person).bind(MODEL).execute(&mut *tx).await?;
+            let sample_id = id();
+            let timestamp = now();
+            sqlx::query!("INSERT INTO voice_samples(id,person_id,entry_id,speaker,model,vector_json,provenance,created_at)VALUES(?,?,?,?,?,?,'manual',?)", sample_id, person, entry, label, MODEL, vector, timestamp).execute(&mut *tx).await?;
+            sqlx::query!("DELETE FROM voice_samples WHERE person_id=? AND model=? AND id NOT IN(SELECT id AS \"id!\" FROM voice_samples WHERE person_id=? AND model=? ORDER BY created_at DESC LIMIT 24)", person, MODEL, person, MODEL).execute(&mut *tx).await?;
         }
     }
     tx.commit().await?;

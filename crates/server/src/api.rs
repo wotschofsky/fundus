@@ -15,7 +15,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
@@ -192,10 +191,13 @@ async fn logout(
                 .find_map(|s| s.trim().strip_prefix("vault_session="))
         })
     {
-        sqlx::query("DELETE FROM credentials WHERE hash=? AND scope='session'")
-            .bind(auth::hash(token))
-            .execute(&app.db)
-            .await?;
+        let token_hash = auth::hash(token);
+        sqlx::query!(
+            "DELETE FROM credentials WHERE hash=? AND scope='session'",
+            token_hash
+        )
+        .execute(&app.db)
+        .await?;
     }
     Ok((
         [(
@@ -229,9 +231,9 @@ async fn create_token(
 }
 async fn tokens(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
     a.admin()?;
-    let rows=sqlx::query("SELECT hash,name,scope,created_at FROM credentials WHERE scope!='session' ORDER BY created_at DESC").fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT hash AS \"hash!\",name,scope,created_at FROM credentials WHERE scope!='session' ORDER BY created_at DESC").fetch_all(&app.db).await?;
     Ok(Json(
-        json!({"tokens":rows.iter().map(|r|json!({"id":r.get::<String,_>("hash"),"name":r.get::<String,_>("name"),"scope":r.get::<String,_>("scope"),"created_at":r.get::<String,_>("created_at")})).collect::<Vec<_>>()}),
+        json!({"tokens":rows.iter().map(|r|json!({"id":r.hash.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at.clone()})).collect::<Vec<_>>()}),
     ))
 }
 async fn revoke(
@@ -240,10 +242,12 @@ async fn revoke(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     a.admin()?;
-    sqlx::query("DELETE FROM credentials WHERE hash=? AND scope!='session'")
-        .bind(id)
-        .execute(&app.db)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM credentials WHERE hash=? AND scope!='session'",
+        id
+    )
+    .execute(&app.db)
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn entries(
@@ -337,12 +341,13 @@ async fn audio_file(
     r: Request,
 ) -> Result<Response> {
     a.read()?;
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT audio_path FROM entries WHERE id=? AND trashed_at IS NULL")
-            .bind(&id)
-            .fetch_optional(&app.db)
-            .await?
-            .flatten();
+    let exists: Option<String> = sqlx::query_scalar!(
+        "SELECT audio_path FROM entries WHERE id=? AND trashed_at IS NULL",
+        id
+    )
+    .fetch_optional(&app.db)
+    .await?
+    .flatten();
     if exists.is_none() {
         return Err(Error::not_found());
     }
@@ -372,15 +377,16 @@ async fn update_entry(
         if title.is_empty() || title.len() > 240 {
             return Err(Error::bad("Title must be 1–240 characters"));
         }
-        sqlx::query("UPDATE entries SET title=?,title_manual=1,updated_at=? WHERE id=?")
-            .bind(title)
-            .bind(now())
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE passage_fts SET title=? WHERE entry_id=?")
-            .bind(title)
-            .bind(&id)
+        let timestamp = now();
+        sqlx::query!(
+            "UPDATE entries SET title=?,title_manual=1,updated_at=? WHERE id=?",
+            title,
+            timestamp,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!("UPDATE passage_fts SET title=? WHERE entry_id=?", title, id)
             .execute(&mut *tx)
             .await?;
     }
@@ -388,8 +394,7 @@ async fn update_entry(
         if labels.len() > 20 {
             return Err(Error::bad("Use at most 20 labels"));
         }
-        sqlx::query("DELETE FROM entry_labels WHERE entry_id=?")
-            .bind(&id)
+        sqlx::query!("DELETE FROM entry_labels WHERE entry_id=?", id)
             .execute(&mut *tx)
             .await?;
         for label in labels {
@@ -397,15 +402,16 @@ async fn update_entry(
             if label.is_empty() || label.len() > 64 || label.contains(',') {
                 return Err(Error::bad("Labels must be 1–64 characters without commas"));
             }
-            sqlx::query("INSERT OR IGNORE INTO labels(name)VALUES(?)")
-                .bind(label)
+            sqlx::query!("INSERT OR IGNORE INTO labels(name)VALUES(?)", label)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query("INSERT OR IGNORE INTO entry_labels(entry_id,label)VALUES(?,?)")
-                .bind(&id)
-                .bind(label)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "INSERT OR IGNORE INTO entry_labels(entry_id,label)VALUES(?,?)",
+                id,
+                label
+            )
+            .execute(&mut *tx)
+            .await?;
         }
     }
     if let Some(time) = p.recorded_at {
@@ -413,9 +419,7 @@ async fn update_entry(
             .map_err(|_| Error::bad("Recording time must include a UTC offset"))?
             .with_timezone(&chrono::Utc)
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        sqlx::query("UPDATE entries SET recorded_at=? WHERE id=?")
-            .bind(time)
-            .bind(&id)
+        sqlx::query!("UPDATE entries SET recorded_at=? WHERE id=?", time, id)
             .execute(&mut *tx)
             .await?;
     }
@@ -429,11 +433,12 @@ async fn retry(
 ) -> Result<Json<Value>> {
     a.admin()?;
     let _lock = app.mutations.lock().await;
-    let state: Option<String> =
-        sqlx::query_scalar("SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL")
-            .bind(&id)
-            .fetch_optional(&app.db)
-            .await?;
+    let state: Option<String> = sqlx::query_scalar!(
+        "SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL",
+        id
+    )
+    .fetch_optional(&app.db)
+    .await?;
     let state = state.ok_or_else(Error::not_found)?;
     if !["failed", "complete", "paused"].contains(&state.as_str()) {
         return Err(Error::conflict("Recording is already processing"));
@@ -441,14 +446,13 @@ async fn retry(
     let mut tx = app.db.begin().await?;
     // Retry is the owner's consent to pay again only for a request saved without its upload URL;
     // a saved job ID is polled and a saved upload URL finds its job, never resubmitting.
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM transcriptions WHERE entry_id=? AND remote_id IS NULL AND audio_url IS NULL",
+        id
     )
-    .bind(&id)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE entries SET stage='queued',failure=NULL,pause_requested=0,requested_work=CASE WHEN stage='complete' THEN NULL ELSE requested_work END WHERE id=?")
-        .bind(&id)
+    sqlx::query!("UPDATE entries SET stage='queued',failure=NULL,pause_requested=0,requested_work=CASE WHEN stage='complete' THEN NULL ELSE requested_work END WHERE id=?", id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -462,11 +466,12 @@ async fn pause(
 ) -> Result<Json<Value>> {
     access.admin()?;
     let _lock = app.mutations.lock().await;
-    let stage: Option<String> =
-        sqlx::query_scalar("SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL")
-            .bind(&id)
-            .fetch_optional(&app.db)
-            .await?;
+    let stage: Option<String> = sqlx::query_scalar!(
+        "SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL",
+        id
+    )
+    .fetch_optional(&app.db)
+    .await?;
     let stage = stage.ok_or_else(Error::not_found)?;
     if stage == "paused" {
         return Ok(Json(json!({"stage":"paused","pause_requested":false})));
@@ -474,15 +479,17 @@ async fn pause(
     if ["complete", "failed"].contains(&stage.as_str()) {
         return Err(Error::conflict("Recording is not processing"));
     }
-    let updated = sqlx::query("UPDATE entries SET pause_requested=1,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=? AND stage NOT IN ('complete','failed','paused') RETURNING stage")
-        .bind(now()).bind(&id).fetch_optional(&app.db).await?;
+    let timestamp = now();
+    let updated = sqlx::query!("UPDATE entries SET pause_requested=1,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=? AND stage NOT IN ('complete','failed','paused') RETURNING stage", timestamp, id).fetch_optional(&app.db).await?;
     let stage = if let Some(row) = updated {
-        row.get::<String, _>("stage")
+        row.stage.clone()
     } else {
-        sqlx::query_scalar("SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL")
-            .bind(&id)
-            .fetch_one(&app.db)
-            .await?
+        sqlx::query_scalar!(
+            "SELECT stage FROM entries WHERE id=? AND trashed_at IS NULL",
+            id
+        )
+        .fetch_one(&app.db)
+        .await?
     };
     Ok(Json(
         json!({"pause_requested": !["paused","complete","failed"].contains(&stage.as_str()),"stage":stage}),
@@ -513,11 +520,11 @@ async fn queue_rework(
 ) -> Result<Json<Value>> {
     access.admin()?;
     let _lock = app.mutations.lock().await;
-    let row = sqlx::query("SELECT stage,(SELECT count(*) FROM segments WHERE entry_id=entries.id) AS segments FROM entries WHERE id=? AND trashed_at IS NULL").bind(id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
-    if !["complete", "failed", "paused"].contains(&row.get::<String, _>("stage").as_str()) {
+    let row = sqlx::query!("SELECT stage,(SELECT count(*) FROM segments WHERE entry_id=entries.id) AS \"segments!: i64\" FROM entries WHERE id=? AND trashed_at IS NULL", id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
+    if !["complete", "failed", "paused"].contains(&row.stage.clone().as_str()) {
         return Err(Error::conflict("Recording is already processing"));
     }
-    if row.get::<i64, _>("segments") == 0 {
+    if row.segments == 0 {
         return Err(Error::conflict("Transcribe the recording first"));
     }
     match tokio::fs::remove_file(app.entry_dir(id).join(cache)).await {
@@ -525,8 +532,8 @@ async fn queue_rework(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    sqlx::query("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,updated_at=? WHERE id=?")
-        .bind(work).bind(now()).bind(id).execute(&app.db).await?;
+    let timestamp = now();
+    sqlx::query!("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,updated_at=? WHERE id=?", work, timestamp, id).execute(&app.db).await?;
     app.wake.notify_one();
     Ok(Json(json!({"stage":"queued","work":work})))
 }
@@ -536,15 +543,13 @@ async fn remove_voice(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     access.admin()?;
-    let exists: i64 = sqlx::query_scalar("SELECT count(*) FROM people WHERE id=?")
-        .bind(&id)
+    let exists: i64 = sqlx::query_scalar!("SELECT count(*) FROM people WHERE id=?", id)
         .fetch_one(&app.db)
         .await?;
     if exists == 0 {
         return Err(Error::not_found());
     }
-    sqlx::query("DELETE FROM voice_samples WHERE person_id=?")
-        .bind(id)
+    sqlx::query!("DELETE FROM voice_samples WHERE person_id=?", id)
         .execute(&app.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -562,11 +567,12 @@ async fn source_history(
     access.read()?;
     let limit = query.limit.unwrap_or(500).clamp(1, 1000);
     let cursor = query.cursor.unwrap_or(0);
-    let rows = sqlx::query("SELECT e.id,e.stage,e.active_stage,e.failure,e.pause_requested,e.trim_start_frame,e.trim_end_frame,COALESCE((SELECT json_extract(i.session_plan,'$['||ie.session_index||'].source_ids') FROM import_entries ie JOIN imports i ON i.id=ie.import_id WHERE ie.entry_id=e.id AND i.session_plan IS NOT NULL ORDER BY i.created_at DESC,i.rowid DESC LIMIT 1),(SELECT json_group_array(source_id) FROM (SELECT u.source_id FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id ORDER BY es.position))) AS source_ids FROM entries e WHERE e.trashed_at IS NULL AND (EXISTS(SELECT 1 FROM import_entries ie JOIN imports i ON i.id=ie.import_id WHERE ie.entry_id=e.id AND i.session_plan IS NOT NULL) OR (EXISTS(SELECT 1 FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id AND u.source_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id AND u.source_id IS NULL))) ORDER BY COALESCE(e.recorded_at,e.created_at) DESC,e.id LIMIT ? OFFSET ?")
-        .bind(i64::from(limit)+1).bind(i64::from(cursor)).fetch_all(&app.db).await?;
+    let query_limit = i64::from(limit) + 1;
+    let query_cursor = i64::from(cursor);
+    let rows = sqlx::query!("SELECT e.id AS \"id!\",e.stage,e.active_stage,e.failure,e.pause_requested,e.trim_start_frame,e.trim_end_frame,COALESCE((SELECT json_extract(i.session_plan,'$['||ie.session_index||'].source_ids') FROM import_entries ie JOIN imports i ON i.id=ie.import_id WHERE ie.entry_id=e.id AND i.session_plan IS NOT NULL ORDER BY i.created_at DESC,i.rowid DESC LIMIT 1),(SELECT json_group_array(source_id) FROM (SELECT u.source_id FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id ORDER BY es.position))) AS \"source_ids!: String\" FROM entries e WHERE e.trashed_at IS NULL AND (EXISTS(SELECT 1 FROM import_entries ie JOIN imports i ON i.id=ie.import_id WHERE ie.entry_id=e.id AND i.session_plan IS NOT NULL) OR (EXISTS(SELECT 1 FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id AND u.source_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=e.id AND u.source_id IS NULL))) ORDER BY COALESCE(e.recorded_at,e.created_at) DESC,e.id LIMIT ? OFFSET ?", query_limit, query_cursor).fetch_all(&app.db).await?;
     let more = rows.len() > limit as usize;
     Ok(Json(
-        json!({"entries":rows.iter().take(limit as usize).map(|row|json!({"id":row.get::<String,_>("id"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"failure":row.get::<Option<String>,_>("failure"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"source_ids":serde_json::from_str::<Value>(&row.get::<String,_>("source_ids")).unwrap_or(json!([]))})).collect::<Vec<_>>(),"next_cursor":if more {Some(cursor+limit)} else {None}}),
+        json!({"entries":rows.iter().take(limit as usize).map(|row|json!({"id":row.id.clone(),"stage":row.stage.clone(),"active_stage":row.active_stage.clone(),"failure":row.failure.clone(),"pause_requested":(row.pause_requested != 0) && row.stage.clone() != "paused","trim_start_frame":row.trim_start_frame,"trim_end_frame":row.trim_end_frame,"source_ids":serde_json::from_str::<Value>(&row.source_ids.clone()).unwrap_or(json!([]))})).collect::<Vec<_>>(),"next_cursor":if more {Some(cursor+limit)} else {None}}),
     ))
 }
 
@@ -579,8 +585,9 @@ async fn trash_entry(
     let _lock = app.mutations.lock().await;
     // Trashing also cancels: a queued entry pauses now, a running one finishes its current step
     // and pauses at the worker's next checkpoint, which stops at a trashed entry.
-    let updated=sqlx::query("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=?")
-        .bind(now()).bind(now()).bind(id).execute(&app.db).await?;
+    let trashed_at = now();
+    let updated_at = now();
+    let updated=sqlx::query!("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=?", trashed_at, updated_at, id).execute(&app.db).await?;
     if updated.rows_affected() == 0 {
         return Err(Error::not_found());
     }
@@ -592,11 +599,14 @@ async fn restore_entry(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     access.admin()?;
-    let updated = sqlx::query("UPDATE entries SET trashed_at=NULL,updated_at=? WHERE id=?")
-        .bind(now())
-        .bind(&id)
-        .execute(&app.db)
-        .await?;
+    let timestamp = now();
+    let updated = sqlx::query!(
+        "UPDATE entries SET trashed_at=NULL,updated_at=? WHERE id=?",
+        timestamp,
+        id
+    )
+    .execute(&app.db)
+    .await?;
     if updated.rows_affected() == 0 {
         return Err(Error::not_found());
     }
@@ -611,15 +621,14 @@ async fn delete_entry(
     a.admin()?;
     let _lock = app.mutations.lock().await;
     let sources: Vec<String> =
-        sqlx::query_scalar("SELECT upload_id FROM entry_sources WHERE entry_id=?")
-            .bind(&id)
+        sqlx::query_scalar!("SELECT upload_id FROM entry_sources WHERE entry_id=?", id)
             .fetch_all(&app.db)
             .await?;
     // One statement, so the worker cannot claim the entry between the check and the delete.
-    let deleted = sqlx::query(
+    let deleted = sqlx::query!(
         "DELETE FROM entries WHERE id=? AND stage IN ('complete','failed','queued','paused')",
+        id
     )
-    .bind(&id)
     .execute(&app.db)
     .await?;
     if deleted.rows_affected() == 0 {
@@ -630,13 +639,14 @@ async fn delete_entry(
     }
     let _ = tokio::fs::remove_dir_all(app.entry_dir(&id)).await;
     for source in sources {
-        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entry_sources WHERE upload_id=?")
-            .bind(&source)
-            .fetch_one(&app.db)
-            .await?;
+        let refs: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM entry_sources WHERE upload_id=?",
+            source
+        )
+        .fetch_one(&app.db)
+        .await?;
         if refs == 0 {
-            sqlx::query("DELETE FROM uploads WHERE id=?")
-                .bind(&source)
+            sqlx::query!("DELETE FROM uploads WHERE id=?", source)
                 .execute(&app.db)
                 .await?;
             let _ = tokio::fs::remove_file(app.upload_path(&source)).await;
@@ -646,9 +656,9 @@ async fn delete_entry(
 }
 async fn people(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
     a.read()?;
-    let rows=sqlx::query("SELECT p.id,p.name,(SELECT COUNT(*) FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.person_id=p.id AND e.trashed_at IS NULL) AS samples FROM people p ORDER BY p.name").fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT p.id AS \"id!\",p.name,(SELECT COUNT(*) FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.person_id=p.id AND e.trashed_at IS NULL) AS samples FROM people p ORDER BY p.name").fetch_all(&app.db).await?;
     Ok(Json(
-        json!({"people":rows.iter().map(|r|json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name"),"samples":r.get::<i64,_>("samples")})).collect::<Vec<_>>()}),
+        json!({"people":rows.iter().map(|r|json!({"id":r.id.clone(),"name":r.name.clone(),"samples":r.samples})).collect::<Vec<_>>()}),
     ))
 }
 #[derive(Deserialize)]
@@ -666,9 +676,7 @@ async fn create_person(
         return Err(Error::bad("Name must be 1–120 characters"));
     }
     let id = id();
-    sqlx::query("INSERT INTO people(id,name)VALUES(?,?)")
-        .bind(&id)
-        .bind(name)
+    sqlx::query!("INSERT INTO people(id,name)VALUES(?,?)", id, name)
         .execute(&app.db)
         .await?;
     Ok(Json(json!({"id":id,"name":name})))
@@ -683,9 +691,8 @@ async fn rename_person(
     if p.name.trim().is_empty() || p.name.len() > 120 {
         return Err(Error::bad("Name must be 1–120 characters"));
     }
-    sqlx::query("UPDATE people SET name=? WHERE id=?")
-        .bind(p.name.trim())
-        .bind(id)
+    let trimmed_name = p.name.trim();
+    sqlx::query!("UPDATE people SET name=? WHERE id=?", trimmed_name, id)
         .execute(&app.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -698,14 +705,13 @@ async fn delete_person(
     a.admin()?;
     let _lock = app.mutations.lock().await;
     let mut tx = app.db.begin().await?;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE person_id=?",
+        id
     )
-    .bind(&id)
     .execute(&mut *tx)
     .await?;
-    let removed = sqlx::query("DELETE FROM people WHERE id=?")
-        .bind(&id)
+    let removed = sqlx::query!("DELETE FROM people WHERE id=?", id)
         .execute(&mut *tx)
         .await?;
     if removed.rows_affected() == 0 {
@@ -734,15 +740,17 @@ async fn assign_speaker(
             ));
         }
         let mut tx = app.db.begin().await?;
-        let updated = sqlx::query("UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE entry_id=? AND label=?").bind(&id).bind(&label).execute(&mut *tx).await?;
+        let updated = sqlx::query!("UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE entry_id=? AND label=?", id, label).execute(&mut *tx).await?;
         if updated.rows_affected() == 0 {
             return Err(Error::not_found());
         }
-        sqlx::query("DELETE FROM voice_samples WHERE entry_id=? AND speaker=?")
-            .bind(&id)
-            .bind(&label)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM voice_samples WHERE entry_id=? AND speaker=?",
+            id,
+            label
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
     } else {
         crate::voice::assign(&app, &id, &label, p.person_id.as_deref()).await?;

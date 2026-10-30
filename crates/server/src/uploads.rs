@@ -14,7 +14,6 @@ use base64::Engine;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::Row;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const MAX_FILE: i64 = 32 * 1024 * 1024 * 1024;
 #[derive(Deserialize)]
@@ -37,17 +36,20 @@ pub async fn create_import(
     zone.parse::<chrono_tz::Tz>()
         .map_err(|_| Error::bad("Unknown recorder timezone"))?;
     let id = id();
-    sqlx::query("INSERT INTO imports(id,recorder_timezone,created_at,session_plan)VALUES(?,?,?,?)")
-        .bind(&id)
-        .bind(zone)
-        .bind(now())
-        .bind(
-            body.sessions
-                .as_ref()
-                .map(|sessions| serde_json::to_string(sessions).unwrap()),
-        )
-        .execute(&app.db)
-        .await?;
+    let timestamp = now();
+    let session_plan = body
+        .sessions
+        .as_ref()
+        .map(|sessions| serde_json::to_string(sessions).unwrap());
+    sqlx::query!(
+        "INSERT INTO imports(id,recorder_timezone,created_at,session_plan)VALUES(?,?,?,?)",
+        id,
+        zone,
+        timestamp,
+        session_plan
+    )
+    .execute(&app.db)
+    .await?;
     Ok(Json(json!({"id":id,"state":"uploading"})))
 }
 pub async fn status(
@@ -56,15 +58,14 @@ pub async fn status(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     access.upload()?;
-    let row = sqlx::query("SELECT * FROM imports WHERE id=?")
-        .bind(&id)
+    let row = sqlx::query!("SELECT id AS \"id!\", state, recorder_timezone, created_at, session_plan FROM imports WHERE id=?", id)
         .fetch_optional(&app.db)
         .await?
         .ok_or_else(Error::not_found)?;
-    let uploads=sqlx::query("SELECT id,source_id,original_name,length,offset,state,failure FROM uploads WHERE import_id=? ORDER BY rowid").bind(&id).fetch_all(&app.db).await?;
-    let entries=sqlx::query("SELECT e.id,e.stage,e.active_stage,e.failure,e.pause_requested,e.duration_ms,e.recorded_at,ie.session_index FROM import_entries ie JOIN entries e ON e.id=ie.entry_id WHERE ie.import_id=? ORDER BY ie.session_index").bind(&id).fetch_all(&app.db).await?;
+    let uploads=sqlx::query!("SELECT id AS \"id!\",source_id,original_name,length,offset,state,failure FROM uploads WHERE import_id=? ORDER BY rowid", id).fetch_all(&app.db).await?;
+    let entries=sqlx::query!("SELECT e.id AS \"id!\",e.stage,e.active_stage,e.failure,e.pause_requested,e.duration_ms,e.recorded_at,ie.session_index FROM import_entries ie JOIN entries e ON e.id=ie.entry_id WHERE ie.import_id=? ORDER BY ie.session_index", id).fetch_all(&app.db).await?;
     Ok(Json(
-        json!({"id":id,"state":row.get::<String,_>("state"),"entries":entries.iter().map(|r|json!({"id":r.get::<String,_>("id"),"session_index":r.get::<i64,_>("session_index"),"stage":r.get::<String,_>("stage"),"active_stage":r.get::<Option<String>,_>("active_stage"),"pause_requested":r.get::<bool,_>("pause_requested") && r.get::<String,_>("stage") != "paused","failure":r.get::<Option<String>,_>("failure"),"duration_ms":r.get::<i64,_>("duration_ms"),"recorded_at":r.get::<Option<String>,_>("recorded_at")})).collect::<Vec<_>>(),"files":uploads.into_iter().map(|r|json!({"id":r.get::<String,_>("id"),"source_id":r.get::<Option<String>,_>("source_id"),"filename":r.get::<String,_>("original_name"),"length":r.get::<i64,_>("length"),"offset":r.get::<i64,_>("offset"),"state":r.get::<String,_>("state"),"failure":r.get::<Option<String>,_>("failure")})).collect::<Vec<_>>() }),
+        json!({"id":id,"state":row.state.clone(),"entries":entries.iter().map(|r|json!({"id":r.id.clone(),"session_index":r.session_index,"stage":r.stage.clone(),"active_stage":r.active_stage.clone(),"pause_requested":(r.pause_requested != 0) && r.stage.clone() != "paused","failure":r.failure.clone(),"duration_ms":r.duration_ms,"recorded_at":r.recorded_at.clone()})).collect::<Vec<_>>(),"files":uploads.into_iter().map(|r|json!({"id":r.id.clone(),"source_id":r.source_id.clone(),"filename":r.original_name.clone(),"length":r.length,"offset":r.offset,"state":r.state.clone(),"failure":r.failure.clone()})).collect::<Vec<_>>() }),
     ))
 }
 fn tus(status: StatusCode, values: Vec<(&'static str, String)>) -> Response {
@@ -148,21 +149,20 @@ pub async fn create(
         return Err(Error::bad("Invalid filename"));
     }
     let _guard = app.mutations.lock().await;
-    let row = sqlx::query("SELECT state,session_plan FROM imports WHERE id=?")
-        .bind(import)
+    let row = sqlx::query!("SELECT state,session_plan FROM imports WHERE id=?", import)
         .fetch_optional(&app.db)
         .await?;
     let Some(row) = row else {
         return Err(Error::conflict("Import is missing or already finalized"));
     };
-    if row.get::<String, _>("state") != "uploading" {
+    if row.state.clone() != "uploading" {
         return Err(Error::conflict("Import is missing or already finalized"));
     }
     let source_id = m.get("source_id");
     if source_id.is_some_and(|value| !grouping::validate_source_id(value)) {
         return Err(Error::bad("Invalid source ID"));
     }
-    if let Some(plan) = row.get::<Option<String>, _>("session_plan") {
+    if let Some(plan) = row.session_plan.clone() {
         let sessions: Vec<SessionPlan> =
             serde_json::from_str(&plan).map_err(|_| Error::bad("Invalid session plan"))?;
         if !source_id.is_some_and(|source| {
@@ -177,24 +177,21 @@ pub async fn create(
     }
     if let Some(source) = source_id {
         let prior =
-            sqlx::query("SELECT id,filename,original_name,relative_path,length,offset,claimed_pcm_hash FROM uploads WHERE import_id=? AND source_id=?")
-                .bind(import)
-                .bind(source)
+            sqlx::query!("SELECT id AS \"id!\",filename,original_name,relative_path,length,offset,claimed_pcm_hash FROM uploads WHERE import_id=? AND source_id=?", import, source)
                 .fetch_optional(&app.db)
                 .await?;
         if let Some(prior) = prior {
-            if prior.get::<i64, _>("length") != length
-                || prior.get::<String, _>("filename") != *filename
-                || prior.get::<String, _>("original_name") != *original
-                || prior.get::<String, _>("relative_path")
-                    != *m.get("relative_path").unwrap_or(original)
-                || prior.get::<Option<String>, _>("claimed_pcm_hash").as_ref() != m.get("pcm_hash")
+            if prior.length != length
+                || prior.filename.clone() != *filename
+                || prior.original_name.clone() != *original
+                || prior.relative_path.clone() != *m.get("relative_path").unwrap_or(original)
+                || prior.claimed_pcm_hash.clone().as_ref() != m.get("pcm_hash")
             {
                 return Err(Error::conflict(
                     "This source ID already belongs to a different upload",
                 ));
             }
-            let id: String = prior.get("id");
+            let id: String = prior.id.clone();
             return Ok(tus(
                 StatusCode::CREATED,
                 vec![
@@ -209,7 +206,7 @@ pub async fn create(
                             }
                         ),
                     ),
-                    ("upload-offset", prior.get::<i64, _>("offset").to_string()),
+                    ("upload-offset", prior.offset.to_string()),
                     ("upload-length", length.to_string()),
                 ],
             ));
@@ -222,7 +219,9 @@ pub async fn create(
         .open(app.upload_path(&id))
         .await?;
     file.sync_all().await?;
-    sqlx::query("INSERT INTO uploads(id,import_id,filename,original_name,relative_path,length,claimed_pcm_hash,source_id)VALUES(?,?,?,?,?,?,?,?)").bind(&id).bind(import).bind(filename).bind(original).bind(m.get("relative_path").unwrap_or(original)).bind(length).bind(m.get("pcm_hash")).bind(source_id).execute(&app.db).await?;
+    let relative_path = m.get("relative_path").unwrap_or(original);
+    let claimed_pcm_hash = m.get("pcm_hash");
+    sqlx::query!("INSERT INTO uploads(id,import_id,filename,original_name,relative_path,length,claimed_pcm_hash,source_id)VALUES(?,?,?,?,?,?,?,?)", id, import, filename, original, relative_path, length, claimed_pcm_hash, source_id).execute(&app.db).await?;
     Ok(tus(
         StatusCode::CREATED,
         vec![
@@ -249,16 +248,15 @@ pub async fn head(
 ) -> Result<Response> {
     access.upload()?;
     version(&h)?;
-    let r = sqlx::query("SELECT offset,length FROM uploads WHERE id=?")
-        .bind(id)
+    let r = sqlx::query!("SELECT offset,length FROM uploads WHERE id=?", id)
         .fetch_optional(&app.db)
         .await?
         .ok_or_else(Error::not_found)?;
     Ok(tus(
         StatusCode::OK,
         vec![
-            ("upload-offset", r.get::<i64, _>("offset").to_string()),
-            ("upload-length", r.get::<i64, _>("length").to_string()),
+            ("upload-offset", r.offset.to_string()),
+            ("upload-length", r.length.to_string()),
         ],
     ))
 }
@@ -289,10 +287,10 @@ pub async fn patch(
         .ok_or_else(|| Error::bad("Upload-Offset required"))?;
     let lock = upload_lock(&app, &id).await;
     let _guard = lock.lock().await;
-    let r=sqlx::query("SELECT u.offset,u.length,u.state,i.state AS import_state FROM uploads u JOIN imports i ON i.id=u.import_id WHERE u.id=?").bind(&id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
-    let saved: i64 = r.get("offset");
-    let length: i64 = r.get("length");
-    if offset != saved || r.get::<String, _>("import_state") != "uploading" {
+    let r=sqlx::query!("SELECT u.offset,u.length,u.state,i.state AS import_state FROM uploads u JOIN imports i ON i.id=u.import_id WHERE u.id=?", id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
+    let saved: i64 = r.offset;
+    let length: i64 = r.length;
+    if offset != saved || r.import_state.clone() != "uploading" {
         return Err(Error::conflict(
             "Offset mismatch or import already finalized; query HEAD before retrying",
         ));
@@ -317,16 +315,20 @@ pub async fn patch(
         file.write_all(&chunk).await?;
     }
     file.sync_all().await?;
-    sqlx::query("UPDATE uploads SET offset=?,state=? WHERE id=?")
-        .bind(saved + count)
-        .bind(if saved + count == length {
-            "received"
-        } else {
-            "uploading"
-        })
-        .bind(&id)
-        .execute(&app.db)
-        .await?;
+    let new_offset = saved + count;
+    let upload_state = if saved + count == length {
+        "received"
+    } else {
+        "uploading"
+    };
+    sqlx::query!(
+        "UPDATE uploads SET offset=?,state=? WHERE id=?",
+        new_offset,
+        upload_state,
+        id
+    )
+    .execute(&app.db)
+    .await?;
     Ok(tus(
         StatusCode::NO_CONTENT,
         vec![("upload-offset", (saved + count).to_string())],
@@ -343,10 +345,10 @@ pub async fn terminate(
     let lock = upload_lock(&app, &id).await;
     let _upload_guard = lock.lock().await;
     let _guard = app.mutations.lock().await;
-    let state: Option<String> = sqlx::query_scalar(
+    let state: Option<String> = sqlx::query_scalar!(
         "SELECT i.state FROM imports i JOIN uploads u ON u.import_id=i.id WHERE u.id=?",
+        id
     )
-    .bind(&id)
     .fetch_optional(&app.db)
     .await?;
     if state.as_deref() != Some("uploading") {
@@ -354,8 +356,7 @@ pub async fn terminate(
             "Only unfinished imports can remove uploads",
         ));
     }
-    sqlx::query("DELETE FROM uploads WHERE id=?")
-        .bind(&id)
+    sqlx::query!("DELETE FROM uploads WHERE id=?", id)
         .execute(&app.db)
         .await?;
     let _ = tokio::fs::remove_file(app.upload_path(&id)).await;
@@ -368,15 +369,13 @@ pub async fn complete(
 ) -> Result<Json<Value>> {
     access.upload()?;
     let _guard = app.mutations.lock().await;
-    let state: Option<String> = sqlx::query_scalar("SELECT state FROM imports WHERE id=?")
-        .bind(&id)
+    let state: Option<String> = sqlx::query_scalar!("SELECT state FROM imports WHERE id=?", id)
         .fetch_optional(&app.db)
         .await?;
     let state = state.ok_or_else(Error::not_found)?;
     if state == "uploading" {
         let plan: Option<String> =
-            sqlx::query_scalar("SELECT session_plan FROM imports WHERE id=?")
-                .bind(&id)
+            sqlx::query_scalar!("SELECT session_plan FROM imports WHERE id=?", id)
                 .fetch_one(&app.db)
                 .await?;
         if let Some(plan) = plan {
@@ -387,8 +386,7 @@ pub async fn complete(
                 .flat_map(|session| session.source_ids.iter().cloned())
                 .collect();
             let actual: Vec<Option<String>> =
-                sqlx::query_scalar("SELECT source_id FROM uploads WHERE import_id=?")
-                    .bind(&id)
+                sqlx::query_scalar!("SELECT source_id FROM uploads WHERE import_id=?", id)
                     .fetch_all(&app.db)
                     .await?;
             if actual.iter().any(Option::is_none)
@@ -403,22 +401,21 @@ pub async fn complete(
                 ));
             }
         }
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads WHERE import_id=?")
-            .bind(&id)
+        let count: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM uploads WHERE import_id=?", id)
             .fetch_one(&app.db)
             .await?;
-        let pending: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM uploads WHERE import_id=? AND offset!=length")
-                .bind(&id)
-                .fetch_one(&app.db)
-                .await?;
+        let pending: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM uploads WHERE import_id=? AND offset!=length",
+            id
+        )
+        .fetch_one(&app.db)
+        .await?;
         if count == 0 || pending != 0 {
             return Err(Error::conflict(
                 "Upload every file before completing the import",
             ));
         }
-        sqlx::query("UPDATE imports SET state='verifying' WHERE id=?")
-            .bind(&id)
+        sqlx::query!("UPDATE imports SET state='verifying' WHERE id=?", id)
             .execute(&app.db)
             .await?;
         app.wake.notify_one();

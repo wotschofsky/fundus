@@ -13,7 +13,6 @@ use axum::{
 use base64::Engine;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 
 #[derive(Clone)]
 pub struct Access {
@@ -64,14 +63,18 @@ pub async fn issue(app: &App, name: &str, scope: &str) -> Result<String> {
     } else {
         None
     };
-    sqlx::query("INSERT INTO credentials(hash,name,scope,created_at,expires_at) VALUES(?,?,?,?,?)")
-        .bind(hash(&value))
-        .bind(name)
-        .bind(scope)
-        .bind(now())
-        .bind(expires)
-        .execute(&app.db)
-        .await?;
+    let token_hash = hash(&value);
+    let timestamp = now();
+    sqlx::query!(
+        "INSERT INTO credentials(hash,name,scope,created_at,expires_at) VALUES(?,?,?,?,?)",
+        token_hash,
+        name,
+        scope,
+        timestamp,
+        expires
+    )
+    .execute(&app.db)
+    .await?;
     Ok(value)
 }
 fn check_origin(app: &App, request: &Request) -> Result<()> {
@@ -128,18 +131,21 @@ pub async fn require(State(app): State<App>, mut request: Request, next: Next) -
     {
         return error.into_response();
     }
-    let row = sqlx::query("SELECT scope,expires_at FROM credentials WHERE hash=?")
-        .bind(hash(value))
-        .fetch_optional(&app.db)
-        .await;
+    let token_hash = hash(value);
+    let row = sqlx::query!(
+        "SELECT scope,expires_at FROM credentials WHERE hash=?",
+        token_hash
+    )
+    .fetch_optional(&app.db)
+    .await;
     match row {
         Ok(Some(row)) => {
-            let expiry: Option<String> = row.get("expires_at");
+            let expiry: Option<String> = row.expires_at.clone();
             if expiry.is_some_and(|s| s < now()) {
                 return Error(StatusCode::UNAUTHORIZED, "Session expired".into()).into_response();
             }
             request.extensions_mut().insert(Access {
-                scope: row.get("scope"),
+                scope: row.scope.clone(),
             });
             next.run(request).await
         }
@@ -185,7 +191,7 @@ pub async fn login(
         }
         attempts.push(std::time::Instant::now());
     }
-    let encoded: Option<String> = sqlx::query_scalar("SELECT password_hash FROM owner WHERE id=1")
+    let encoded: Option<String> = sqlx::query_scalar!("SELECT password_hash FROM owner WHERE id=1")
         .fetch_optional(&app.db)
         .await?;
     let encoded = encoded.ok_or_else(|| {
@@ -231,8 +237,7 @@ pub async fn init_owner(app: &App, password: &str) -> anyhow::Result<()> {
         .hash_password(password.as_bytes(), &salt)
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .to_string();
-    sqlx::query("INSERT INTO owner(id,password_hash) VALUES(1,?)")
-        .bind(encoded)
+    sqlx::query!("INSERT INTO owner(id,password_hash) VALUES(1,?)", encoded)
         .execute(&app.db)
         .await?;
     Ok(())

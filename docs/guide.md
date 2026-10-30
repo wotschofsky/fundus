@@ -39,6 +39,9 @@ For a local binary, install Rust 1.94+, Node 26, PNPM 10.34.5, FFmpeg/ffprobe, t
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
+cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
+mkdir -p data
+cargo sqlx database setup --source crates/server/migrations
 cargo build --locked --release
 # Export configuration from .env in your shell (the binary does not auto-load it).
 python3 -c 'import getpass; print(getpass.getpass("Fundus password: "))' | target/release/fundus init
@@ -141,6 +144,9 @@ Or locally: `fundus backup /path/to/new-backup`. Backups include a SQLite snapsh
 Moving an entry to Trash hides it from the library and MCP retrieval until restored. It also cancels processing: the worker finishes its current step and stops at the next checkpoint, so a recording trashed before transcription is never sent to AssemblyAI. Permanent deletion removes its transcript, indexes, voice contributions, owned source blobs, and working/playback files. It does not touch originals on the recorder or copies in older backups. Unfinished/orphan uploads are retained; no automatic age-based deletion is enabled.
 
 ## Checks
+
+See [checked SQL](database.md) for setting up the local development database used
+by the compiler and applying schema migrations.
 
 ```sh
 pnpm build

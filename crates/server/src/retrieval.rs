@@ -121,10 +121,10 @@ async fn get_entry(app: &App, id: &str, include_trash: bool) -> Result<Value> {
         .await?
         .ok_or_else(Error::not_found)?;
     let mut v = entry(&row);
-    let speakers=sqlx::query("SELECT s.label,s.person_id,s.state,s.evidence,p.name FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=? ORDER BY s.label").bind(id).fetch_all(&app.db).await?;
-    v["speakers"]=json!(speakers.iter().map(|r|json!({"label":r.get::<String,_>("label"),"person_id":r.get::<Option<String>,_>("person_id"),"name":r.get::<Option<String>,_>("name"),"state":r.get::<String,_>("state"),"evidence":serde_json::from_str::<Value>(&r.get::<String,_>("evidence")).unwrap_or(json!([]))})).collect::<Vec<_>>());
-    let sources=sqlx::query("SELECT es.offset_ms,es.recorded_at,u.original_name,u.format_json FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=? ORDER BY es.position").bind(id).fetch_all(&app.db).await?;
-    v["sources"]=json!(sources.iter().map(|r|json!({"offset_ms":r.get::<i64,_>("offset_ms"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"filename":r.get::<String,_>("original_name"),"format":serde_json::from_str::<Value>(&r.get::<String,_>("format_json")).unwrap_or(Value::Null)})).collect::<Vec<_>>());
+    let speakers=sqlx::query!("SELECT s.label,s.person_id,s.state,s.evidence,p.name FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=? ORDER BY s.label", id).fetch_all(&app.db).await?;
+    v["speakers"]=json!(speakers.iter().map(|r|json!({"label":r.label.clone(),"person_id":r.person_id.clone(),"name":r.name.clone(),"state":r.state.clone(),"evidence":serde_json::from_str::<Value>(&r.evidence.clone()).unwrap_or(json!([]))})).collect::<Vec<_>>());
+    let sources=sqlx::query!("SELECT es.offset_ms,es.recorded_at,u.original_name, u.format_json AS \"format_json!\" FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=? ORDER BY es.position", id).fetch_all(&app.db).await?;
+    v["sources"]=json!(sources.iter().map(|r|json!({"offset_ms":r.offset_ms,"recorded_at":r.recorded_at.clone(),"filename":r.original_name.clone(),"format":serde_json::from_str::<Value>(&r.format_json.clone()).unwrap_or(Value::Null)})).collect::<Vec<_>>());
     v["url"] = json!(format!("{}entries/{id}", app.config.public_url));
     Ok(v)
 }
@@ -138,11 +138,12 @@ pub struct Read {
 }
 /// `max_limit` bounds one page: large for the libraries, small for MCP agents.
 pub async fn transcript(app: &App, r: Read, max_limit: u32) -> Result<Value> {
-    let known: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE id=? AND trashed_at IS NULL")
-            .bind(&r.entry_id)
-            .fetch_one(&app.db)
-            .await?;
+    let known: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM entries WHERE id=? AND trashed_at IS NULL",
+        r.entry_id
+    )
+    .fetch_one(&app.db)
+    .await?;
     if known == 0 {
         return Err(Error::not_found());
     }
@@ -153,16 +154,17 @@ pub async fn transcript(app: &App, r: Read, max_limit: u32) -> Result<Value> {
     if from < 0 || to < from {
         return Err(Error::bad("Invalid audio time range"));
     }
-    let rows=sqlx::query("SELECT s.*,sp.person_id,p.name FROM segments s LEFT JOIN speakers sp ON sp.entry_id=s.entry_id AND sp.label=s.speaker LEFT JOIN people p ON p.id=sp.person_id WHERE s.entry_id=? AND s.end_ms>? AND s.start_ms<? AND s.position>=? ORDER BY s.position LIMIT ?").bind(&r.entry_id).bind(from).bind(to).bind(cursor as i64).bind(limit as i64+1).fetch_all(&app.db).await?;
+    let query_cursor = cursor as i64;
+    let query_limit = limit as i64 + 1;
+    let rows=sqlx::query!("SELECT s.*,sp.person_id,p.name FROM segments s LEFT JOIN speakers sp ON sp.entry_id=s.entry_id AND sp.label=s.speaker LEFT JOIN people p ON p.id=sp.person_id WHERE s.entry_id=? AND s.end_ms>? AND s.start_ms<? AND s.position>=? ORDER BY s.position LIMIT ?", r.entry_id, from, to, query_cursor, query_limit).fetch_all(&app.db).await?;
     let more = rows.len() > limit as usize;
     let next = if more {
-        rows.get(limit as usize)
-            .map(|r| r.get::<i64, _>("position"))
+        rows.get(limit as usize).map(|r| r.position)
     } else {
         None
     };
     Ok(
-        json!({"entry_id":r.entry_id,"segments":rows.iter().take(limit as usize).map(|s|json!({"id":s.get::<String,_>("id"),"position":s.get::<i64,_>("position"),"speaker":s.get::<String,_>("speaker"),"speaker_name":s.get::<Option<String>,_>("name"),"person_id":s.get::<Option<String>,_>("person_id"),"start_ms":s.get::<i64,_>("start_ms"),"end_ms":s.get::<i64,_>("end_ms"),"text":s.get::<String,_>("text")})).collect::<Vec<_>>(),"truncated":more,"next_cursor":next}),
+        json!({"entry_id":r.entry_id,"segments":rows.iter().take(limit as usize).map(|s|json!({"id":s.id.clone(),"position":s.position,"speaker":s.speaker.clone(),"speaker_name":s.name.clone(),"person_id":s.person_id.clone(),"start_ms":s.start_ms,"end_ms":s.end_ms,"text":s.text.clone()})).collect::<Vec<_>>(),"truncated":more,"next_cursor":next}),
     )
 }
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
@@ -256,12 +258,12 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
             Some(json!({"id":id,"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)}))
         })
         .collect();
-    let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused','failed') AND trashed_at IS NULL")
+    let pending: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused','failed') AND trashed_at IS NULL")
         .fetch_one(&app.db)
         .await?;
     // Without a configured embedding provider, keyword search is the complete design, not a gap.
     let missing: i64 = if enabled {
-        sqlx::query_scalar("SELECT COUNT(*) FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NULL AND e.trashed_at IS NULL")
+        sqlx::query_scalar!("SELECT COUNT(*) FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NULL AND e.trashed_at IS NULL")
             .fetch_one(&app.db)
             .await?
     } else {
@@ -272,9 +274,9 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
     )
 }
 pub async fn labels(app: &App) -> Result<Value> {
-    let rows=sqlx::query("SELECT l.name,COUNT(e.id) AS count FROM labels l LEFT JOIN entry_labels el ON el.label=l.name LEFT JOIN entries e ON e.id=el.entry_id AND e.trashed_at IS NULL GROUP BY l.name ORDER BY l.name").fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT l.name,COUNT(e.id) AS count FROM labels l LEFT JOIN entry_labels el ON el.label=l.name LEFT JOIN entries e ON e.id=el.entry_id AND e.trashed_at IS NULL GROUP BY l.name ORDER BY l.name").fetch_all(&app.db).await?;
     Ok(
-        json!({"labels":rows.iter().map(|r|json!({"name":r.get::<String,_>("name"),"count":r.get::<i64,_>("count")})).collect::<Vec<_>>()}),
+        json!({"labels":rows.iter().map(|r|json!({"name":r.name.clone(),"count":r.count})).collect::<Vec<_>>()}),
     )
 }
 #[cfg(test)]

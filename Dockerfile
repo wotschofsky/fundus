@@ -45,9 +45,15 @@ RUN curl --fail --silent --show-error --location --retry 3 "https://ffmpeg.org/r
 FROM rust:1.94-bookworm AS server
 WORKDIR /src
 ARG CARGO_BUILD_JOBS=2
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/tmp/sqlx-cli-target \
+    cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite --target-dir /tmp/sqlx-cli-target
+ENV DATABASE_URL=sqlite:///src/data/vault.sqlite
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target cargo build --locked --release --jobs "$CARGO_BUILD_JOBS" -p fundus && cp target/release/fundus /usr/local/bin/fundus
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target \
+    mkdir -p data && cargo sqlx database setup --source crates/server/migrations \
+    && cargo build --locked --release --jobs "$CARGO_BUILD_JOBS" -p fundus \
+    && cp target/release/fundus /usr/local/bin/fundus
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 --create-home vault && mkdir /data && chown vault:vault /data

@@ -8,7 +8,6 @@ use crate::{
 };
 use anyhow::{Result, bail, ensure};
 use futures_util::future::join_all;
-use sqlx::Row;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -29,8 +28,8 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
         if shutdown.is_cancelled() {
             break;
         }
-        let import: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM imports WHERE state='verifying' ORDER BY created_at LIMIT 1",
+        let import: Option<String> = sqlx::query_scalar!(
+            "SELECT id AS \"id!\" FROM imports WHERE state='verifying' ORDER BY created_at LIMIT 1"
         )
         .fetch_optional(&app.db)
         .await
@@ -38,8 +37,7 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
         if let Some(batch) = import {
             if let Err(error) = finalize(&app, &batch).await {
                 tracing::error!(import=%batch,error=%error,"import verification failed");
-                let _ = sqlx::query("UPDATE imports SET state='failed' WHERE id=?")
-                    .bind(batch)
+                let _ = sqlx::query!("UPDATE imports SET state='failed' WHERE id=?", batch)
                     .execute(&app.db)
                     .await;
             }
@@ -66,25 +64,25 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
 /// After a crash, work that cannot bill twice resumes on its own, including a request whose job
 /// is found by its saved upload URL. One saved without that URL waits for an explicit Retry.
 async fn recover(app: &App) {
-    let active = "stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL";
-    let _ = sqlx::query(&format!("UPDATE entries SET stage='failed',failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE {active} AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted' AND t.audio_url IS NULL)"))
+    let _ = sqlx::query!("UPDATE entries SET stage='failed',failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted' AND t.audio_url IS NULL)")
         .execute(&app.db)
         .await;
-    let _ = sqlx::query(&format!("UPDATE entries SET stage='queued' WHERE {active}"))
+    let _ = sqlx::query!("UPDATE entries SET stage='queued' WHERE stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL")
         .execute(&app.db)
         .await;
 }
 
 /// Atomically takes the oldest queued entry, so concurrent jobs never share one.
 async fn claim(app: &App) -> Option<(String, Option<String>)> {
-    sqlx::query_as("UPDATE entries SET stage='preparing',active_stage='preparing',failure=NULL,updated_at=? WHERE id=(SELECT id FROM entries WHERE stage='queued' AND trashed_at IS NULL ORDER BY created_at LIMIT 1) AND stage='queued' RETURNING id,requested_work")
-        .bind(now())
+    let timestamp = now();
+    sqlx::query!("UPDATE entries SET stage='preparing',active_stage='preparing',failure=NULL,updated_at=? WHERE id=(SELECT id FROM entries WHERE stage='queued' AND trashed_at IS NULL ORDER BY created_at LIMIT 1) AND stage='queued' RETURNING id AS \"id!\",requested_work", timestamp)
         .fetch_optional(&app.db)
         .await
         .unwrap_or_else(|error| {
             tracing::error!(%error, "could not claim queued work");
             None
         })
+        .map(|row| (row.id, row.requested_work))
 }
 
 async fn run(app: &App, entry: &str, work: Option<&str>, stop: &CancellationToken) {
@@ -95,75 +93,83 @@ async fn run(app: &App, entry: &str, work: Option<&str>, stop: &CancellationToke
     };
     if let Err(error) = result {
         tracing::error!(entry=%entry,error=%error,"entry processing failed");
-        let _ = sqlx::query("UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?")
-            .bind(error.to_string().chars().take(1000).collect::<String>())
-            .bind(now())
-            .bind(entry)
-            .execute(&app.db)
-            .await;
+        let failure = error.to_string().chars().take(1000).collect::<String>();
+        let timestamp = now();
+        let _ = sqlx::query!(
+            "UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?",
+            failure,
+            timestamp,
+            entry
+        )
+        .execute(&app.db)
+        .await;
     }
 }
 pub async fn finalize(app: &App, batch: &str) -> Result<()> {
-    let import = sqlx::query("SELECT recorder_timezone,session_plan FROM imports WHERE id=?")
-        .bind(batch)
-        .fetch_one(&app.db)
-        .await?;
-    let zone: String = import.get("recorder_timezone");
+    let import = sqlx::query!(
+        "SELECT recorder_timezone,session_plan FROM imports WHERE id=?",
+        batch
+    )
+    .fetch_one(&app.db)
+    .await?;
+    let zone: String = import.recorder_timezone.clone();
     let tz = zone.parse()?;
     let plans: Option<Vec<grouping::SessionPlan>> = import
-        .get::<Option<String>, _>("session_plan")
+        .session_plan
+        .clone()
         .map(|plan| serde_json::from_str(&plan))
         .transpose()?;
-    let rows = sqlx::query("SELECT * FROM uploads WHERE import_id=? ORDER BY relative_path")
-        .bind(batch)
+    let rows = sqlx::query!("SELECT id AS \"id!\", original_name, claimed_pcm_hash, source_id FROM uploads WHERE import_id=? ORDER BY relative_path", batch)
         .fetch_all(&app.db)
         .await?;
     // Decoding is the slow part: verify the uploads in parallel, then record them in order.
     let verified = join_all(rows.iter().map(|row| async move {
         let _cpu = app.cpu.acquire().await?;
-        audio::verify(&app.upload_path(&row.get::<String, _>("id"))).await
+        audio::verify(&app.upload_path(&row.id.clone())).await
     }))
     .await;
     let mut sources = vec![];
     let mut seen = HashSet::new();
     for (row, verified) in rows.into_iter().zip(verified) {
-        let uid: String = row.get("id");
-        let original: String = row.get("original_name");
+        let uid: String = row.id.clone();
+        let original: String = row.original_name.clone();
         let (format, hash) = match verified {
             Ok(verified) => verified,
             Err(error) => {
-                sqlx::query("UPDATE uploads SET state='invalid',failure=? WHERE id=?")
-                    .bind(error.to_string())
-                    .bind(&uid)
-                    .execute(&app.db)
-                    .await?;
+                let failure = error.to_string();
+                sqlx::query!(
+                    "UPDATE uploads SET state='invalid',failure=? WHERE id=?",
+                    failure,
+                    uid
+                )
+                .execute(&app.db)
+                .await?;
                 continue;
             }
         };
-        let claimed: Option<String> = row.get("claimed_pcm_hash");
+        let claimed: Option<String> = row.claimed_pcm_hash.clone();
         if claimed.as_ref().is_some_and(|claimed| claimed != &hash) {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE uploads SET state='invalid',failure='PCM verification mismatch' WHERE id=?",
+                uid
             )
-            .bind(&uid)
             .execute(&app.db)
             .await?;
             continue;
         }
-        sqlx::query(
+        let format_json = serde_json::to_string(&format)?;
+        sqlx::query!(
             "UPDATE uploads SET state='verified',pcm_hash=?,format_json=?,failure=NULL WHERE id=?",
+            hash,
+            format_json,
+            uid
         )
-        .bind(&hash)
-        .bind(serde_json::to_string(&format)?)
-        .bind(&uid)
         .execute(&app.db)
         .await?;
         if plans.is_none() {
-            let known: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entry_sources es JOIN uploads u ON u.id=es.upload_id JOIN entries e ON e.id=es.entry_id WHERE u.pcm_hash=? AND e.trashed_at IS NULL")
-                .bind(&hash).fetch_one(&app.db).await?;
+            let known: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM entry_sources es JOIN uploads u ON u.id=es.upload_id JOIN entries e ON e.id=es.entry_id WHERE u.pcm_hash=? AND e.trashed_at IS NULL", hash).fetch_one(&app.db).await?;
             if known > 0 || !seen.insert(hash.clone()) {
-                sqlx::query("UPDATE uploads SET state='duplicate' WHERE id=?")
-                    .bind(&uid)
+                sqlx::query!("UPDATE uploads SET state='duplicate' WHERE id=?", uid)
                     .execute(&app.db)
                     .await?;
                 continue;
@@ -174,9 +180,7 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or(&original);
         let parsed = grouping::parse_dji(name, tz);
-        let source_id = row
-            .get::<Option<String>, _>("source_id")
-            .unwrap_or_else(|| uid.clone());
+        let source_id = row.source_id.clone().unwrap_or_else(|| uid.clone());
         sources.push((
             source_id,
             Source {
@@ -235,44 +239,50 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
             });
         let trim_start = group.is_trimmed().then_some(group.start_frame as i64);
         let trim_end = group.is_trimmed().then_some(group.end_frame as i64);
-        let inserted = sqlx::query("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame)VALUES(?,?,?,?,?,?,'queued',?,?,?,?)")
-            .bind(&eid).bind(&fingerprint).bind(title).bind(recorded).bind(duration).bind(&zone).bind(now()).bind(now()).bind(trim_start).bind(trim_end).execute(&mut *tx).await?;
+        let created_at = now();
+        let updated_at = now();
+        let inserted = sqlx::query!("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame)VALUES(?,?,?,?,?,?,'queued',?,?,?,?)", eid, fingerprint, title, recorded, duration, zone, created_at, updated_at, trim_start, trim_end).execute(&mut *tx).await?;
         let entry_id = if inserted.rows_affected() > 0 {
             let mut offset = 0;
             for (position, source) in group.sources.iter().enumerate() {
-                sqlx::query("INSERT INTO entry_sources(entry_id,upload_id,position,offset_ms,recorded_at)VALUES(?,?,?,?,?)")
-                    .bind(&eid).bind(&source.id).bind(position as i64).bind(offset)
-                    .bind(source.recorded_at.map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))).execute(&mut *tx).await?;
+                let query_position = position as i64;
+                let recorded_at = source
+                    .recorded_at
+                    .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+                sqlx::query!("INSERT INTO entry_sources(entry_id,upload_id,position,offset_ms,recorded_at)VALUES(?,?,?,?,?)", eid, source.id, query_position, offset, recorded_at).execute(&mut *tx).await?;
                 offset += source.format.duration_ms();
             }
             eid
         } else {
             for source in &group.sources {
-                sqlx::query("UPDATE uploads SET state='duplicate' WHERE id=?")
-                    .bind(&source.id)
+                sqlx::query!("UPDATE uploads SET state='duplicate' WHERE id=?", source.id)
                     .execute(&mut *tx)
                     .await?;
             }
-            sqlx::query("UPDATE entries SET trashed_at=NULL WHERE fingerprint=?")
-                .bind(&fingerprint)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query_scalar("SELECT id FROM entries WHERE fingerprint=?")
-                .bind(&fingerprint)
-                .fetch_one(&mut *tx)
-                .await?
+            sqlx::query!(
+                "UPDATE entries SET trashed_at=NULL WHERE fingerprint=?",
+                fingerprint
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query_scalar!(
+                "SELECT id AS \"id!\" FROM entries WHERE fingerprint=?",
+                fingerprint
+            )
+            .fetch_one(&mut *tx)
+            .await?
         };
-        sqlx::query(
+        let query_session_index = session_index as i64;
+        sqlx::query!(
             "INSERT OR IGNORE INTO import_entries(import_id,entry_id,session_index)VALUES(?,?,?)",
+            batch,
+            entry_id,
+            query_session_index
         )
-        .bind(batch)
-        .bind(entry_id)
-        .bind(session_index as i64)
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query("UPDATE imports SET state='complete' WHERE id=?")
-        .bind(batch)
+    sqlx::query!("UPDATE imports SET state='complete' WHERE id=?", batch)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -280,13 +290,16 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
 }
 
 async fn stage(app: &App, entry: &str, stage: &str) -> Result<()> {
-    sqlx::query("UPDATE entries SET stage=?,active_stage=?,failure=NULL,updated_at=? WHERE id=?")
-        .bind(stage)
-        .bind(stage)
-        .bind(now())
-        .bind(entry)
-        .execute(&app.db)
-        .await?;
+    let timestamp = now();
+    sqlx::query!(
+        "UPDATE entries SET stage=?,active_stage=?,failure=NULL,updated_at=? WHERE id=?",
+        stage,
+        stage,
+        timestamp,
+        entry
+    )
+    .execute(&app.db)
+    .await?;
     Ok(())
 }
 
@@ -319,8 +332,7 @@ async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
     if targets.is_empty() {
         return Ok(rendition);
     }
-    let rows = sqlx::query("SELECT es.upload_id,e.trim_start_frame,e.trim_end_frame FROM entry_sources es JOIN entries e ON e.id=es.entry_id WHERE es.entry_id=? ORDER BY es.position")
-        .bind(entry)
+    let rows = sqlx::query!("SELECT es.upload_id,e.trim_start_frame,e.trim_end_frame FROM entry_sources es JOIN entries e ON e.id=es.entry_id WHERE es.entry_id=? ORDER BY es.position", entry)
         .fetch_all(&app.db)
         .await?;
     ensure!(!rows.is_empty(), "Recording has no audio sources");
@@ -328,15 +340,12 @@ async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
     let mut args = vec![];
     let mut filter = String::new();
     for (index, row) in rows.iter().enumerate() {
-        let upload: String = row.get("upload_id");
+        let upload: String = row.upload_id.clone();
         args.extend(["-i".into(), app.upload_path(&upload).display().to_string()]);
         filter.push_str(&format!("[{index}:a:0]"));
     }
     filter.push_str(&format!("concat=n={}:v=0:a=1", rows.len()));
-    let trim: (Option<i64>, Option<i64>) = (
-        rows[0].get("trim_start_frame"),
-        rows[0].get("trim_end_frame"),
-    );
+    let trim: (Option<i64>, Option<i64>) = (rows[0].trim_start_frame, rows[0].trim_end_frame);
     if let (Some(start), Some(end)) = trim {
         filter.push_str(&format!(
             ",atrim=start_sample={start}:end_sample={end},asetpts=PTS-STARTPTS"
@@ -362,19 +371,24 @@ async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
 }
 
 async fn pause_at_checkpoint(app: &App, entry: &str) -> Result<bool> {
-    let row = sqlx::query("SELECT stage,pause_requested,trashed_at FROM entries WHERE id=?")
-        .bind(entry)
-        .fetch_one(&app.db)
-        .await?;
-    let requested = row.get::<bool, _>("pause_requested")
-        || row.get::<String, _>("stage") == "paused"
-        || row.get::<Option<String>, _>("trashed_at").is_some();
+    let row = sqlx::query!(
+        "SELECT stage,pause_requested,trashed_at FROM entries WHERE id=?",
+        entry
+    )
+    .fetch_one(&app.db)
+    .await?;
+    let requested = (row.pause_requested != 0)
+        || row.stage.clone() == "paused"
+        || row.trashed_at.clone().is_some();
     if requested {
-        sqlx::query("UPDATE entries SET stage='paused',pause_requested=0,updated_at=? WHERE id=?")
-            .bind(now())
-            .bind(entry)
-            .execute(&app.db)
-            .await?;
+        let timestamp = now();
+        sqlx::query!(
+            "UPDATE entries SET stage='paused',pause_requested=0,updated_at=? WHERE id=?",
+            timestamp,
+            entry
+        )
+        .execute(&app.db)
+        .await?;
     }
     Ok(requested)
 }
@@ -388,12 +402,13 @@ async fn transcribe(
     rendition: &Path,
     stop: &CancellationToken,
 ) -> Result<Option<Vec<Utterance>>> {
-    let saved: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    let saved = sqlx::query!(
         "SELECT remote_id,audio_url,utterances FROM transcriptions WHERE entry_id=?",
+        entry
     )
-    .bind(entry)
     .fetch_optional(&app.db)
-    .await?;
+    .await?
+    .map(|row| (row.remote_id, row.audio_url, row.utterances));
     let job = match saved {
         Some((_, _, Some(utterances))) => return Ok(Some(serde_json::from_str(&utterances)?)),
         Some((Some(job), _, None)) => job,
@@ -406,10 +421,10 @@ async fn transcribe(
         // Saved before upload URLs were: only the owner can decide to pay again.
         Some((None, None, None)) => bail!(AMBIGUOUS),
         None => {
-            let duration: i64 = sqlx::query_scalar("SELECT duration_ms FROM entries WHERE id=?")
-                .bind(entry)
-                .fetch_one(&app.db)
-                .await?;
+            let duration: i64 =
+                sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
+                    .fetch_one(&app.db)
+                    .await?;
             ensure!(
                 duration <= MAX_DURATION_MS,
                 "AssemblyAI transcribes at most 10 hours per recording. Split this session into shorter ones and import it again."
@@ -421,8 +436,8 @@ async fn transcribe(
             if stop.is_cancelled() {
                 return Ok(None);
             }
-            sqlx::query("INSERT INTO transcriptions(entry_id,state,audio_url,submitted_at)VALUES(?,'submitted',?,?)")
-                .bind(entry).bind(&audio).bind(now()).execute(&app.db).await?;
+            let timestamp = now();
+            sqlx::query!("INSERT INTO transcriptions(entry_id,state,audio_url,submitted_at)VALUES(?,'submitted',?,?)", entry, audio, timestamp).execute(&app.db).await?;
             submit(app, entry, &audio).await?
         }
     };
@@ -461,22 +476,23 @@ async fn transcribe(
                     let _ = tokio::fs::remove_file(dir.join(stale)).await;
                 }
                 let mut tx = app.db.begin().await?;
-                sqlx::query(
+                let utterances_json = serde_json::to_string(&utterances)?;
+                sqlx::query!(
                     "UPDATE transcriptions SET state='complete',utterances=? WHERE entry_id=?",
+                    utterances_json,
+                    entry
                 )
-                .bind(serde_json::to_string(&utterances)?)
-                .bind(entry)
                 .execute(&mut *tx)
                 .await?;
                 // A new job's "A" can be someone else: names and voices of the earlier labels go.
-                for table in ["speakers", "voice_samples", "voice_probes"] {
-                    sqlx::query(&format!("DELETE FROM {table} WHERE entry_id=?"))
-                        .bind(entry)
-                        .execute(&mut *tx)
-                        .await?;
+                for query in [
+                    sqlx::query!("DELETE FROM speakers WHERE entry_id=?", entry),
+                    sqlx::query!("DELETE FROM voice_samples WHERE entry_id=?", entry),
+                    sqlx::query!("DELETE FROM voice_probes WHERE entry_id=?", entry),
+                ] {
+                    query.execute(&mut *tx).await?;
                 }
-                sqlx::query("UPDATE entries SET summary=NULL WHERE id=?")
-                    .bind(entry)
+                sqlx::query!("UPDATE entries SET summary=NULL WHERE id=?", entry)
                     .execute(&mut *tx)
                     .await?;
                 tx.commit().await?;
@@ -527,11 +543,13 @@ async fn submit(app: &App, entry: &str, audio: &str) -> Result<String> {
 
 async fn save_job(app: &App, entry: &str, job: &str) -> Result<String> {
     tracing::info!(%entry, %job, "AssemblyAI job created");
-    sqlx::query("UPDATE transcriptions SET state='processing',remote_id=? WHERE entry_id=?")
-        .bind(job)
-        .bind(entry)
-        .execute(&app.db)
-        .await?;
+    sqlx::query!(
+        "UPDATE transcriptions SET state='processing',remote_id=? WHERE entry_id=?",
+        job,
+        entry
+    )
+    .execute(&app.db)
+    .await?;
     Ok(job.into())
 }
 
@@ -540,16 +558,18 @@ async fn save_job(app: &App, entry: &str, job: &str) -> Result<String> {
 async fn fail_transcription(app: &App, entry: &str, message: &str) -> anyhow::Error {
     let result = async {
         let mut tx = app.db.begin().await?;
-        sqlx::query("DELETE FROM transcriptions WHERE entry_id=?")
-            .bind(entry)
+        sqlx::query!("DELETE FROM transcriptions WHERE entry_id=?", entry)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?")
-            .bind(message)
-            .bind(now())
-            .bind(entry)
-            .execute(&mut *tx)
-            .await?;
+        let timestamp = now();
+        sqlx::query!(
+            "UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?",
+            message,
+            timestamp,
+            entry
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
     }
     .await;
@@ -562,44 +582,46 @@ async fn fail_transcription(app: &App, entry: &str, message: &str) -> anyhow::Er
 /// Replaces the entry's segments. Speaker labels that no longer occur (a legacy multi-part
 /// transcript replaced by one job) are removed together with their voice data.
 async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Result<()> {
-    let duration: i64 = sqlx::query_scalar("SELECT duration_ms FROM entries WHERE id=?")
-        .bind(entry)
+    let duration: i64 = sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
     let mut tx = app.db.begin().await?;
-    sqlx::query("DELETE FROM segments WHERE entry_id=?")
-        .bind(entry)
+    sqlx::query!("DELETE FROM segments WHERE entry_id=?", entry)
         .execute(&mut *tx)
         .await?;
     // IDs are deterministic across retries.
     for (position, utterance) in utterances.iter().enumerate() {
-        sqlx::query("INSERT OR IGNORE INTO speakers(entry_id,label)VALUES(?,?)")
-            .bind(entry)
-            .bind(&utterance.speaker)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text,confidence)VALUES(?,?,?,?,?,?,?,?)")
-            .bind(format!("{entry}:{position}"))
-            .bind(entry)
-            .bind(position as i64)
-            .bind(&utterance.speaker)
-            .bind(utterance.start.min(duration))
-            .bind(utterance.end.min(duration))
-            .bind(utterance.text.trim())
-            .bind(utterance.confidence)
-            .execute(&mut *tx)
-            .await?;
-    }
-    for table in ["voice_samples", "voice_probes"] {
-        sqlx::query(&format!("DELETE FROM {table} WHERE entry_id=? AND speaker NOT IN (SELECT speaker FROM segments WHERE entry_id=?)"))
-            .bind(entry)
-            .bind(entry)
+        sqlx::query!(
+            "INSERT OR IGNORE INTO speakers(entry_id,label)VALUES(?,?)",
+            entry,
+            utterance.speaker
+        )
+        .execute(&mut *tx)
+        .await?;
+        let segment_id = format!("{entry}:{position}");
+        let query_position = position as i64;
+        let start_ms = utterance.start.min(duration);
+        let end_ms = utterance.end.min(duration);
+        let text = utterance.text.trim();
+        sqlx::query!("INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text,confidence)VALUES(?,?,?,?,?,?,?,?)", segment_id, entry, query_position, utterance.speaker, start_ms, end_ms, text, utterance.confidence)
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("DELETE FROM speakers WHERE entry_id=? AND label NOT IN (SELECT speaker FROM segments WHERE entry_id=?)")
-        .bind(entry)
-        .bind(entry)
+    for query in [
+        sqlx::query!(
+            "DELETE FROM voice_samples WHERE entry_id=? AND speaker NOT IN (SELECT speaker FROM segments WHERE entry_id=?)",
+            entry,
+            entry
+        ),
+        sqlx::query!(
+            "DELETE FROM voice_probes WHERE entry_id=? AND speaker NOT IN (SELECT speaker FROM segments WHERE entry_id=?)",
+            entry,
+            entry
+        ),
+    ] {
+        query.execute(&mut *tx).await?;
+    }
+    sqlx::query!("DELETE FROM speakers WHERE entry_id=? AND label NOT IN (SELECT speaker FROM segments WHERE entry_id=?)", entry, entry)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -607,19 +629,15 @@ async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Res
 }
 
 async fn transcript_lines(app: &App, entry: &str) -> Result<Vec<String>> {
-    let rows = sqlx::query("SELECT speaker,text FROM segments WHERE entry_id=? ORDER BY position")
-        .bind(entry)
-        .fetch_all(&app.db)
-        .await?;
+    let rows = sqlx::query!(
+        "SELECT speaker,text FROM segments WHERE entry_id=? ORDER BY position",
+        entry
+    )
+    .fetch_all(&app.db)
+    .await?;
     Ok(rows
         .iter()
-        .map(|row| {
-            format!(
-                "[{}] {}",
-                row.get::<String, _>("speaker"),
-                row.get::<String, _>("text")
-            )
-        })
+        .map(|row| format!("[{}] {}", row.speaker.clone(), row.text.clone()))
         .collect())
 }
 
@@ -650,10 +668,7 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     }
     stage(app, entry, "recognizing").await?;
     // Labels merged by an earlier analysis are split again and decided afresh.
-    let saved: Option<String> = sqlx::query_scalar(
-        "SELECT utterances FROM transcriptions WHERE entry_id=? AND utterances IS NOT NULL",
-    )
-    .bind(entry)
+    let saved: Option<String> = sqlx::query_scalar!("SELECT utterances AS \"utterances!\" FROM transcriptions WHERE entry_id=? AND utterances IS NOT NULL", entry)
     .fetch_optional(&app.db)
     .await?;
     if let Some(saved) = saved {
@@ -665,9 +680,8 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
             };
         store_segments(app, entry, &utterances).await?;
     }
-    sqlx::query("UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE entry_id=? AND state NOT IN ('manual','manual_unknown')").bind(entry).execute(&app.db).await?;
-    let previous: String = sqlx::query_scalar("SELECT warnings FROM entries WHERE id=?")
-        .bind(entry)
+    sqlx::query!("UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE entry_id=? AND state NOT IN ('manual','manual_unknown')", entry).execute(&app.db).await?;
+    let previous: String = sqlx::query_scalar!("SELECT warnings FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
     let mut warnings: Vec<String> = serde_json::from_str(&previous)?;
@@ -713,8 +727,7 @@ pub async fn regenerate_summary(app: &App, entry: &str) -> Result<()> {
         return Ok(());
     }
     stage(app, entry, "enriching").await?;
-    let previous: String = sqlx::query_scalar("SELECT warnings FROM entries WHERE id=?")
-        .bind(entry)
+    let previous: String = sqlx::query_scalar!("SELECT warnings FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
     let mut warnings: Vec<String> = serde_json::from_str(&previous)?;
@@ -733,13 +746,14 @@ async fn save_notes(app: &App, entry: &str, notes: &provider::Notes, replace: bo
         return Ok(());
     }
     let mut tx = app.db.begin().await?;
-    sqlx::query("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND (? OR summary IS NULL)")
-        .bind(notes.title.trim().chars().take(240).collect::<String>()).bind(notes.summary.trim()).bind(entry).bind(replace).execute(&mut *tx).await?;
-    sqlx::query(
+    let title = notes.title.trim().chars().take(240).collect::<String>();
+    let summary = notes.summary.trim();
+    sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND (? OR summary IS NULL)", title, summary, entry, replace).execute(&mut *tx).await?;
+    sqlx::query!(
         "UPDATE passage_fts SET title=(SELECT title FROM entries WHERE id=?) WHERE entry_id=?",
+        entry,
+        entry
     )
-    .bind(entry)
-    .bind(entry)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -752,8 +766,9 @@ async fn complete(
     warnings: &[String],
     rendition: Option<&Path>,
 ) -> Result<()> {
-    sqlx::query("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=?")
-        .bind(serde_json::to_string(warnings)?).bind(now()).bind(entry).execute(&app.db).await?;
+    let warnings_json = serde_json::to_string(warnings)?;
+    let timestamp = now();
+    sqlx::query!("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=?", warnings_json, timestamp, entry).execute(&app.db).await?;
     if let Some(rendition) = rendition {
         let _ = tokio::fs::remove_file(rendition).await;
     }
@@ -769,28 +784,29 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
-    let ambiguous: Option<String> = sqlx::query_scalar(
-        "SELECT state FROM transcriptions WHERE entry_id=? AND state='submitted' AND audio_url IS NULL",
-    )
-    .bind(entry)
+    let ambiguous: Option<String> = sqlx::query_scalar!("SELECT state FROM transcriptions WHERE entry_id=? AND state='submitted' AND audio_url IS NULL", entry)
     .fetch_optional(&app.db)
     .await?;
     ensure!(ambiguous.is_none(), AMBIGUOUS);
     stage(app, entry, "preparing").await?;
     // Once uploaded, AssemblyAI has the audio: a resumed or retried entry needs no new FLAC.
-    let uploaded: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE entry_id=?)")
-            .bind(entry)
-            .fetch_one(&app.db)
-            .await?;
+    let uploaded: bool = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM transcriptions WHERE entry_id=?) AS \"exists!: bool\"",
+        entry
+    )
+    .fetch_one(&app.db)
+    .await?;
     let rendition = render(app, entry, !uploaded).await?;
     let playback = app.entry_dir(entry).join("playback.m4a");
     // Playback is ready: listen while the rest is processed.
-    sqlx::query("UPDATE entries SET audio_path='playback.m4a',updated_at=? WHERE id=?")
-        .bind(now())
-        .bind(entry)
-        .execute(&app.db)
-        .await?;
+    let timestamp = now();
+    sqlx::query!(
+        "UPDATE entries SET audio_path='playback.m4a',updated_at=? WHERE id=?",
+        timestamp,
+        entry
+    )
+    .execute(&app.db)
+    .await?;
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
@@ -858,14 +874,10 @@ fn relabel(notes: &mut provider::Notes, merged: &[(String, String)]) {
 }
 
 pub async fn index(app: &App, entry: &str) -> Result<()> {
-    let rows = sqlx::query(
-        "SELECT id,start_ms,end_ms,text FROM segments WHERE entry_id=? ORDER BY position",
-    )
-    .bind(entry)
+    let rows = sqlx::query!("SELECT id AS \"id!\",start_ms,end_ms,text FROM segments WHERE entry_id=? ORDER BY position", entry)
     .fetch_all(&app.db)
     .await?;
-    let title: String = sqlx::query_scalar("SELECT title FROM entries WHERE id=?")
-        .bind(entry)
+    let title: String = sqlx::query_scalar!("SELECT title FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
     let mut chunks: Vec<(i64, i64, String)> = vec![];
@@ -874,15 +886,15 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         let mut end = start;
         let mut chars = 0;
         while end < rows.len() && (chars < 1800 || end == start) {
-            chars += rows[end].get::<String, _>("text").len();
+            chars += rows[end].text.clone().len();
             end += 1;
         }
         chunks.push((
-            rows[start].get("start_ms"),
-            rows[end - 1].get("end_ms"),
+            rows[start].start_ms,
+            rows[end - 1].end_ms,
             rows[start..end]
                 .iter()
-                .map(|r| r.get::<String, _>("text"))
+                .map(|r| r.text.clone())
                 .collect::<Vec<_>>()
                 .join(" "),
         ));
@@ -916,24 +928,26 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         }
     }
     let mut tx = app.db.begin().await?;
-    sqlx::query("DELETE FROM passage_fts WHERE entry_id=?")
-        .bind(entry)
+    sqlx::query!("DELETE FROM passage_fts WHERE entry_id=?", entry)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM passages WHERE entry_id=?")
-        .bind(entry)
+    sqlx::query!("DELETE FROM passages WHERE entry_id=?", entry)
         .execute(&mut *tx)
         .await?;
     for (i, (start, end, text)) in chunks.into_iter().enumerate() {
         let pid = format!("{entry}:p{i}");
-        sqlx::query("INSERT INTO passages(id,entry_id,position,start_ms,end_ms,text,embedding)VALUES(?,?,?,?,?,?,?)").bind(&pid).bind(entry).bind(i as i64).bind(start).bind(end).bind(&text).bind(vectors.get(&i).map(|v|serde_json::to_string(v).unwrap())).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO passage_fts(id,entry_id,title,text)VALUES(?,?,?,?)")
-            .bind(pid)
-            .bind(entry)
-            .bind(&title)
-            .bind(text)
-            .execute(&mut *tx)
-            .await?;
+        let query_position = i as i64;
+        let embedding_json = vectors.get(&i).map(|v| serde_json::to_string(v).unwrap());
+        sqlx::query!("INSERT INTO passages(id,entry_id,position,start_ms,end_ms,text,embedding)VALUES(?,?,?,?,?,?,?)", pid, entry, query_position, start, end, text, embedding_json).execute(&mut *tx).await?;
+        sqlx::query!(
+            "INSERT INTO passage_fts(id,entry_id,title,text)VALUES(?,?,?,?)",
+            pid,
+            entry,
+            title,
+            text
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     if let Some(e) = embedding_error {

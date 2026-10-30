@@ -122,6 +122,10 @@ For the server and web app, install Rust 1.94+, Node 26, PNPM 10.34.5, and FFmpe
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
+cp -n .env.example .env
+cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
+mkdir -p data
+cargo sqlx database setup --source crates/server/migrations
 cargo test --locked
 ```
 

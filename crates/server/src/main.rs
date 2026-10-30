@@ -98,8 +98,8 @@ async fn main() -> Result<()> {
             anyhow::ensure!(!destination.exists(), "Backup destination already exists");
             tokio::fs::create_dir_all(&destination).await?;
             let db = destination.join("vault.sqlite");
-            sqlx::query("VACUUM INTO ?")
-                .bind(db.to_string_lossy().to_string())
+            let backup_path = db.to_string_lossy().to_string();
+            sqlx::query!("VACUUM INTO ?", backup_path)
                 .execute(&app.db)
                 .await?;
             copy_tree(
@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
             eprintln!("Backup created while holding the exclusive server lock.");
         }
         Cmd::Serve => {
-            let owner: Option<i64> = sqlx::query_scalar("SELECT id FROM owner WHERE id=1")
+            let owner: Option<i64> = sqlx::query_scalar!("SELECT id FROM owner WHERE id=1")
                 .fetch_optional(&app.db)
                 .await?;
             anyhow::ensure!(

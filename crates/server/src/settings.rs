@@ -53,7 +53,7 @@ impl Default for Settings {
 }
 pub async fn load(app: &App) -> anyhow::Result<Settings> {
     let stored: Option<String> =
-        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key='processing'")
+        sqlx::query_scalar!("SELECT value_json FROM app_settings WHERE key='processing'")
             .fetch_optional(&app.db)
             .await?;
     Ok(if let Some(stored) = stored {
@@ -119,6 +119,7 @@ pub async fn update(
         }
         settings.voice_thresholds = thresholds;
     }
-    sqlx::query("INSERT INTO app_settings(key,value_json)VALUES('processing',?) ON CONFLICT(key)DO UPDATE SET value_json=excluded.value_json").bind(serde_json::to_string(&settings).unwrap()).execute(&app.db).await?;
+    let settings_json = serde_json::to_string(&settings).unwrap();
+    sqlx::query!("INSERT INTO app_settings(key,value_json)VALUES('processing',?) ON CONFLICT(key)DO UPDATE SET value_json=excluded.value_json", settings_json).execute(&app.db).await?;
     Ok(Json(view(&app, &settings)))
 }

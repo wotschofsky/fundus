@@ -18,7 +18,7 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Sqlite, Transaction};
 
 pub const SCOPE: &str = "mcp:read";
 pub const NATIVE_SCOPE: &str = "vault:owner";
@@ -236,20 +236,18 @@ async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Res
         ));
     }
     let _lock = app.mutations.lock().await;
-    sqlx::query("DELETE FROM oauth_pending WHERE expires_at<?")
-        .bind(seconds())
+    sqlx::query!("DELETE FROM oauth_pending WHERE expires_at<unixepoch()")
         .execute(&app.db)
         .await?;
-    sqlx::query("DELETE FROM oauth_codes WHERE expires_at<?")
-        .bind(seconds())
+    sqlx::query!("DELETE FROM oauth_codes WHERE expires_at<unixepoch()")
         .execute(&app.db)
         .await?;
-    sqlx::query("DELETE FROM oauth_clients WHERE created_at<? AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id)").bind(seconds()-86400*7).execute(&app.db).await?;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_clients WHERE created_at>?")
-        .bind(seconds() - 60)
-        .fetch_one(&app.db)
-        .await?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_clients")
+    sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id)").execute(&app.db).await?;
+    let count: i64 =
+        sqlx::query_scalar!("SELECT count(*) FROM oauth_clients WHERE created_at>unixepoch() - 60")
+            .fetch_one(&app.db)
+            .await?;
+    let total: i64 = sqlx::query_scalar!("SELECT count(*) FROM oauth_clients")
         .fetch_one(&app.db)
         .await?;
     if count >= 20 || total >= 1000 {
@@ -261,7 +259,10 @@ async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Res
     }
     let client_id = id();
     let secret = (method != "none").then(auth::secret);
-    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,?,?)").bind(&client_id).bind(name.trim()).bind(serde_json::to_string(&body.redirect_uris).unwrap()).bind(&method).bind(secret.as_ref().map(|s|auth::hash(s))).bind(seconds()).bind(scope).execute(&app.db).await?;
+    let trimmed_name = name.trim();
+    let redirect_uris_json = serde_json::to_string(&body.redirect_uris).unwrap();
+    let secret_hash = secret.as_ref().map(|s| auth::hash(s));
+    sqlx::query!("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", client_id, trimmed_name, redirect_uris_json, method, secret_hash, scope).execute(&app.db).await?;
     let mut value = json!({"client_id":client_id,"client_id_issued_at":seconds(),"client_name":name.trim(),"redirect_uris":body.redirect_uris,"token_endpoint_auth_method":method,"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":scope});
     if let Some(secret) = secret {
         value["client_secret"] = json!(secret);
@@ -302,19 +303,20 @@ pub async fn authorization(
             "Owner access required".into(),
         )
     })?;
-    let client =
-        sqlx::query("SELECT name,redirect_uris,allowed_scope FROM oauth_clients WHERE id=?")
-            .bind(&query.client_id)
-            .fetch_optional(&app.db)
-            .await?
-            .ok_or_else(|| {
-                OAuthError::bad(
-                    "invalid_request",
-                    "Unknown OAuth client; register the client first",
-                )
-            })?;
+    let client = sqlx::query!(
+        "SELECT name,redirect_uris,allowed_scope FROM oauth_clients WHERE id=?",
+        query.client_id
+    )
+    .fetch_optional(&app.db)
+    .await?
+    .ok_or_else(|| {
+        OAuthError::bad(
+            "invalid_request",
+            "Unknown OAuth client; register the client first",
+        )
+    })?;
     let redirects: Vec<String> =
-        serde_json::from_str(client.get("redirect_uris")).map_err(OAuthError::internal)?;
+        serde_json::from_str(&client.redirect_uris).map_err(OAuthError::internal)?;
     if !redirects.contains(&query.redirect_uri) {
         return Err(OAuthError::bad(
             "invalid_request",
@@ -332,7 +334,7 @@ pub async fn authorization(
     }
     let (scope, requested_resource) = resource_scope(&app, &query.resource)
         .ok_or_else(|| OAuthError::bad("invalid_target", "Unknown resource"))?;
-    let registered_scope: String = client.get("allowed_scope");
+    let registered_scope: String = client.allowed_scope.clone();
     if registered_scope != scope || query.scope.as_deref().unwrap_or(SCOPE) != scope {
         return Err(OAuthError::bad(
             "invalid_scope",
@@ -343,13 +345,13 @@ pub async fn authorization(
         return Err(OAuthError::bad("invalid_request", "State is too long"));
     }
     let request_id = auth::secret();
-    sqlx::query("DELETE FROM oauth_pending WHERE expires_at<?")
-        .bind(seconds())
+    sqlx::query!("DELETE FROM oauth_pending WHERE expires_at<unixepoch()")
         .execute(&app.db)
         .await?;
-    sqlx::query("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,?,?,?,?,?,?,?)").bind(auth::hash(&request_id)).bind(&query.client_id).bind(&query.redirect_uri).bind(&query.code_challenge).bind(scope).bind(&requested_resource).bind(query.state).bind(seconds()+600).execute(&app.db).await?;
+    let request_hash = auth::hash(&request_id);
+    sqlx::query!("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,?,?,?,?,?,?,unixepoch() + 600)", request_hash, query.client_id, query.redirect_uri, query.code_challenge, scope, requested_resource, query.state).execute(&app.db).await?;
     Ok(response(
-        json!({"request_id":request_id,"client_name":client.get::<String,_>("name"),"redirect_uri":query.redirect_uri,"scope":scope,"resource":requested_resource}),
+        json!({"request_id":request_id,"client_name":client.name.clone(),"redirect_uri":query.redirect_uri,"scope":scope,"resource":requested_resource}),
     ))
 }
 #[derive(Deserialize)]
@@ -371,28 +373,32 @@ pub async fn consent(
     })?;
     let _lock = app.mutations.lock().await;
     let mut tx = app.db.begin().await?;
-    let row = sqlx::query("DELETE FROM oauth_pending WHERE hash=? AND expires_at>=? RETURNING *")
-        .bind(auth::hash(&body.request_id))
-        .bind(seconds())
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            OAuthError::bad(
-                "invalid_request",
-                "This approval request expired; reconnect from your MCP client",
-            )
-        })?;
-    let mut callback = url::Url::parse(row.get("redirect_uri")).map_err(OAuthError::internal)?;
+    let request_hash = auth::hash(&body.request_id);
+    let row = sqlx::query!(
+        "DELETE FROM oauth_pending WHERE hash=? AND expires_at>=unixepoch() RETURNING *",
+        request_hash
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        OAuthError::bad(
+            "invalid_request",
+            "This approval request expired; reconnect from your MCP client",
+        )
+    })?;
+    let mut callback = url::Url::parse(&row.redirect_uri).map_err(OAuthError::internal)?;
     if body.approve {
         let code = auth::secret();
-        sqlx::query("INSERT INTO oauth_codes(hash,client_id,redirect_uri,challenge,scope,resource,expires_at) VALUES(?,?,?,?,?,?,?)").bind(auth::hash(&code)).bind(row.get::<String,_>("client_id")).bind(row.get::<String,_>("redirect_uri")).bind(row.get::<String,_>("challenge")).bind(row.get::<String,_>("scope")).bind(row.get::<String,_>("resource")).bind(seconds()+60).execute(&mut *tx).await?;
+        let code_hash = auth::hash(&code);
+
+        sqlx::query!("INSERT INTO oauth_codes(hash,client_id,redirect_uri,challenge,scope,resource,expires_at) VALUES(?,?,?,?,?,?,unixepoch() + 60)", code_hash, row.client_id, row.redirect_uri, row.challenge, row.scope, row.resource).execute(&mut *tx).await?;
         callback.query_pairs_mut().append_pair("code", &code);
     } else {
         callback
             .query_pairs_mut()
             .append_pair("error", "access_denied");
     }
-    if let Some(state) = row.get::<Option<String>, _>("state") {
+    if let Some(state) = row.state.clone() {
         callback.query_pairs_mut().append_pair("state", &state);
     }
     callback.query_pairs_mut().append_pair("iss", &issuer(&app));
@@ -460,17 +466,19 @@ async fn authenticate(
             },
         ),
     };
-    let row = sqlx::query("SELECT auth_method,secret_hash FROM oauth_clients WHERE id=?")
-        .bind(&client_id)
-        .fetch_optional(&app.db)
-        .await?;
+    let row = sqlx::query!(
+        "SELECT auth_method,secret_hash FROM oauth_clients WHERE id=?",
+        client_id
+    )
+    .fetch_optional(&app.db)
+    .await?;
     let valid = row.is_some_and(|row| {
-        let expected: String = row.get("auth_method");
+        let expected: String = row.auth_method.clone();
         expected == method
             && (method == "none"
                 || secret
                     .as_ref()
-                    .zip(row.get::<Option<String>, _>("secret_hash"))
+                    .zip(row.secret_hash.clone())
                     .is_some_and(|(value, hash)| equal_secret(&auth::hash(value), &hash)))
     });
     if !valid {
@@ -490,18 +498,24 @@ async fn issue_pair(
 ) -> Result<Value> {
     let access = format!("oa_{}", auth::secret());
     let refresh = auth::secret();
-    sqlx::query("INSERT INTO oauth_access(hash,grant_id,expires_at) VALUES(?,?,?)")
-        .bind(auth::hash(&access))
-        .bind(grant_id)
-        .bind(seconds() + ACCESS_LIFETIME)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("INSERT INTO oauth_refresh(hash,grant_id,expires_at) VALUES(?,?,?)")
-        .bind(auth::hash(&refresh))
-        .bind(grant_id)
-        .bind(refresh_expiry)
-        .execute(&mut **tx)
-        .await?;
+    let token_hash = auth::hash(&access);
+    sqlx::query!(
+        "INSERT INTO oauth_access(hash,grant_id,expires_at) VALUES(?,?,unixepoch() + ?)",
+        token_hash,
+        grant_id,
+        ACCESS_LIFETIME
+    )
+    .execute(&mut **tx)
+    .await?;
+    let token_hash = auth::hash(&refresh);
+    sqlx::query!(
+        "INSERT INTO oauth_refresh(hash,grant_id,expires_at) VALUES(?,?,?)",
+        token_hash,
+        grant_id,
+        refresh_expiry
+    )
+    .execute(&mut **tx)
+    .await?;
     Ok(
         json!({"access_token":access,"token_type":"Bearer","expires_in":ACCESS_LIFETIME,"refresh_token":refresh,"scope":scope}),
     )
@@ -538,68 +552,71 @@ async fn token(
     let mut tx = app.db.begin().await?;
     let value = match body.grant_type.as_str() {
         "authorization_code" => {
-            let row = sqlx::query("SELECT * FROM oauth_codes WHERE hash=?")
-                .bind(auth::hash(body.code.as_deref().unwrap_or("")))
+            let code_hash = auth::hash(body.code.as_deref().unwrap_or(""));
+            let row = sqlx::query!("SELECT hash AS \"hash!\", client_id, redirect_uri, challenge, scope, resource, expires_at FROM oauth_codes WHERE hash=?", code_hash)
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(OAuthError::grant)?;
             let verifier = body.code_verifier.as_deref().unwrap_or("");
             let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(Sha256::digest(verifier.as_bytes()));
-            if row.get::<String, _>("client_id") != client
-                || row.get::<String, _>("redirect_uri")
-                    != body.redirect_uri.as_deref().unwrap_or("")
-                || row.get::<i64, _>("expires_at") < seconds()
-                || row.get::<String, _>("resource") != requested_resource
-                || row.get::<String, _>("scope") != scope
+            if row.client_id.clone() != client
+                || row.redirect_uri.clone() != body.redirect_uri.as_deref().unwrap_or("")
+                || row.expires_at < seconds()
+                || row.resource.clone() != requested_resource
+                || row.scope.clone() != scope
                 || !(43..=128).contains(&verifier.len())
                 || !verifier
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
-                || !equal_secret(&challenge, row.get("challenge"))
+                || !equal_secret(&challenge, &row.challenge)
             {
                 return Err(OAuthError::grant());
             }
-            sqlx::query("DELETE FROM oauth_codes WHERE hash=?")
-                .bind(auth::hash(body.code.as_deref().unwrap_or("")))
+            let code_hash = auth::hash(body.code.as_deref().unwrap_or(""));
+            sqlx::query!("DELETE FROM oauth_codes WHERE hash=?", code_hash)
                 .execute(&mut *tx)
                 .await?;
             let grant_id = id();
-            sqlx::query("INSERT INTO oauth_grants(id,client_id,scope,resource,created_at,expires_at) VALUES(?,?,?,?,?,?)").bind(&grant_id).bind(&client).bind(scope).bind(&requested_resource).bind(seconds()).bind(seconds()+REFRESH_LIFETIME).execute(&mut *tx).await?;
+            sqlx::query!("INSERT INTO oauth_grants(id,client_id,scope,resource,created_at,expires_at) VALUES(?,?,?,?,unixepoch(),unixepoch() + ?)", grant_id, client, scope, requested_resource, REFRESH_LIFETIME).execute(&mut *tx).await?;
             issue_pair(&mut tx, &grant_id, seconds() + REFRESH_LIFETIME, scope).await?
         }
         "refresh_token" => {
             let hash = auth::hash(body.refresh_token.as_deref().unwrap_or(""));
-            let row=sqlx::query("SELECT r.grant_id,r.expires_at,r.used_at,g.client_id,g.scope,g.resource,g.revoked_at,g.expires_at AS grant_expiry FROM oauth_refresh r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.hash=?").bind(&hash).fetch_optional(&mut *tx).await?.ok_or_else(OAuthError::grant)?;
-            if row.get::<String, _>("client_id") != client
-                || row.get::<String, _>("resource") != requested_resource
-                || row.get::<String, _>("scope") != scope
-                || row.get::<Option<i64>, _>("revoked_at").is_some()
-                || row.get::<i64, _>("expires_at") < seconds()
-                || row.get::<i64, _>("grant_expiry") < seconds()
+            let row=sqlx::query!("SELECT r.grant_id,r.expires_at,r.used_at,g.client_id,g.scope,g.resource,g.revoked_at,g.expires_at AS grant_expiry FROM oauth_refresh r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.hash=?", hash).fetch_optional(&mut *tx).await?.ok_or_else(OAuthError::grant)?;
+            if row.client_id.clone() != client
+                || row.resource.clone() != requested_resource
+                || row.scope.clone() != scope
+                || row.revoked_at.is_some()
+                || row.expires_at < seconds()
+                || row.grant_expiry < seconds()
             {
                 return Err(OAuthError::grant());
             }
-            let grant_id: String = row.get("grant_id");
-            if row.get::<Option<i64>, _>("used_at").is_some() {
-                sqlx::query("UPDATE oauth_grants SET revoked_at=? WHERE id=?")
-                    .bind(seconds())
-                    .bind(&grant_id)
-                    .execute(&mut *tx)
-                    .await?;
+            let grant_id: String = row.grant_id.clone();
+            if row.used_at.is_some() {
+                sqlx::query!(
+                    "UPDATE oauth_grants SET revoked_at=unixepoch() WHERE id=?",
+                    grant_id
+                )
+                .execute(&mut *tx)
+                .await?;
                 tx.commit().await?;
                 return Err(OAuthError::grant());
             }
-            sqlx::query("UPDATE oauth_refresh SET used_at=? WHERE hash=?")
-                .bind(seconds())
-                .bind(hash)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query("UPDATE oauth_grants SET expires_at=? WHERE id=?")
-                .bind(seconds() + REFRESH_LIFETIME)
-                .bind(&grant_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "UPDATE oauth_refresh SET used_at=unixepoch() WHERE hash=?",
+                hash
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query!(
+                "UPDATE oauth_grants SET expires_at=unixepoch() + ? WHERE id=?",
+                REFRESH_LIFETIME,
+                grant_id
+            )
+            .execute(&mut *tx)
+            .await?;
             issue_pair(&mut tx, &grant_id, seconds() + REFRESH_LIFETIME, scope).await?
         }
         _ => {
@@ -630,7 +647,8 @@ async fn revoke_token(
         body.client_secret.as_deref(),
     )
     .await?;
-    sqlx::query("UPDATE oauth_grants SET revoked_at=? WHERE client_id=? AND id IN(SELECT grant_id FROM oauth_access WHERE hash=? UNION SELECT grant_id FROM oauth_refresh WHERE hash=?)").bind(seconds()).bind(client).bind(auth::hash(&body.token)).bind(auth::hash(&body.token)).execute(&app.db).await?;
+    let token_hash = auth::hash(&body.token);
+    sqlx::query!("UPDATE oauth_grants SET revoked_at=unixepoch() WHERE client_id=? AND id IN(SELECT grant_id FROM oauth_access WHERE hash=? UNION SELECT grant_id FROM oauth_refresh WHERE hash=?)", client, token_hash, token_hash).execute(&app.db).await?;
     Ok(response(json!({})))
 }
 pub async fn connections(
@@ -644,9 +662,9 @@ pub async fn connections(
             "Owner access required".into(),
         )
     })?;
-    let rows=sqlx::query("SELECT g.id,c.name,g.scope,g.created_at,g.expires_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.revoked_at IS NULL AND g.expires_at>=? ORDER BY g.created_at DESC").bind(seconds()).fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT g.id AS \"id!\",c.name,g.scope,g.created_at,g.expires_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.revoked_at IS NULL AND g.expires_at>=unixepoch() ORDER BY g.created_at DESC").fetch_all(&app.db).await?;
     Ok(response(
-        json!({"connections":rows.iter().map(|r|json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name"),"scope":r.get::<String,_>("scope"),"created_at":r.get::<i64,_>("created_at"),"expires_at":r.get::<i64,_>("expires_at")})).collect::<Vec<_>>()}),
+        json!({"connections":rows.iter().map(|r|json!({"id":r.id.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at,"expires_at":r.expires_at})).collect::<Vec<_>>()}),
     ))
 }
 pub async fn disconnect(
@@ -661,11 +679,12 @@ pub async fn disconnect(
             "Owner access required".into(),
         )
     })?;
-    sqlx::query("UPDATE oauth_grants SET revoked_at=? WHERE id=?")
-        .bind(seconds())
-        .bind(grant)
-        .execute(&app.db)
-        .await?;
+    sqlx::query!(
+        "UPDATE oauth_grants SET revoked_at=unixepoch() WHERE id=?",
+        grant
+    )
+    .execute(&app.db)
+    .await?;
     Ok(response(json!({"ok":true})))
 }
 pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Next) -> Response {
@@ -676,14 +695,15 @@ pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Nex
         .and_then(|s| s.strip_prefix("Bearer "));
     let had_bearer = bearer.is_some();
     let result = if let Some(token) = bearer.filter(|s| s.starts_with("oa_")) {
-        let row=sqlx::query("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?").bind(auth::hash(token)).fetch_optional(&app.db).await;
+        let token_hash = auth::hash(token);
+        let row=sqlx::query!("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
         match row {
             Ok(Some(row))
-                if row.get::<String, _>("scope") == SCOPE
-                    && row.get::<String, _>("resource") == resource(&app)
-                    && row.get::<Option<i64>, _>("revoked_at").is_none()
-                    && row.get::<i64, _>("expires_at") >= seconds()
-                    && row.get::<i64, _>("grant_expiry") >= seconds() =>
+                if row.scope.clone() == SCOPE
+                    && row.resource.clone() == resource(&app)
+                    && row.revoked_at.is_none()
+                    && row.expires_at >= seconds()
+                    && row.grant_expiry >= seconds() =>
             {
                 request.extensions_mut().insert(Access {
                     scope: "read".into(),
@@ -736,15 +756,15 @@ pub async fn require_native(State(app): State<App>, mut request: Request, next: 
         .and_then(|value| value.strip_prefix("Bearer "));
     let token = bearer.filter(|value| value.starts_with("oa_") && value.len() <= 256);
     if let Some(token) = token {
-        let grant = sqlx::query("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?")
-            .bind(auth::hash(token)).fetch_optional(&app.db).await;
+        let token_hash = auth::hash(token);
+        let grant = sqlx::query!("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
         match grant {
             Ok(Some(grant))
-                if grant.get::<String, _>("scope") == NATIVE_SCOPE
-                    && grant.get::<String, _>("resource") == native_resource(&app)
-                    && grant.get::<Option<i64>, _>("revoked_at").is_none()
-                    && grant.get::<i64, _>("expires_at") >= seconds()
-                    && grant.get::<i64, _>("grant_expiry") >= seconds() =>
+                if grant.scope.clone() == NATIVE_SCOPE
+                    && grant.resource.clone() == native_resource(&app)
+                    && grant.revoked_at.is_none()
+                    && grant.expires_at >= seconds()
+                    && grant.grant_expiry >= seconds() =>
             {
                 request.extensions_mut().insert(Access {
                     scope: "admin".into(),
