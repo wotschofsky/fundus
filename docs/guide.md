@@ -114,6 +114,8 @@ Add `https://your-vault.example/mcp` in your chat app’s MCP or connector setti
 
 OAuth connections can search and read the archive through MCP. They cannot upload, edit, delete, or administer the vault. Access tokens expire after one hour; clients renew them using rotating refresh tokens. **Settings → Connect a chat app** lists approved connections and lets you disconnect one immediately. Reusing an old refresh token revokes its connection.
 
+**Settings → Connect apps** shows the last authenticated request for each connected app and access token, in your local date and time. Tracking starts when this version is installed; existing credentials show “No usage recorded” until they are used again. OAuth token refreshes alone do not count as use, and rotating tokens retain the connection’s history.
+
 The server supports OAuth authorization code flow with PKCE S256, dynamic client registration, public clients, and `client_secret_basic` / `client_secret_post` clients. Client ID Metadata Documents are not advertised; clients must support dynamic registration. The public server URL must use HTTPS outside local development.
 
 For older clients without OAuth, create a **read** token under Settings and use their Bearer-token setting. For example, a Codex configuration can read a manually provisioned token from the client environment:

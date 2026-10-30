@@ -196,6 +196,8 @@ async fn native_owner_requires_explicit_correct_scope_and_never_trusts_proxy_or_
     }
     let cid = register(&r, "vault:owner").await;
     let pair = grant(&r, &cid, "vault:owner", NATIVE).await;
+    let (_, before) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    assert!(before["connections"][0]["last_used_at"].is_null());
     let bearer = format!("Bearer {}", pair["access_token"].as_str().unwrap());
     let (s, v) = call(
         &r,
@@ -208,6 +210,9 @@ async fn native_owner_requires_explicit_correct_scope_and_never_trusts_proxy_or_
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["scope"], "admin");
+    let (_, after) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    chrono::DateTime::parse_from_rfc3339(after["connections"][0]["last_used_at"].as_str().unwrap())
+        .unwrap();
     assert_eq!(
         call(
             &r,

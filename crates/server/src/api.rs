@@ -231,9 +231,9 @@ async fn create_token(
 }
 async fn tokens(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
     a.admin()?;
-    let rows=sqlx::query!("SELECT hash AS \"hash!\",name,scope,created_at FROM credentials WHERE scope!='session' ORDER BY created_at DESC").fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT hash AS \"hash!\",name,scope,created_at,last_used_at FROM credentials WHERE scope!='session' ORDER BY created_at DESC").fetch_all(&app.db).await?;
     Ok(Json(
-        json!({"tokens":rows.iter().map(|r|json!({"id":r.hash.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at.clone()})).collect::<Vec<_>>()}),
+        json!({"tokens":rows.iter().map(|r|json!({"id":r.hash.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at.clone(),"last_used_at":r.last_used_at.clone()})).collect::<Vec<_>>()}),
     ))
 }
 async fn revoke(

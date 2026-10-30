@@ -3,7 +3,7 @@
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { KeyRound } from '@lucide/svelte';
   import { api, send, type Connection, type Me, type Token } from '../api';
-  import { date } from '../format';
+  import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
   import CopyField from './copy-field.svelte';
   import ErrorNotice from './error-notice.svelte';
@@ -59,6 +59,9 @@
               <small>
                 {c.scope === 'vault:owner' ? 'Full access' : 'Read only'} · Connected
                 {new Date(c.created_at * 1000).toLocaleDateString()}
+              </small>
+              <small>
+                {c.last_used_at ? `Last used ${dateTime(c.last_used_at)}` : 'No usage recorded'}
               </small>
             </div>
             <button
@@ -127,6 +130,9 @@
               <small>
                 {t.scope === 'read' ? 'Read recordings' : 'Upload recordings'} · Created
                 {date(t.created_at)}
+              </small>
+              <small>
+                {t.last_used_at ? `Last used ${dateTime(t.last_used_at)}` : 'No usage recorded'}
               </small>
             </div>
             <button

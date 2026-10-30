@@ -90,8 +90,20 @@ export type Me = {
   voice_configured: boolean;
   public_url: string;
 };
-export type Token = { id: string; name: string; scope: 'upload' | 'read'; created_at: string };
-export type Connection = { id: string; name: string; scope: string; created_at: number };
+export type Token = {
+  id: string;
+  name: string;
+  scope: 'upload' | 'read';
+  created_at: string;
+  last_used_at: string | null;
+};
+export type Connection = {
+  id: string;
+  name: string;
+  scope: string;
+  created_at: number;
+  last_used_at: string | null;
+};
 export type SearchResult = {
   id: string;
   entry_id: string;

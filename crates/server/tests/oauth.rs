@@ -599,3 +599,134 @@ async fn expired_codes_and_tokens_are_rejected_but_access_expiry_allows_refresh(
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn access_tokens_report_only_authenticated_usage() {
+    let (_dir, app, r) = setup().await;
+    let read = fundus::auth::issue(&app, "Reader", "read").await.unwrap();
+    let unused = fundus::auth::issue(&app, "Unused", "upload").await.unwrap();
+    let read_hash = fundus::auth::hash(&read);
+    let unused_hash = fundus::auth::hash(&unused);
+    let (_, _, before) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
+    assert!(
+        before["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["last_used_at"].is_null())
+    );
+    let bearer = format!("Bearer {read}");
+    assert_eq!(
+        call(
+            &r,
+            "GET",
+            "/api/v1/entries",
+            None,
+            "",
+            &[("Authorization", &bearer)]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, _, after) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
+    let tokens = after["tokens"].as_array().unwrap();
+    let used = tokens.iter().find(|t| t["id"] == read_hash).unwrap()["last_used_at"]
+        .as_str()
+        .unwrap();
+    chrono::DateTime::parse_from_rfc3339(used).unwrap();
+    assert!(tokens.iter().find(|t| t["id"] == unused_hash).unwrap()["last_used_at"].is_null());
+    sqlx::query("UPDATE credentials SET expires_at='2000-01-01T00:00:00.000Z',last_used_at='2000-01-01T00:00:00.000Z' WHERE hash=?")
+        .bind(&read_hash)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &r,
+            "GET",
+            "/api/v1/entries",
+            None,
+            "",
+            &[("Authorization", &bearer)]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, _, expired) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
+    assert_eq!(
+        expired["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == read_hash)
+            .unwrap()["last_used_at"],
+        "2000-01-01T00:00:00.000Z"
+    );
+}
+
+#[tokio::test]
+async fn connected_app_usage_survives_rotation_and_ignores_expired_access() {
+    let (_dir, app, r) = setup().await;
+    let client = register(&r).await;
+    let code = approve(&r, &client).await;
+    let (_, _, pair) = redeem(&r, &client, &code, VERIFIER, RESOURCE).await;
+    let (_, _, before) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    assert!(before["connections"][0]["last_used_at"].is_null());
+    let grant = before["connections"][0]["id"].as_str().unwrap();
+    // Rotation alone is not a resource access; both tokens belong to the same connection.
+    let (status, _, rotated) = refresh(&r, &client, pair["refresh_token"].as_str().unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, untouched) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    assert!(untouched["connections"][0]["last_used_at"].is_null());
+    let bearer = format!("Bearer {}", rotated["access_token"].as_str().unwrap());
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"usage-test","version":"1"}}});
+    assert_eq!(
+        call(
+            &r,
+            "POST",
+            "/mcp",
+            Some(initialize.to_string()),
+            "application/json",
+            &[
+                ("Authorization", &bearer),
+                ("Accept", "application/json, text/event-stream")
+            ]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, _, used) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    assert_eq!(used["connections"][0]["id"], grant);
+    let timestamp = used["connections"][0]["last_used_at"].as_str().unwrap();
+    chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+    sqlx::query("UPDATE oauth_access SET expires_at=0")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oauth_grants SET last_used_at='2000-01-01T00:00:00.000Z' WHERE id=?")
+        .bind(grant)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &r,
+            "POST",
+            "/mcp",
+            Some(initialize.to_string()),
+            "application/json",
+            &[("Authorization", &bearer)]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, _, after) = call(&r, "GET", "/api/v1/oauth/connections", None, "", &[]).await;
+    assert_eq!(
+        after["connections"][0]["last_used_at"],
+        "2000-01-01T00:00:00.000Z"
+    );
+}

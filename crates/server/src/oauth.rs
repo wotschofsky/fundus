@@ -3,7 +3,7 @@
 //! owner tokens work only on the dedicated, bearer-authenticated native API.
 use crate::{
     auth::{self, Access},
-    config::{App, id},
+    config::{App, id, now},
     error::Error,
 };
 use axum::{
@@ -662,9 +662,9 @@ pub async fn connections(
             "Owner access required".into(),
         )
     })?;
-    let rows=sqlx::query!("SELECT g.id AS \"id!\",c.name,g.scope,g.created_at,g.expires_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.revoked_at IS NULL AND g.expires_at>=unixepoch() ORDER BY g.created_at DESC").fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT g.id AS \"id!\",c.name,g.scope,g.created_at,g.expires_at,g.last_used_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.revoked_at IS NULL AND g.expires_at>=unixepoch() ORDER BY g.created_at DESC").fetch_all(&app.db).await?;
     Ok(response(
-        json!({"connections":rows.iter().map(|r|json!({"id":r.id.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at,"expires_at":r.expires_at})).collect::<Vec<_>>()}),
+        json!({"connections":rows.iter().map(|r|json!({"id":r.id.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at,"expires_at":r.expires_at,"last_used_at":r.last_used_at.clone()})).collect::<Vec<_>>()}),
     ))
 }
 pub async fn disconnect(
@@ -696,7 +696,7 @@ pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Nex
     let had_bearer = bearer.is_some();
     let result = if let Some(token) = bearer.filter(|s| s.starts_with("oa_")) {
         let token_hash = auth::hash(token);
-        let row=sqlx::query!("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
+        let row=sqlx::query!("SELECT a.grant_id,g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
         match row {
             Ok(Some(row))
                 if row.scope.clone() == SCOPE
@@ -705,6 +705,9 @@ pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Nex
                     && row.expires_at >= seconds()
                     && row.grant_expiry >= seconds() =>
             {
+                if let Err(error) = record_use(&app, &row.grant_id).await {
+                    return Error::from(error).into_response();
+                }
                 request.extensions_mut().insert(Access {
                     scope: "read".into(),
                 });
@@ -757,7 +760,7 @@ pub async fn require_native(State(app): State<App>, mut request: Request, next: 
     let token = bearer.filter(|value| value.starts_with("oa_") && value.len() <= 256);
     if let Some(token) = token {
         let token_hash = auth::hash(token);
-        let grant = sqlx::query!("SELECT g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
+        let grant = sqlx::query!("SELECT a.grant_id,g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
         match grant {
             Ok(Some(grant))
                 if grant.scope.clone() == NATIVE_SCOPE
@@ -766,6 +769,9 @@ pub async fn require_native(State(app): State<App>, mut request: Request, next: 
                     && grant.expires_at >= seconds()
                     && grant.grant_expiry >= seconds() =>
             {
+                if let Err(error) = record_use(&app, &grant.grant_id).await {
+                    return Error::from(error).into_response();
+                }
                 request.extensions_mut().insert(Access {
                     scope: "admin".into(),
                 });
@@ -796,4 +802,17 @@ pub async fn require_native(State(app): State<App>, mut request: Request, next: 
         .insert(header::WWW_AUTHENTICATE, challenge.parse().unwrap());
     no_store(&mut response);
     response
+}
+
+/// Record use on the grant so access-token rotation preserves its activity history.
+async fn record_use(app: &App, grant_id: &str) -> std::result::Result<(), sqlx::Error> {
+    let timestamp = now();
+    sqlx::query!(
+        "UPDATE oauth_grants SET last_used_at=? WHERE id=?",
+        timestamp,
+        grant_id
+    )
+    .execute(&app.db)
+    .await?;
+    Ok(())
 }

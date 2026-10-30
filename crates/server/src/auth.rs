@@ -144,6 +144,17 @@ pub async fn require(State(app): State<App>, mut request: Request, next: Next) -
             if expiry.is_some_and(|s| s < now()) {
                 return Error(StatusCode::UNAUTHORIZED, "Session expired".into()).into_response();
             }
+            let timestamp = now();
+            if let Err(error) = sqlx::query!(
+                "UPDATE credentials SET last_used_at=? WHERE hash=?",
+                timestamp,
+                token_hash
+            )
+            .execute(&app.db)
+            .await
+            {
+                return Error::from(error).into_response();
+            }
             request.extensions_mut().insert(Access {
                 scope: row.scope.clone(),
             });
