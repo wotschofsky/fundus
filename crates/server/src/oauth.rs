@@ -184,6 +184,11 @@ fn valid_redirect(value: &str) -> bool {
     let Ok(url) = url::Url::parse(value) else {
         return false;
     };
+    // RFC 8252 §7.1: a phone app receives its callback on a reverse-domain scheme it owns,
+    // such as `dev.wsky.fundus:/oauth`. PKCE keeps a code delivered to another app useless.
+    if url.scheme().contains('.') {
+        return url.host_str().is_none() && url.fragment().is_none() && url.path().starts_with('/');
+    }
     url.host_str().is_some()
         && url.username().is_empty()
         && url.password().is_none()
@@ -210,7 +215,7 @@ async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Res
     {
         return Err(OAuthError::bad(
             "invalid_client_metadata",
-            "Provide a client name and HTTPS or loopback redirect addresses without credentials or fragments",
+            "Provide a client name and HTTPS, loopback or app-scheme redirect addresses without credentials or fragments",
         ));
     }
     if !["none", "client_secret_basic", "client_secret_post"].contains(&method.as_str()) {

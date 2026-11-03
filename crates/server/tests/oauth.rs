@@ -436,6 +436,9 @@ async fn registration_rejects_unsafe_callbacks_and_limits_public_bodies() {
         "http://chat.example/callback",
         "https://name:pass@chat.example/callback",
         "https://chat.example/callback#fragment",
+        "fundus:/oauth",
+        "dev.wsky.fundus://evil.example/oauth",
+        "dev.wsky.fundus:/oauth#fragment",
     ] {
         assert_eq!(
             json_call(
@@ -453,7 +456,7 @@ async fn registration_rejects_unsafe_callbacks_and_limits_public_bodies() {
         json_call(
             &r,
             "/oauth/register",
-            json!({"redirect_uris":["http://127.0.0.1:4389/callback"]}),
+            json!({"redirect_uris":["http://127.0.0.1:4389/callback","dev.wsky.fundus:/oauth"]}),
             None
         )
         .await
