@@ -10,6 +10,7 @@
     transcript,
     type Entry,
     type Person,
+    type Segment,
   } from '../api';
   import { dateTime, duration, speakerNames, transcriptMarkdown } from '../format';
   import { Playback } from '../playback.svelte';
@@ -45,6 +46,13 @@
   }));
   const people = createQuery(() => peopleQuery);
   const rows = $derived(segments.data ?? []);
+  const firstAppearances = $derived.by(() => {
+    const first = new Map<string, Segment>();
+    for (const row of rows) {
+      if (!first.has(row.speaker)) first.set(row.speaker, row);
+    }
+    return first;
+  });
   const names = $derived(speakerNames(entry.data?.speakers));
   const startMs = $derived(Number(router.url.searchParams.get('t')) * 1000 || 0);
   const playback = new Playback(
@@ -71,6 +79,13 @@
   }
   const post = (action: string) => () =>
     act(() => api(`/v1/entries/${id}/${action}`, send('POST')).then(refresh));
+  function jumpToAppearance(segment: Segment) {
+    const target = document.getElementById(segment.id);
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'instant' : 'smooth' });
+  }
   const save = (edit: EntryEdit) =>
     act(async () => {
       await api(`/v1/entries/${id}`, send('PATCH', edit));
@@ -250,6 +265,8 @@
               name={names.get(s.label)!}
               people={people.data?.people ?? []}
               onassign={assign(s.label)}
+              firstAppearance={firstAppearances.get(s.label)}
+              onjump={jumpToAppearance}
             />
           {/each}
         </section>

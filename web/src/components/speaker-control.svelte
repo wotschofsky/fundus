@@ -1,6 +1,8 @@
 <!-- Who a diarized speaker is: pick a person, add one, confirm a voice match or a self-introduction. -->
 <script lang="ts">
-  import type { Person, Speaker } from '../api';
+  import { ArrowRight } from '@lucide/svelte';
+  import type { Person, Segment, Speaker } from '../api';
+  import { timestamp } from '../format';
   import ErrorNotice from './error-notice.svelte';
 
   /** Select value for the "New person…" option; person ids are UUIDs, so it cannot collide. */
@@ -18,11 +20,15 @@
     name,
     people,
     onassign,
+    firstAppearance,
+    onjump,
   }: {
     speaker: Speaker;
     name: string;
     people: Person[];
     onassign: (personId: string | null, newName?: string) => Promise<unknown>;
+    firstAppearance?: Segment;
+    onjump: (segment: Segment) => void;
   } = $props();
   let adding = $state(false);
   let newName = $state('');
@@ -55,8 +61,23 @@
 </script>
 
 <div class="speaker">
-  <span class="speaker-name">{name}</span>
-  <small>{how}</small>
+  <div class="speaker-heading">
+    <div class="speaker-identity">
+      <span class="speaker-name">{name}</span>
+      <small>{how}</small>
+    </div>
+    {#if firstAppearance}
+      <button
+        class="speaker-jump"
+        title={`Jump to first appearance at ${timestamp(firstAppearance.start_ms)}`}
+        aria-label={`Jump to ${name}’s first appearance at ${timestamp(firstAppearance.start_ms)}`}
+        onclick={() => firstAppearance && onjump(firstAppearance)}
+      >
+        <span>{timestamp(firstAppearance.start_ms)}</span>
+        <ArrowRight size={13} aria-hidden="true" />
+      </button>
+    {/if}
+  </div>
   <ErrorNotice {error} />
   {#if adding}
     <form

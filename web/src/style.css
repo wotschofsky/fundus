@@ -642,7 +642,8 @@ mark {
 .turn.continued {
   padding-top: 2px;
 }
-.turn.active {
+.turn.active,
+.turn:focus {
   background: var(--subtle);
 }
 .turn .time {
@@ -709,6 +710,40 @@ mark {
 .speaker-name {
   font-weight: 500;
   overflow-wrap: anywhere;
+}
+.speaker-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.speaker-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.speaker-jump {
+  flex: none;
+  gap: 5px;
+  min-height: 28px;
+  margin: -4px -6px 0 0;
+  padding: 4px 6px;
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.speaker-jump:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--ink);
+}
+@media (pointer: coarse) {
+  .speaker-jump {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 .speaker small {
   font-size: 12px;

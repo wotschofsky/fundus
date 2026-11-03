@@ -20,7 +20,7 @@
   } = $props();
 </script>
 
-<article class={['turn', active && 'active', !showName && 'continued']} id={row.id}>
+<article class={['turn', active && 'active', !showName && 'continued']} id={row.id} tabindex="-1">
   {#if playable}
     <button
       class="time"
