@@ -130,6 +130,8 @@ async fn audio_to_search_checkpoints_and_pcm_deduplication() {
     assert_eq!(detail["speakers"][0]["name"], "Morgan");
     assert_eq!(detail["speakers"][0]["state"], "automatic");
     assert_eq!(detail["speakers"][1]["person_id"], serde_json::Value::Null);
+    // An unidentified speaker has no name, not an empty one: clients number them ("Speaker 2").
+    assert_eq!(detail["speakers"][1]["name"], serde_json::Value::Null);
     let samples: i64 = sqlx::query_scalar("SELECT count(*) FROM voice_samples")
         .fetch_one(&app.db)
         .await

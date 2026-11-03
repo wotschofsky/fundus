@@ -121,7 +121,7 @@ async fn get_entry(app: &App, id: &str, include_trash: bool) -> Result<Value> {
         .await?
         .ok_or_else(Error::not_found)?;
     let mut v = entry(&row);
-    let speakers=sqlx::query!("SELECT s.label,s.person_id,s.state,s.evidence,p.name FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=? ORDER BY s.label", id).fetch_all(&app.db).await?;
+    let speakers=sqlx::query!("SELECT s.label,s.person_id,s.state,s.evidence,p.name AS \"name?\" FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=? ORDER BY s.label", id).fetch_all(&app.db).await?;
     v["speakers"]=json!(speakers.iter().map(|r|json!({"label":r.label.clone(),"person_id":r.person_id.clone(),"name":r.name.clone(),"state":r.state.clone(),"evidence":serde_json::from_str::<Value>(&r.evidence.clone()).unwrap_or(json!([]))})).collect::<Vec<_>>());
     let sources=sqlx::query!("SELECT es.offset_ms,es.recorded_at,u.original_name, u.format_json AS \"format_json!\" FROM entry_sources es JOIN uploads u ON u.id=es.upload_id WHERE es.entry_id=? ORDER BY es.position", id).fetch_all(&app.db).await?;
     v["sources"]=json!(sources.iter().map(|r|json!({"offset_ms":r.offset_ms,"recorded_at":r.recorded_at.clone(),"filename":r.original_name.clone(),"format":serde_json::from_str::<Value>(&r.format_json.clone()).unwrap_or(Value::Null)})).collect::<Vec<_>>());
@@ -156,7 +156,7 @@ pub async fn transcript(app: &App, r: Read, max_limit: u32) -> Result<Value> {
     }
     let query_cursor = cursor as i64;
     let query_limit = limit as i64 + 1;
-    let rows=sqlx::query!("SELECT s.*,sp.person_id,p.name FROM segments s LEFT JOIN speakers sp ON sp.entry_id=s.entry_id AND sp.label=s.speaker LEFT JOIN people p ON p.id=sp.person_id WHERE s.entry_id=? AND s.end_ms>? AND s.start_ms<? AND s.position>=? ORDER BY s.position LIMIT ?", r.entry_id, from, to, query_cursor, query_limit).fetch_all(&app.db).await?;
+    let rows=sqlx::query!("SELECT s.*,sp.person_id,p.name AS \"name?\" FROM segments s LEFT JOIN speakers sp ON sp.entry_id=s.entry_id AND sp.label=s.speaker LEFT JOIN people p ON p.id=sp.person_id WHERE s.entry_id=? AND s.end_ms>? AND s.start_ms<? AND s.position>=? ORDER BY s.position LIMIT ?", r.entry_id, from, to, query_cursor, query_limit).fetch_all(&app.db).await?;
     let more = rows.len() > limit as usize;
     let next = if more {
         rows.get(limit as usize).map(|r| r.position)
