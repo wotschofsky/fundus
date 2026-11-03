@@ -11,7 +11,7 @@ data/
 apps/mobile/ios/
 apps/mobile/android/
 apps/mobile/.expo/
-apps/macos/.build/
+.build/
 build/
 *.onnx
 *.onnx.data
