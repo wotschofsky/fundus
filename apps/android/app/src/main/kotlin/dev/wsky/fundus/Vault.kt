@@ -22,10 +22,12 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.add
+import okhttp3.ConnectionPool
 import okhttp3.FormBody
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -92,6 +94,17 @@ class Vault(context: Context) {
         .callTimeout(0, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(::authorize)
+        .build()
+
+    /**
+     * Audio streaming on its own connection. Over HTTP/2 every request shares one connection, and a
+     * player that has buffered enough stops reading: the server's data then fills the connection's
+     * flow-control window and every other response waits behind it (a speaker change saved but never
+     * answered). Long recordings hit this within a minute.
+     */
+    val audioHttp: OkHttpClient = http.newBuilder()
+        .connectionPool(ConnectionPool())
+        .protocols(listOf(Protocol.HTTP_1_1))
         .build()
 
     // MARK: Sign-in

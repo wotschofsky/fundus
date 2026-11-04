@@ -27,7 +27,7 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         val player = ExoPlayer.Builder(this)
             // The vault's own client, so the stream carries (and refreshes) the owner token.
-            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(fundus.vault.http)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(fundus.vault.audioHttp)))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).build(),
                 true,
