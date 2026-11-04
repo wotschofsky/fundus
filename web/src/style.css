@@ -630,7 +630,7 @@ mark {
 .turn {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);
-  gap: 14px;
+  column-gap: 14px;
   margin: 0 -12px;
   padding: 12px;
   border-radius: var(--radius);
@@ -647,6 +647,8 @@ mark {
   background: var(--subtle);
 }
 .turn .time {
+  grid-column: 1;
+  grid-row: 2;
   align-self: start;
   min-height: 26px;
   padding: 0;
@@ -672,6 +674,8 @@ mark {
   color: var(--ink);
 }
 .turn strong {
+  grid-column: 2;
+  grid-row: 1;
   display: block;
   font-size: 13px;
   font-weight: 600;
@@ -679,6 +683,8 @@ mark {
   color: var(--speaker);
 }
 .turn p {
+  grid-column: 2;
+  grid-row: 2;
   max-width: 72ch;
   font-size: 15px;
   line-height: 1.7;
@@ -686,7 +692,8 @@ mark {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.turn.continued p {
+.turn.continued p,
+.turn.continued .time {
   margin-top: 2px;
 }
 .detail-side {
@@ -1122,7 +1129,7 @@ dialog.confirm p {
   }
   .turn {
     grid-template-columns: 44px minmax(0, 1fr);
-    gap: 10px;
+    column-gap: 10px;
     margin: 0 -8px;
     padding: 10px 8px;
   }
@@ -1185,4 +1192,217 @@ dialog.confirm p {
     scroll-behavior: auto !important;
     transition: none !important;
   }
+}
+
+/* Passage actions appear on intent, without interrupting the transcript's reading rhythm. */
+.turn.has-options {
+  position: relative;
+  padding-right: 48px;
+}
+.turn-menu-trigger {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 6px;
+  opacity: 0;
+  color: var(--muted);
+  background: none;
+}
+.turn:hover .turn-menu-trigger,
+.turn:focus-within .turn-menu-trigger,
+.turn:has(.turn-menu:popover-open) .turn-menu-trigger {
+  opacity: 1;
+}
+.turn:has(.turn-menu:popover-open) .turn-menu-trigger {
+  border-color: var(--control-hover);
+}
+.turn-menu {
+  position: fixed;
+  inset: auto;
+  width: 176px;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.turn-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  gap: 8px;
+  border: 0;
+  border-radius: max(0px, calc(var(--radius) - 5px));
+  background: none;
+  font-weight: 400;
+}
+dialog.speaker-correction-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+.correction-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.correction-context button {
+  gap: 5px;
+  font-size: 12px;
+}
+dialog.speaker-correction-dialog .correction-hint {
+  margin-top: 16px;
+  font-size: 12px;
+}
+.speaker-correction-dialog .dialog-actions {
+  flex-wrap: wrap;
+}
+@media (pointer: coarse) {
+  .turn-menu-trigger {
+    opacity: 1;
+    min-height: 44px;
+    min-width: 44px;
+    right: 0;
+    top: 0;
+  }
+  .turn-menu button {
+    min-height: 44px;
+  }
+}
+
+.speaker-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: none;
+}
+.speaker-actions .speaker-jump {
+  margin-right: 0;
+}
+.speaker-actions .speaker-split-trigger {
+  margin: -4px -6px 0 0;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 5px;
+  color: var(--muted);
+}
+.speaker:has(.turn-menu:popover-open) .speaker-split-trigger {
+  border-color: var(--control-hover);
+}
+.speaker-correction-dialog h2 {
+  overflow-wrap: anywhere;
+}
+.split-voices {
+  margin-top: 20px;
+}
+.split-voice {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.split-voice:first-child {
+  border-top: 1px solid var(--line);
+}
+.split-voice-heading,
+.split-voice-heading label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.split-voice-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.split-voice-heading label {
+  flex-direction: row;
+  min-height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.split-voice-heading input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--ink);
+}
+.split-voice-heading small {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.split-voice-heading button {
+  gap: 5px;
+  font-size: 12px;
+}
+.split-example {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--body);
+}
+@media (pointer: coarse) {
+  .speaker-actions .speaker-split-trigger {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .split-voice-heading label {
+    min-height: 44px;
+  }
+}
+
+.correction-passages {
+  margin-top: 20px;
+  max-height: min(320px, 40dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-block: 1px solid var(--line);
+}
+.correction-passage {
+  padding: 14px 0;
+}
+.correction-passage + .correction-passage {
+  border-top: 1px solid var(--line);
+}
+.correction-passage .correction-context {
+  margin-top: 0;
+}
+dialog.speaker-correction-dialog .correction-passage p {
+  margin: 8px 0 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (pointer: coarse) {
+  .correction-passage button {
+    min-height: 44px;
+  }
+}
+.correction-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.turn-menu button {
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.turn-menu button svg {
+  flex: none;
 }

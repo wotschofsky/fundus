@@ -1,6 +1,7 @@
 use crate::{
     auth::{self, Access},
     config::{App, id, now},
+    corrections,
     error::{Error, Result},
     mcp::VaultMcp,
     oauth, retrieval, settings, uploads,
@@ -114,6 +115,18 @@ fn library_routes(prefix: &str) -> Router<App> {
         .route(&at("/entries/{id}/reanalyze"), post(reanalyze))
         .route(&at("/entries/{id}/summarize"), post(summarize))
         .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))
+        .route(
+            &at("/entries/{id}/speaker-splits"),
+            post(corrections::preview),
+        )
+        .route(
+            &at("/entries/{id}/speaker-splits/undo"),
+            get(corrections::undo_status).post(corrections::undo),
+        )
+        .route(
+            &at("/entries/{id}/speaker-splits/{review}/apply"),
+            post(corrections::apply),
+        )
         .route(&at("/source-history"), get(source_history))
         .route(&at("/people"), get(people).post(create_person))
         .route(
@@ -533,7 +546,7 @@ async fn queue_rework(
         Err(error) => return Err(error.into()),
     }
     let timestamp = now();
-    sqlx::query!("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,updated_at=? WHERE id=?", work, timestamp, id).execute(&app.db).await?;
+    sqlx::query!("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,notes_revision=notes_revision+1,updated_at=? WHERE id=?", work, timestamp, id).execute(&app.db).await?;
     app.wake.notify_one();
     Ok(Json(json!({"stage":"queued","work":work})))
 }
@@ -552,6 +565,7 @@ async fn remove_voice(
     sqlx::query!("DELETE FROM voice_samples WHERE person_id=?", id)
         .execute(&app.db)
         .await?;
+    sqlx::query!("DELETE FROM speaker_correction_history WHERE entry_id IN (SELECT entry_id FROM speakers WHERE person_id=?)", id).execute(&app.db).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 #[derive(Deserialize)]

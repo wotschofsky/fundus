@@ -4,6 +4,7 @@
   import type { Person, Segment, Speaker } from '../api';
   import { timestamp } from '../format';
   import ErrorNotice from './error-notice.svelte';
+  import SpeakerSplitMenu from './speaker-split-menu.svelte';
 
   /** Select value for the "New person…" option; person ids are UUIDs, so it cannot collide. */
   const NEW_PERSON = '+new';
@@ -22,6 +23,7 @@
     onassign,
     firstAppearance,
     onjump,
+    onsplit,
   }: {
     speaker: Speaker;
     name: string;
@@ -29,6 +31,7 @@
     onassign: (personId: string | null, newName?: string) => Promise<unknown>;
     firstAppearance?: Segment;
     onjump: (segment: Segment) => void;
+    onsplit?: () => void;
   } = $props();
   let adding = $state(false);
   let newName = $state('');
@@ -66,17 +69,22 @@
       <span class="speaker-name">{name}</span>
       <small>{how}</small>
     </div>
-    {#if firstAppearance}
-      <button
-        class="speaker-jump"
-        title={`Jump to first appearance at ${timestamp(firstAppearance.start_ms)}`}
-        aria-label={`Jump to ${name}’s first appearance at ${timestamp(firstAppearance.start_ms)}`}
-        onclick={() => firstAppearance && onjump(firstAppearance)}
-      >
-        <span>{timestamp(firstAppearance.start_ms)}</span>
-        <ArrowRight size={13} aria-hidden="true" />
-      </button>
-    {/if}
+    <div class="speaker-actions">
+      {#if firstAppearance}
+        <button
+          class="speaker-jump"
+          title={`Jump to first appearance at ${timestamp(firstAppearance.start_ms)}`}
+          aria-label={`Jump to ${name}’s first appearance at ${timestamp(firstAppearance.start_ms)}`}
+          onclick={() => firstAppearance && onjump(firstAppearance)}
+        >
+          <span>{timestamp(firstAppearance.start_ms)}</span>
+          <ArrowRight size={13} aria-hidden="true" />
+        </button>
+      {/if}
+      {#if onsplit}
+        <SpeakerSplitMenu label={`Options for ${name}`} {onsplit} />
+      {/if}
+    </div>
   </div>
   <ErrorNotice {error} />
   {#if adding}

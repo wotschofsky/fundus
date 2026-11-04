@@ -2,6 +2,7 @@ pub mod api;
 pub mod audio;
 pub mod auth;
 pub mod config;
+pub mod corrections;
 pub mod error;
 pub mod grouping;
 pub mod identity;

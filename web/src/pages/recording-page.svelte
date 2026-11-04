@@ -22,6 +22,9 @@
   import LoadingState from '../components/loading-state.svelte';
   import ProcessingNotice from '../components/processing-notice.svelte';
   import SpeakerControl from '../components/speaker-control.svelte';
+  import SpeakerCorrection, {
+    type CorrectionReceipt,
+  } from '../components/speaker-correction.svelte';
   import TranscriptTurn from '../components/transcript-turn.svelte';
 
   let { id }: { id: string } = $props();
@@ -30,6 +33,10 @@
   let editing = $state(false);
   let actionError: unknown = $state(null);
   let busy = $state(false);
+  let correcting: Segment | null = $state(null);
+  let correctionNotice = $state<'saved' | 'undone' | null>(null);
+  let correctionReceipt: CorrectionReceipt | null = $state(null);
+  let notThisSpeaker = $state(false);
 
   const entry = createQuery(() => ({
     queryKey: ['entry', id],
@@ -43,6 +50,12 @@
     queryFn: ({ signal }) => transcript(id, signal),
     enabled: !!stage,
     placeholderData: keepPreviousData,
+  }));
+  const undo = createQuery(() => ({
+    queryKey: ['correction-undo', id, stage],
+    queryFn: () => api<{ available: boolean }>(`/v1/entries/${id}/speaker-splits/undo`),
+    enabled: !!entry.data,
+    staleTime: 0,
   }));
   const people = createQuery(() => peopleQuery);
   const rows = $derived(segments.data ?? []);
@@ -62,8 +75,10 @@
 
   const refresh = () =>
     Promise.all(
-      ['entry', 'entries', 'labels', 'search'].map((key) =>
-        qc.invalidateQueries({ queryKey: key === 'entry' ? [key, id] : [key] }),
+      ['entry', 'entries', 'labels', 'search', 'correction-undo'].map((key) =>
+        qc.invalidateQueries({
+          queryKey: ['entry', 'correction-undo'].includes(key) ? [key, id] : [key],
+        }),
       ),
     );
   async function act(work: () => Promise<unknown>) {
@@ -103,7 +118,7 @@
     );
     // Summaries show speaker names too, also in the recordings list.
     await Promise.all(
-      [['entry', id], ['entries'], ['people']].map((queryKey) =>
+      [['entry', id], ['entries'], ['people'], ['correction-undo', id]].map((queryKey) =>
         qc.invalidateQueries({ queryKey }),
       ),
     );
@@ -127,6 +142,34 @@
         await refresh();
         router.navigate('/');
       },
+    });
+  function startCorrection(row: Segment, fromPassage: boolean) {
+    notThisSpeaker = fromPassage;
+    correcting = row;
+  }
+  async function refreshCorrectionData() {
+    await Promise.all(
+      [
+        ['entry', id],
+        ['transcript', id],
+        ['people'],
+        ['entries'],
+        ['search'],
+        ['correction-undo', id],
+      ].map((queryKey) => qc.invalidateQueries({ queryKey }, { throwOnError: true })),
+    );
+  }
+  async function correctionApplied(receipt: CorrectionReceipt) {
+    correctionReceipt = receipt;
+    correctionNotice = 'saved';
+    await refreshCorrectionData();
+  }
+  const undoCorrection = () =>
+    act(async () => {
+      await api(`/v1/entries/${id}/speaker-splits/undo`, send('POST'));
+      correctionReceipt = null;
+      correctionNotice = 'undone';
+      await refreshCorrectionData();
     });
 </script>
 
@@ -190,6 +233,24 @@
     <EditDetailsForm entry={e} onsave={save} oncancel={() => (editing = false)} />
   {/if}
   <ErrorNotice error={actionError} />
+  {#if correctionNotice || undo.data?.available}
+    <div class="notice correction-notice" role="status">
+      <span
+        >{correctionNotice === 'undone'
+          ? 'Speaker correction undone.'
+          : correctionNotice === 'saved'
+            ? 'Speaker correction saved.'
+            : 'Last speaker correction'}
+        {#if correctionReceipt?.summary_refresh && processing}
+          Updating summary…{/if}
+        {#if correctionNotice === 'saved' && correctionReceipt && !correctionReceipt.summary_refresh}
+          Automatic summaries aren’t configured.{/if}
+      </span>
+      {#if undo.data?.available}<button class="text-button" disabled={busy} onclick={undoCorrection}
+          >Undo</button
+        >{/if}
+    </div>
+  {/if}
   <ProcessingNotice entry={e} {busy} onresume={post('retry')} />
   {#if e.warnings.length > 0}
     <details class="notice">
@@ -251,6 +312,7 @@
             active={i === playback.active}
             playable={e.audio_available}
             onseek={playback.seek}
+            oncorrect={processing ? undefined : (row) => startCorrection(row, true)}
           />
         {/each}
       </section>
@@ -267,6 +329,9 @@
               onassign={assign(s.label)}
               firstAppearance={firstAppearances.get(s.label)}
               onjump={jumpToAppearance}
+              onsplit={!processing && firstAppearances.has(s.label)
+                ? () => startCorrection(firstAppearances.get(s.label)!, false)
+                : undefined}
             />
           {/each}
         </section>
@@ -285,4 +350,14 @@
     </aside>
   </div>
 {/if}
+<SpeakerCorrection
+  bind:segment={correcting}
+  entryId={id}
+  {notThisSpeaker}
+  {names}
+  playable={entry.data?.audio_available ?? false}
+  onlisten={playback.listen}
+  onstoplisten={playback.stopListening}
+  onapplied={correctionApplied}
+/>
 <ConfirmDialog bind:request={confirming} />

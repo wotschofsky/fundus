@@ -840,3 +840,48 @@ async fn long_transcripts_are_summarized_in_one_request() {
     );
     task.abort();
 }
+
+#[tokio::test]
+async fn reviewed_passage_groups_survive_speaker_reanalysis_and_retries() {
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "correction").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    sqlx::query(
+        "INSERT INTO speakers(entry_id,label,state) VALUES(?,'corrected','manual_unknown')",
+    )
+    .bind(&entry)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let segment = format!("{entry}:2");
+    sqlx::query("UPDATE segments SET speaker='corrected' WHERE id=?")
+        .bind(&segment)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO speaker_corrections(segment_id,entry_id,speaker,created_at) VALUES(?,?,'corrected','now')")
+        .bind(&segment).bind(&entry).execute(&app.db).await.unwrap();
+    let before: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id,speaker,text FROM segments WHERE entry_id=? ORDER BY position")
+            .bind(&entry)
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    pipeline::reanalyze_speakers(&app, &entry).await.unwrap();
+    let after: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id,speaker,text FROM segments WHERE entry_id=? ORDER BY position")
+            .bind(&entry)
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(provider.submits(), 1);
+    let locked: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM speaker_corrections WHERE segment_id=?")
+            .bind(&segment)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(locked, 1);
+    task.abort();
+}

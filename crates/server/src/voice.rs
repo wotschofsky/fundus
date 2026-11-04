@@ -260,7 +260,19 @@ pub async fn analyze(app: &App, entry: &str, audio_path: &Path) -> Result<Analys
     .into_iter()
     .map(|row| (row.label, row.person_id))
     .collect();
-    let merged = merge_labels(&mut clusters, &decided);
+    // Reviewed passage corrections define distinct groups. Whole-label merges would undo them.
+    let corrected = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM speaker_corrections WHERE entry_id=?",
+        entry
+    )
+    .fetch_one(&app.db)
+    .await?
+        > 0;
+    let merged = if corrected {
+        vec![]
+    } else {
+        merge_labels(&mut clusters, &decided)
+    };
     let mut tx = app.db.begin().await?;
     for (from, into) in &merged {
         tracing::info!(%entry, %from, %into, "merged speaker labels with one voice");
@@ -358,6 +370,43 @@ async fn measure(
             };
             (speaker, cluster)
         })
+        .collect())
+}
+
+/// Independent passage probes for a review. They are never enrolled as a person's voice sample.
+pub async fn measure_passages(
+    app: &App,
+    model: &Path,
+    audio: &Path,
+    rows: &[(String, i64, i64)],
+) -> Result<BTreeMap<String, Vec<f32>>> {
+    let cpu = app.cpu.clone().acquire_owned().await?;
+    // Each review owns its scratch folder, including when it overlaps normal voice analysis.
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(app.config.data.join(format!("correction-{}", id())));
+    tokio::fs::create_dir(&scratch.0).await?;
+    let mut clips = vec![];
+    for (i, (segment, start, end)) in rows.iter().enumerate() {
+        let path = scratch.0.join(format!("{i}.wav"));
+        audio::excerpt(audio, *start, (end - start).min(EXCERPT_MAX_MS), &path).await?;
+        clips.push((segment.clone(), vec![path]));
+    }
+    let model = model.to_path_buf();
+    // Keep scratch files alive if the request is dropped while inference is still running.
+    let outputs = tokio::task::spawn_blocking(move || {
+        let _cpu = cpu;
+        let _scratch = scratch;
+        embed(&model, clips)
+    })
+    .await??;
+    Ok(outputs
+        .into_iter()
+        .map(|(segment, mut vectors)| (segment, vectors.remove(0)))
         .collect())
 }
 pub async fn assign(app: &App, entry: &str, label: &str, person: Option<&str>) -> Result<()> {

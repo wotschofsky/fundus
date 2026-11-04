@@ -44,10 +44,10 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
             continue;
         }
         if jobs.len() < CONCURRENCY
-            && let Some((entry, work)) = claim(&app).await
+            && let Some((entry, work, revision)) = claim(&app).await
         {
             let (app, stop) = (app.clone(), shutdown.clone());
-            jobs.spawn(async move { run(&app, &entry, work.as_deref(), &stop).await });
+            jobs.spawn(async move { run(&app, &entry, work.as_deref(), revision, &stop).await });
             continue;
         }
         tokio::select! {
@@ -73,22 +73,22 @@ async fn recover(app: &App) {
 }
 
 /// Atomically takes the oldest queued entry, so concurrent jobs never share one.
-async fn claim(app: &App) -> Option<(String, Option<String>)> {
+async fn claim(app: &App) -> Option<(String, Option<String>, i64)> {
     let timestamp = now();
-    sqlx::query!("UPDATE entries SET stage='preparing',active_stage='preparing',failure=NULL,updated_at=? WHERE id=(SELECT id FROM entries WHERE stage='queued' AND trashed_at IS NULL ORDER BY created_at LIMIT 1) AND stage='queued' RETURNING id AS \"id!\",requested_work", timestamp)
+    sqlx::query!("UPDATE entries SET stage='preparing',active_stage='preparing',failure=NULL,updated_at=? WHERE id=(SELECT id FROM entries WHERE stage='queued' AND trashed_at IS NULL ORDER BY created_at LIMIT 1) AND stage='queued' RETURNING id AS \"id!\",requested_work,notes_revision", timestamp)
         .fetch_optional(&app.db)
         .await
         .unwrap_or_else(|error| {
             tracing::error!(%error, "could not claim queued work");
             None
         })
-        .map(|row| (row.id, row.requested_work))
+        .map(|row| (row.id, row.requested_work, row.notes_revision))
 }
 
-async fn run(app: &App, entry: &str, work: Option<&str>, stop: &CancellationToken) {
+async fn run(app: &App, entry: &str, work: Option<&str>, revision: i64, stop: &CancellationToken) {
     let result = match work {
         Some("speakers") => reanalyze_speakers(app, entry).await,
-        Some("summary") => regenerate_summary(app, entry).await,
+        Some("summary") => regenerate_summary_at_revision(app, entry, revision).await,
         _ => process_until(app, entry, stop).await,
     };
     if let Err(error) = result {
@@ -96,10 +96,11 @@ async fn run(app: &App, entry: &str, work: Option<&str>, stop: &CancellationToke
         let failure = error.to_string().chars().take(1000).collect::<String>();
         let timestamp = now();
         let _ = sqlx::query!(
-            "UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=?",
+            "UPDATE entries SET stage='failed',failure=?,updated_at=? WHERE id=? AND notes_revision=?",
             failure,
             timestamp,
-            entry
+            entry,
+            revision
         )
         .execute(&app.db)
         .await;
@@ -582,6 +583,17 @@ async fn fail_transcription(app: &App, entry: &str, message: &str) -> anyhow::Er
 /// Replaces the entry's segments. Speaker labels that no longer occur (a legacy multi-part
 /// transcript replaced by one job) are removed together with their voice data.
 async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Result<()> {
+    // A provider transcript is the original grouping, not a replacement for reviewed corrections.
+    if sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM speaker_corrections WHERE entry_id=?",
+        entry
+    )
+    .fetch_one(&app.db)
+    .await?
+        > 0
+    {
+        return Ok(());
+    }
     let duration: i64 = sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
@@ -723,29 +735,61 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
 /// A fresh title (unless set by hand) and summary from the current transcript. Speakers are
 /// kept: the transcript already carries merged labels, so the placeholders need no relabeling.
 pub async fn regenerate_summary(app: &App, entry: &str) -> Result<()> {
-    if pause_at_checkpoint(app, entry).await? {
-        return Ok(());
-    }
-    stage(app, entry, "enriching").await?;
-    let previous: String = sqlx::query_scalar!("SELECT warnings FROM entries WHERE id=?", entry)
+    let revision = sqlx::query_scalar!("SELECT notes_revision FROM entries WHERE id=?", entry)
         .fetch_one(&app.db)
         .await?;
-    let mut warnings: Vec<String> = serde_json::from_str(&previous)?;
+    regenerate_summary_at_revision(app, entry, revision).await
+}
+
+async fn regenerate_summary_at_revision(app: &App, entry: &str, revision: i64) -> Result<()> {
+    let row = sqlx::query!("UPDATE entries SET stage=CASE WHEN pause_requested=1 THEN 'paused' ELSE 'enriching' END,active_stage=CASE WHEN pause_requested=1 THEN NULL ELSE 'enriching' END,pause_requested=0 WHERE id=? AND notes_revision=? AND trashed_at IS NULL RETURNING warnings,stage", entry, revision).fetch_optional(&app.db).await?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    if row.stage == "paused" {
+        return Ok(());
+    }
+    let mut warnings: Vec<String> = serde_json::from_str(&row.warnings)?;
     warnings.retain(|warning| !warning.starts_with("Summary unavailable:"));
-    match cached_notes(app, entry, "summary").await {
-        Ok(notes) => save_notes(app, entry, &notes, true).await?,
+    // An older request may finish after Undo or another correction; its cache is never reused.
+    let cache = format!("summary-{revision}");
+    match cached_notes(app, entry, &cache).await {
+        Ok(notes) => save_notes_at_revision(app, entry, &notes, true, Some(revision)).await?,
         Err(error) => warnings.push(format!("Summary unavailable: {error}")),
     }
-    complete(app, entry, &warnings, None).await
+    let warnings_json = serde_json::to_string(&warnings)?;
+    let timestamp = now();
+    sqlx::query!("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=? AND notes_revision=? AND trashed_at IS NULL", warnings_json, timestamp, entry, revision).execute(&app.db).await?;
+    Ok(())
 }
 
 /// The generated title (unless the owner set one) and summary. Reanalyze `replace`s them with
 /// fresh notes; processing keeps a summary that is already there.
 async fn save_notes(app: &App, entry: &str, notes: &provider::Notes, replace: bool) -> Result<()> {
+    save_notes_at_revision(app, entry, notes, replace, None).await
+}
+async fn save_notes_at_revision(
+    app: &App,
+    entry: &str,
+    notes: &provider::Notes,
+    replace: bool,
+    revision: Option<i64>,
+) -> Result<()> {
     if notes.title.trim().is_empty() {
         return Ok(());
     }
     let mut tx = app.db.begin().await?;
+    if let Some(expected) = revision {
+        let current = sqlx::query_scalar!(
+            "SELECT notes_revision FROM entries WHERE id=? AND trashed_at IS NULL",
+            entry
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current != Some(expected) {
+            return Ok(());
+        }
+    }
     let title = notes.title.trim().chars().take(240).collect::<String>();
     let summary = notes.summary.trim();
     sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND (? OR summary IS NULL)", title, summary, entry, replace).execute(&mut *tx).await?;

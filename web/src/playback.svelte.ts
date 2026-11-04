@@ -1,4 +1,5 @@
 import type { Segment } from './api';
+import { SnippetPlayback } from './snippet-playback';
 
 /** Index of the last segment that has started at `ms` (segments are ordered by start). */
 export function activeIndex(rows: Segment[], ms: number) {
@@ -25,10 +26,15 @@ export class Playback {
   #revealed = 0;
   #rows: () => Segment[];
   #startMs: () => number;
+  #snippet = new SnippetPlayback();
 
   constructor(rows: () => Segment[], startMs: () => number) {
     this.#rows = rows;
     this.#startMs = startMs;
+    $effect(() => {
+      if (!this.audio) return;
+      return () => this.#snippet.stop();
+    });
     // A search link opens a passage: highlight and reveal it once, when the transcript arrives.
     // Later refetches (a speaker assignment, processing) leave the reader where they are.
     $effect(() => {
@@ -81,8 +87,15 @@ export class Playback {
   };
 
   seek = (ms: number) => {
+    this.#snippet.stop();
     if (!this.audio) return;
     this.audio.currentTime = ms / 1000;
     this.audio.play().catch(() => {});
   };
+
+  listen = (segment: Pick<Segment, 'start_ms' | 'end_ms'>) => {
+    if (this.audio) this.#snippet.play(this.audio, segment.start_ms, segment.end_ms);
+  };
+
+  stopListening = () => this.#snippet.stop();
 }
