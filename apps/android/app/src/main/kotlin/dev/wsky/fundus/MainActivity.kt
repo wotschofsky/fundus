@@ -3,6 +3,7 @@ package dev.wsky.fundus
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.text.format.DateFormat
 import androidx.activity.ComponentActivity
@@ -33,12 +34,16 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 class FundusApp : Application() {
+    val scope = MainScope()
     val vault by lazy { Vault(this) }
     val library by lazy { Library(vault) }
+    val recorder by lazy { Recorder(this) }
+    val uploads by lazy { Uploads(this, vault, recorder) }
 }
 
 val Context.fundus get() = applicationContext as FundusApp
@@ -56,6 +61,12 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch { fundus.recorder.scan() }
+        fundus.uploads.resumeInterrupted()
+    }
+
     override fun onResume() {
         super.onResume()
         Format.hour24 = DateFormat.is24HourFormat(this)
@@ -63,6 +74,10 @@ class MainActivity : ComponentActivity() {
 
     /** The browser hands the vault's approval back as `dev.wsky.fundus:/oauth?code=…`. */
     private fun handle(intent: Intent?) {
+        when (intent?.action) {
+            Recorder.OPEN_PROMPT -> fundus.recorder.prompt.value = true
+            UsbManager.ACTION_USB_DEVICE_ATTACHED -> fundus.scope.launch { fundus.recorder.attached() }
+        }
         val callback = intent?.data?.takeIf { it.scheme == "dev.wsky.fundus" } ?: return
         lifecycleScope.launch { fundus.vault.finishSignIn(callback.toString()) }
     }
@@ -75,7 +90,16 @@ class MainActivity : ComponentActivity() {
 private fun FundusRoot() {
     val app = LocalContext.current.fundus
     val server by app.vault.server.collectAsStateWithLifecycle()
-    if (server == null) return ConnectScreen(app.vault)
+    val prompt by app.recorder.prompt.collectAsStateWithLifecycle()
+    if (server == null) {
+        ConnectScreen(app.vault)
+        // Signed out with an upload not finished: its window (from the notification) still offers Discard.
+        val queue by app.uploads.queue.collectAsStateWithLifecycle()
+        if (prompt && queue.unfinished) RecorderSheet(app, onDismiss = { app.recorder.prompt.value = false })
+        return
+    }
+
+    if (prompt) RecorderSheet(app, onDismiss = { app.recorder.prompt.value = false })
 
     val navigation = rememberNavController()
     val snackbar = remember { SnackbarHostState() }

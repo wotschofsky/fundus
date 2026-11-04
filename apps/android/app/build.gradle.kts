@@ -14,6 +14,16 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // Phones, and the emulator on Apple silicon and x86 hosts.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+    }
+
+    // libFLAC for lossless uploads, as on the Mac; scripts/fetch-native-deps.sh fetches its source.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

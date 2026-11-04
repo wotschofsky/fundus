@@ -24,6 +24,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.add
 import okhttp3.ConnectionPool
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -200,13 +201,22 @@ class Vault(context: Context) {
         return "$server/api/native/v1$path"
     }
 
+    /**
+     * A vault's token goes only to that vault: a request elsewhere (an upload still bound to the vault this phone
+     * was connected to before) goes out unsigned, and is no reason to refresh this vault's token.
+     */
     private fun authorize(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        fun ours(credentials: Credentials) = OAuth.sameOrigin(request.url.toString(), credentials.server)
+        fun signed(credentials: Credentials) = request.newBuilder().header("Authorization", "Bearer ${credentials.accessToken}").build()
+        credentials?.let { if (!ours(it)) return chain.proceed(request) }
         val used = runBlocking { current(rejected = null) }
-        val response = chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer ${used.accessToken}").build())
+        if (!ours(used)) return chain.proceed(request)
+        val response = chain.proceed(signed(used))
         if (response.code != 401) return response
         response.close()
         val fresh = runBlocking { current(rejected = used.accessToken) }
-        return chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer ${fresh.accessToken}").build())
+        return chain.proceed(if (ours(fresh)) signed(fresh) else request)
     }
 
     /** One refresh at a time: the server rotates refresh tokens and revokes a reused one. */
@@ -268,6 +278,13 @@ private fun JsonObject.string(key: String) = get(key)?.jsonPrimitive?.contentOrN
 /** The OAuth steps that need no network or Android, kept apart so tests can run them. */
 object OAuth {
     const val CALLBACK = "dev.wsky.fundus:/oauth"
+
+    /** Same scheme, host and port: whether a URL belongs to the vault at [server] (an [origin]). */
+    fun sameOrigin(url: String, server: String): Boolean {
+        val a = url.toHttpUrlOrNull() ?: return false
+        val b = server.toHttpUrlOrNull() ?: return false
+        return a.scheme == b.scheme && a.host == b.host && a.port == b.port
+    }
 
     /** `https://Vault.example.com/` → `https://vault.example.com`; a bare host gets `https://`. */
     fun origin(address: String): String {

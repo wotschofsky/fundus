@@ -35,10 +35,9 @@ private struct RecorderPromptView: View {
     let close: () -> Void
     @Environment(AppModel.self) private var app
 
-    /// Newest first, imported ones too; fragments too short to be worth importing are left out.
+    /// Everything on the mic, newest first, imported ones too.
     private var listed: [RecordingSession] {
-        guard app.sources.showsRecorders else { return [] }
-        return app.sessions.sessions.filter { $0.duration >= SourceSessions.worthImporting }.sorted { $0.start > $1.start }
+        app.sources.showsRecorders ? app.sessions.sessions.sorted { $0.start > $1.start } : []
     }
     private var proposed: [RecordingSession] { app.sources.showsRecorders ? app.sessions.proposed(server: app.uploadServer) : [] }
     private func length(_ session: RecordingSession) -> TimeInterval { app.sessions.trim(for: session)?.duration ?? session.duration }
@@ -83,7 +82,7 @@ private struct RecorderPromptView: View {
         }
         .onChange(of: app.sources.shownFiles) { _, files in app.sessions.update(files, server: app.uploadServer) }
         // Unplugged: nothing left to show.
-        .onChange(of: listed.isEmpty) { _, empty in if empty { close() } }
+        .onChange(of: app.sources.showsRecorders) { _, shows in if !shows { close() } }
     }
 
     private var header: some View {
@@ -111,6 +110,12 @@ private struct RecorderPromptView: View {
         let showsMic = Set(listed.map(\.transmitter)).count > 1
         return ScrollView {
             VStack(spacing: 0) {
+                if listed.isEmpty {
+                    Text(app.sources.isReading ? "Reading recordings…" : "No recordings on the mic.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
                 ForEach(Array(listed.enumerated()), id: \.element.id) { index, session in
                     if index > 0 { Divider().padding(.leading, 12) }
                     row(session, showsMic: showsMic)

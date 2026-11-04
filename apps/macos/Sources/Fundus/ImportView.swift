@@ -3,7 +3,6 @@ import SwiftUI
 /// The recorder screen: sessions on the recorder (one tab per microphone), the vault they go to, one Import button.
 struct ImportView: View {
     @Environment(AppModel.self) private var app
-    @AppStorage("showFragments") private var showFragments = false
 
     private var source: SourceSessions { app.sessions }
     private var server: String { app.uploadServer }
@@ -88,15 +87,9 @@ struct ImportView: View {
         source.selectedSessions.filter { source.record(for: $0, server: server) == nil }
     }
 
-    /// Button-press fragments of a second or two. Hidden unless asked for, or already imported.
-    private func isFragment(_ session: RecordingSession) -> Bool {
-        session.duration < 10 && session.recordings.count == 1 && source.record(for: session, server: server) == nil
-    }
-
     /// Visible sessions grouped by the day they started, newest day first, in time order within a day.
     private var days: [(day: Date, sessions: [RecordingSession])] {
-        let visible = showFragments ? source.visibleSessions : source.visibleSessions.filter { !isFragment($0) }
-        return Dictionary(grouping: visible) { Calendar.current.startOfDay(for: $0.start) }
+        Dictionary(grouping: source.visibleSessions) { Calendar.current.startOfDay(for: $0.start) }
             .map { (day: $0.key, sessions: $0.value) }
             .sorted { $0.day > $1.day }
     }
@@ -107,8 +100,7 @@ struct ImportView: View {
     }
 
     private var sessionList: some View {
-        let fragments = source.visibleSessions.filter(isFragment).count
-        return List {
+        List {
             if source.visibleSessions.isEmpty {
                 Text(app.sources.isReading ? "Reading recordings…" : "No recordings found here.")
                     .foregroundStyle(.secondary)
@@ -119,14 +111,6 @@ struct ImportView: View {
                         SessionRow(session: session)
                     }
                 }
-            }
-            if fragments > 0 {
-                Button(showFragments ? "Hide recordings shorter than 10 seconds"
-                       : "Show \(fragments) \(fragments == 1 ? "recording" : "recordings") shorter than 10 seconds") {
-                    showFragments.toggle()
-                }
-                .buttonStyle(.link)
-                .font(.callout)
             }
             if !source.problems.isEmpty {
                 Section("Unreadable Files") {

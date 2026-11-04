@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.18)
+project(fundus_audio C)
+# The lossless preparation shared with the Mac and iOS apps (native/audio, libFLAC).
+set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..")
+if(NOT EXISTS "${ROOT}/.cache/native/flac-1.5.0")
+ message(FATAL_ERROR "libFLAC source is missing: run scripts/fetch-native-deps.sh")
+endif()
+add_subdirectory("${ROOT}/native/audio" "${CMAKE_CURRENT_BINARY_DIR}/vault_audio")
+add_library(fundus_audio SHARED fundus_audio.c)
+target_link_libraries(fundus_audio PRIVATE vault_audio)

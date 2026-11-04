@@ -23,7 +23,10 @@ int vault_audio_inspect(const char *path,VaultAudioInfo *info,char *err,int n){
  struct stat s;int size_ok=!fstat(fileno(f),&s);fclose(f);
  if(!has_format||!has_data||!size_ok||(encoding!=1&&encoding!=3)||info->channels<1||info->channels>8||info->sample_rate<8000||info->sample_rate>384000||info->bits<8||info->bits>64||info->bits%8)return fail(err,n,"Unsupported or unfinished WAV header");
  uint64_t frame_bytes=(uint64_t)info->channels*info->bits/8;
- if(!info->data_bytes||info->data_offset>(uint64_t)s.st_size||info->data_bytes>(uint64_t)s.st_size-info->data_offset||info->data_bytes%frame_bytes)return fail(err,n,"Truncated or empty WAV audio");
+ // Like Core Audio (the Mac app): only the whole frames actually in the file count. DJI mics declare 8 bytes more than they write.
+ if(info->data_offset>(uint64_t)s.st_size)return fail(err,n,"Truncated or empty WAV audio");
+ if(info->data_bytes>(uint64_t)s.st_size-info->data_offset)info->data_bytes=(uint64_t)s.st_size-info->data_offset;
+ info->data_bytes-=info->data_bytes%frame_bytes;if(!info->data_bytes)return fail(err,n,"Truncated or empty WAV audio");
  info->is_float=encoding==3;info->frames=info->data_bytes/frame_bytes;info->flac=!info->is_float&&info->bits<=24;return 0;
 }
 typedef struct {uint64_t frames;int failed;} Verify;

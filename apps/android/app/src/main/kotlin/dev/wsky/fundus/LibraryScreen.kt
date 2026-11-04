@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.outlined.MoveToInbox
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -99,7 +101,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.net.URI
 
@@ -119,6 +124,9 @@ fun LibraryScreen(
 ) {
     val state by library.state.collectAsStateWithLifecycle()
     val server by vault.server.collectAsStateWithLifecycle()
+    val app = LocalContext.current.fundus
+    val recorder by app.recorder.state.collectAsStateWithLifecycle()
+    val upload by app.uploads.queue.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     var vaultSheet by remember { mutableStateOf(false) }
@@ -134,14 +142,18 @@ fun LibraryScreen(
         query = ""
     }
 
-    // Like the Mac: every few seconds while the vault is working, otherwise once a minute;
-    // only while the app is on screen.
+    // Like the Mac: every few seconds while an import is uploading or the vault is working, otherwise once a
+    // minute; at once whenever this phone's upload moves on (a new import shows up as soon as the vault has it).
+    // Only while the app is on screen.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                library.refresh()
-                delay(if (library.state.value.isProcessing) 5_000 else 60_000)
+            app.uploads.queue.map { it.state }.distinctUntilChanged().collectLatest {
+                while (true) {
+                    library.refresh()
+                    val busy = library.state.value.isProcessing || app.uploads.queue.value.isTransferring
+                    delay(if (busy) 5_000 else 60_000)
+                }
             }
         }
     }
@@ -221,7 +233,11 @@ fun LibraryScreen(
                             when {
                                 expanded && query.isNotEmpty() -> IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear") }
                                 // Like the account picture in Google's apps: the vault this phone is connected to.
-                                !expanded -> IconButton(onClick = { vaultSheet = true }) { VaultAvatar(server) }
+                                !expanded -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // A mic plugged in before the app opened, or an upload not finished: its window, on request.
+                                    if (recorder.connected || upload.unfinished) IconButton(onClick = { app.recorder.prompt.value = true }) { Icon(Icons.Outlined.MoveToInbox, "Import from DJI Mic") }
+                                    IconButton(onClick = { vaultSheet = true }) { VaultAvatar(server) }
+                                }
                             }
                         },
                     )
