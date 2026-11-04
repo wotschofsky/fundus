@@ -202,5 +202,5 @@ object WavHeader {
 fun sha256(text: String): String =
     MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
 
-/** A recording's start from its DJI name, read in the recorder's time zone (the phone's). */
+/** A recording's start from its DJI name, read in the zone the recorder's clock runs in (`Recorder.clock`). */
 fun DJIFilename.startInstant(zone: ZoneId): Instant = start.atZone(zone).toInstant()

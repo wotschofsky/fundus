@@ -89,7 +89,8 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
     val showsMic = listed.map { it.transmitter }.toSet().size > 1
 
     val clock by app.recorder.clock.collectAsStateWithLifecycle()
-    // Until a clock is chosen here, use the one the vault's newest recording was imported with (the Mac's setting).
+    // The first time, take the clock the vault's newest recording was imported with (the Mac's setting); it is
+    // then kept, like a pick in the footer, until another one is picked.
     val newestZone = app.library.state.collectAsStateWithLifecycle().value.entries.firstOrNull()?.timezone
     LaunchedEffect(newestZone) {
         if (newestZone != null && !app.recorder.clockChosen) runCatching { ZoneId.of(newestZone) }.getOrNull()?.let { app.recorder.setClock(it) }

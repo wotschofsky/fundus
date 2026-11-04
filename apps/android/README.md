@@ -32,13 +32,14 @@ own keystore before handing the APK to anyone else.
 - Uploads follow the Mac too: sessions grouped by the same rules (30-minute rollovers join), the
   same source IDs, so either app sees what the other imported through the vault's source history.
   Recordings are copied off the mic first, so it can be unplugged; integer WAV becomes verified
-  FLAC through `native/audio`; tus chunks run in a foreground service and resume after a restart.
+  FLAC through `native/audio`; tus chunks run in a foreground service. An upload the app was closed
+  in the middle of resumes when it starts again; a paused or failed one waits for Resume in the window.
 - The DJI case is a USB drive that Android hides from apps (no storage volume, no `MEDIA_MOUNTED`).
   Its USB device (vendor `0x10D6`, `res/xml/dji_mic.xml`) starts the app instead; the files are read
   through the system folder picker, picked once per mic ("Allow" in the window). Header reads are
   cached across launches.
 - DJI WAVs declare 8 more data bytes than they hold; like Core Audio on the Mac, only whole frames
   actually in the file count, so frame counts and source IDs match.
-- The recorder clock (DJI factory UTC+8, or the phone's zone) is taken from the vault's newest
-  recording until it is picked in the window's footer.
+- The recorder clock (DJI factory UTC+8, or the phone's zone) is taken once from the vault's newest
+  recording, then kept until another one is picked in the window's footer.
 - Colours follow `DESIGN.md` (white, neutral ink, red only for problems), mapped onto Material 3 roles.

@@ -70,7 +70,6 @@ class Recorder(private val context: Context) {
         runCatching { VaultJson.decodeFromString<Map<String, Header>>(headerFile.readText()) }.getOrDefault(emptyMap()).toMutableMap()
     }
     private var headersChanged = false
-    private val unreadable = HashSet<String>()
 
     suspend fun scan(): State = scanning.withLock {
         _state.value = _state.value.copy(scanning = true)
@@ -140,15 +139,17 @@ class Recorder(private val context: Context) {
         return found
     }
 
-    /** A file whose header cannot be read (the recorder lost power mid-file) is left out, as on the Mac. */
+    /**
+     * A file whose header cannot be read (the recorder lost power mid-file) is left out of this scan, as on
+     * the Mac; only good headers are kept, so a read cut short by unplugging is tried again next time.
+     */
     private fun inspect(document: FileOnMic, zone: ZoneId): SourceRecording? {
         val name = DJIFilename.parse(document.name) ?: return null
         val key = "${document.uri}|${document.size}"
-        if (key in unreadable) return null
         val header = headers[key] ?: runCatching {
             val (format, frames) = context.contentResolver.openInputStream(document.uri)!!.buffered(65_536).use { WavHeader.read(it, document.size) }
             Header(format, frames).also { headers[key] = it; headersChanged = true }
-        }.onFailure { Log.w(TAG, "skipped ${document.name}", it); unreadable += key }.getOrNull() ?: return null
+        }.onFailure { Log.w(TAG, "skipped ${document.name}", it) }.getOrNull() ?: return null
         return SourceRecording(document.uri.toString(), document.name, name.transmitter, name.variant, name.sequence,
             name.startInstant(zone), header.frames, document.size, header.format)
     }

@@ -467,7 +467,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         private const val HISTORY = "source-history"
         private const val CHUNK = 8L * 1024 * 1024
 
-        /** Whole-batch progress: preparation counts for a third of a file, the upload for the rest. */
+        /** Whole-batch progress: copying off the mic and preparing count for a fifth of a file each, the upload for the rest. */
         fun progress(queue: QueueState): Double {
             if (queue.files.isEmpty()) return 0.0
             return queue.files.sumOf { item ->
