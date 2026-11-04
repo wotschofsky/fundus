@@ -31,9 +31,10 @@ own keystore before handing the APK to anyone else.
   `adb reverse tcp:3917 tcp:3917`.
 - Uploads follow the Mac too: sessions grouped by the same rules (30-minute rollovers join), the
   same source IDs, so either app sees what the other imported through the vault's source history.
-  Recordings are copied off the mic first, so it can be unplugged; integer WAV becomes verified
-  FLAC through `native/audio`; tus chunks run in a foreground service. An upload the app was closed
-  in the middle of resumes when it starts again; a paused or failed one waits for Resume in the window.
+  Recordings are copied off the mic first, so it can be unplugged; integer WAV up to 24 bits becomes
+  verified FLAC through `native/audio` (float and 32-bit go up unchanged, as on the Mac); tus chunks
+  run in a foreground service. An upload the app was closed in the middle of resumes when it starts
+  again; a paused or failed one keeps a notification and waits for Resume in the window.
 - The DJI case is a USB drive that Android hides from apps (no storage volume, no `MEDIA_MOUNTED`).
   Its USB device (vendor `0x10D6`, `res/xml/dji_mic.xml`) starts the app instead; the files are read
   through the system folder picker, picked once per mic ("Allow" in the window). Header reads are

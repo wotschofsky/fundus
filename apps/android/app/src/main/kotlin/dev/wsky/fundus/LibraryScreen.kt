@@ -123,6 +123,7 @@ fun LibraryScreen(
     val server by vault.server.collectAsStateWithLifecycle()
     val app = LocalContext.current.fundus
     val recorder by app.recorder.state.collectAsStateWithLifecycle()
+    val upload by app.uploads.queue.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     var vaultSheet by remember { mutableStateOf(false) }
@@ -226,8 +227,8 @@ fun LibraryScreen(
                                 expanded && query.isNotEmpty() -> IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear") }
                                 // Like the account picture in Google's apps: the vault this phone is connected to.
                                 !expanded -> Row(verticalAlignment = Alignment.CenterVertically) {
-                                    // A mic plugged in before the app opened: its window, on request.
-                                    if (recorder.connected) IconButton(onClick = { app.recorder.prompt.value = true }) { Icon(Icons.Outlined.MoveToInbox, "Import from DJI Mic") }
+                                    // A mic plugged in before the app opened, or an upload not finished: its window, on request.
+                                    if (recorder.connected || upload.unfinished) IconButton(onClick = { app.recorder.prompt.value = true }) { Icon(Icons.Outlined.MoveToInbox, "Import from DJI Mic") }
                                     IconButton(onClick = { vaultSheet = true }) { VaultAvatar(server) }
                                 }
                             }

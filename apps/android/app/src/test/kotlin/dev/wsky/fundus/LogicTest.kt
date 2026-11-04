@@ -161,4 +161,40 @@ class LogicTest {
         val empty = wav(16, 1, 0)
         assertThrows(IllegalArgumentException::class.java) { WavHeader.read(empty.inputStream(), empty.size.toLong()) }
     }
+
+    @Test
+    fun aVaultsTokenOnlyGoesToThatVault() {
+        assertEquals(true, OAuth.sameOrigin("https://vault.example.com/api/native/v1/uploads/abc", "https://vault.example.com"))
+        assertEquals(true, OAuth.sameOrigin("https://VAULT.example.com:443/x", "https://vault.example.com"))
+        assertEquals(false, OAuth.sameOrigin("https://other.example.com/api/native/v1/uploads/abc", "https://vault.example.com"))
+        assertEquals(false, OAuth.sameOrigin("http://vault.example.com/x", "https://vault.example.com"))
+        assertEquals(false, OAuth.sameOrigin("https://vault.example.com:8443/x", "https://vault.example.com"))
+        assertEquals(false, OAuth.sameOrigin("https://vault.example.com.evil.example/x", "https://vault.example.com"))
+    }
+
+    @Test
+    fun onlyAnUnfinishedUploadOnThisVaultStandsInForTheVaultsHistory() {
+        val plan = SessionPlan(listOf("a", "b"))
+        val file = UploadItem(name = "TX01_MIC001_20261001_120000.wav", source = "x.wav")
+        val running = QueueState(server = "https://vault", state = "uploading", sessions = listOf(plan), files = listOf(file))
+        assertEquals(listOf(ImportRecord(listOf("a", "b"), "uploading", importId = "")), Uploads.queued(running, emptyList(), "https://vault"))
+        // The vault lists it: the vault's record is the one that counts.
+        assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, listOf(ImportRecord(listOf("a", "b"), "complete")), "https://vault"))
+        // Done, then trashed in the vault: importable again.
+        assertEquals(emptyList<ImportRecord>(), Uploads.queued(running.copy(state = "verified"), emptyList(), "https://vault"))
+        // Another vault knows nothing of it.
+        assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, emptyList(), "https://other"))
+        assertEquals(true, running.unfinished)
+        assertEquals(true, running.copy(state = "failed").unfinished)
+        assertEquals(false, running.copy(state = "verified").unfinished)
+        assertEquals(false, QueueState().unfinished)
+    }
+
+    @Test
+    fun uploadAddressesArePathsOnTheConnectedVault() {
+        assertEquals("/uploads/abc", Uploads.uploadPath("/api/native/v1/uploads/abc"))
+        assertNull(Uploads.uploadPath("https://elsewhere.example/api/native/v1/uploads/abc"))
+        assertNull(Uploads.uploadPath("/api/native/v1/entries"))
+        assertNull(Uploads.uploadPath(null))
+    }
 }

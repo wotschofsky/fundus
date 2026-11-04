@@ -81,7 +81,7 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
     val history by app.uploads.history.collectAsStateWithLifecycle()
     val waiting by app.uploads.waiting.collectAsStateWithLifecycle()
     val server by app.vault.server.collectAsStateWithLifecycle()
-    val records = remember(history, queue.sessions, queue.importId, queue.files.isEmpty()) { app.uploads.records() }
+    val records = remember(history, queue, server) { app.uploads.records() }
 
     // Newest first, imported ones too; fragments too short to be worth importing are left out.
     val listed = remember(state.sessions) { state.sessions.filter { it.duration >= Imports.WORTH_IMPORTING }.sortedByDescending { it.start } }
@@ -110,8 +110,10 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
             delay(if (busy) 4_000 else 60_000)
         }
     }
-    // Unplugged: nothing left to show.
-    LaunchedEffect(scanned, state.connected, state.scanning) { if (scanned && !state.scanning && !state.connected) onDismiss() }
+    // Unplugged: nothing left to show, unless an upload is still unfinished (its Resume and Discard live here).
+    LaunchedEffect(scanned, state.connected, state.scanning, queue.unfinished) {
+        if (scanned && !state.scanning && !state.connected && !queue.unfinished) onDismiss()
+    }
 
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     fun askForNotifications() {
@@ -132,9 +134,10 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
                     Icon(painterResource(R.drawable.ic_launcher_foreground), contentDescription = null, tint = Color.White)
                 }
                 Column {
-                    Text("DJI Mic connected", style = MaterialTheme.typography.titleLarge)
+                    Text(if (state.connected) "DJI Mic connected" else "DJI Mic", style = MaterialTheme.typography.titleLarge)
                     val subtitle = when {
                         state.recorders.isEmpty() && state.scanning -> "Looking for recordings…"
+                        !state.connected -> "Unplugged"
                         state.recorders.isEmpty() -> "Fundus needs your permission to read it"
                         proposed.isEmpty() -> "Everything is imported"
                         else -> Recorder.newRecordings(proposed)

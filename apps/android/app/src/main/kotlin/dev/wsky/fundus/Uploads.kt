@@ -103,6 +103,8 @@ data class QueueState(
     val isTransferring get() = state in setOf("copying", "uploading", "verifying")
     /** A new import can start. */
     val isIdle get() = state == "idle" || state == "verified"
+    /** Holds recordings the vault has not confirmed yet: running, paused or failed. */
+    val unfinished get() = files.isNotEmpty() && state != "verified"
 }
 
 /**
@@ -142,11 +144,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     /** The vault's imports, then the one in this phone's queue until the vault lists it. */
     fun records(): List<ImportRecord> {
         val history = _history.value.mapNotNull { it.record }
-        val known = history.mapTo(HashSet()) { it.sourceIds }
-        val queue = _queue.value
-        val queued = if (queue.files.isEmpty()) emptyList() else queue.sessions.orEmpty().filter { it.sourceIds !in known }
-            .map { ImportRecord(it.sourceIds, "uploading", importId = queue.importId.orEmpty()) }
-        return history + queued
+        return history + queued(_queue.value, history, vault.server.value)
     }
 
     fun isQueued(session: RecordingSession) = _waiting.value.any { it.id == session.id }
@@ -186,6 +184,8 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         _waiting.value = emptyList()
         deleteAudio()
         update { QueueState(server = it.server) }
+        // The paused or failed notification described this upload.
+        context.getSystemService(NotificationManager::class.java).cancel(UploadService.NOTIFICATION)
     }
 
     /** An upload the app was closed in the middle of. */
@@ -366,7 +366,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
             val request = Request.Builder().url(vault.url("/uploads")).post(ByteArray(0).toRequestBody())
                 .header("Tus-Resumable", "1.0.0").header("Upload-Length", item.length.toString()).header("Upload-Metadata", metadata).build()
             val location = call(request) { it.header("Location") }
-            if (location == null || !location.startsWith("/api/native/v1/uploads/")) throw VaultError("The vault sent an invalid upload address.")
+            if (uploadPath(location) == null) throw VaultError("The vault sent an invalid upload address.")
             updateItem(id) { it.copy(location = location) }
         }
         val url = _queue.value.server + item(id).location!!
@@ -467,6 +467,21 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         private const val HISTORY = "source-history"
         private const val CHUNK = 8L * 1024 * 1024
 
+        /** The vault's tus address for a file, relative to its native API; anything else is refused. */
+        fun uploadPath(location: String?): String? =
+            location?.takeIf { it.startsWith("/api/native/v1/uploads/") }?.removePrefix("/api/native/v1")
+
+        /**
+         * The import in this phone's queue, until the vault lists it: only while it is unfinished and on the
+         * connected vault. Once verified, the vault's history alone decides (it may have been trashed since).
+         */
+        fun queued(queue: QueueState, history: List<ImportRecord>, server: String?): List<ImportRecord> {
+            if (!queue.unfinished || queue.server != server) return emptyList()
+            val known = history.mapTo(HashSet()) { it.sourceIds }
+            return queue.sessions.orEmpty().filter { it.sourceIds !in known }
+                .map { ImportRecord(it.sourceIds, "uploading", importId = queue.importId.orEmpty()) }
+        }
+
         /** Whole-batch progress: copying off the mic and preparing count for a fifth of a file each, the upload for the rest. */
         fun progress(queue: QueueState): Double {
             if (queue.files.isEmpty()) return 0.0
@@ -530,8 +545,7 @@ class UploadService : Service() {
                     fundus.uploads.run()
                 }
                 progress.cancel()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                finish()
             }
         }
         return START_NOT_STICKY
@@ -540,6 +554,18 @@ class UploadService : Service() {
     /** Android limits how long data transfers run in the background: pause, resume later. */
     override fun onTimeout(startId: Int, fgsType: Int) {
         fundus.uploads.pause()
+    }
+
+    /** Paused or failed: the notification stays (not ongoing), so a stop is never mistaken for done. */
+    private fun finish() {
+        val last = fundus.uploads.queue.value
+        if (last.unfinished && !last.isTransferring) {
+            stopForeground(STOP_FOREGROUND_DETACH)
+            notifications.notify(NOTIFICATION, notification(last))
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -551,13 +577,13 @@ class UploadService : Service() {
         .setSmallIcon(android.R.drawable.stat_sys_upload)
         .setContentTitle(Uploads.headline(queue).ifEmpty { "Uploading recordings" })
         .setContentText(host(queue.server))
-        .setProgress(100, (Uploads.progress(queue) * 100).toInt(), queue.state == "verifying")
-        .setOngoing(true)
+        .apply { if (queue.isTransferring) setProgress(100, (Uploads.progress(queue) * 100).toInt(), queue.state == "verifying") }
+        .setOngoing(queue.isTransferring)
         .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).setAction(Recorder.OPEN_PROMPT), PendingIntent.FLAG_IMMUTABLE))
         .build()
 
-    private companion object {
-        const val CHANNEL = "uploads"
+    companion object {
+        private const val CHANNEL = "uploads"
         const val NOTIFICATION = 1001
     }
 }

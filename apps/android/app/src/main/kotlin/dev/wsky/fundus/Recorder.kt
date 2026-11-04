@@ -173,8 +173,9 @@ class Recorder(private val context: Context) {
         prompt.value = true
     }
 
-    suspend fun detached() {
-        if (!scan().connected) prompt.value = false
+    /** Unplugged: close the window, unless it still holds an upload that has not finished (its Resume and Discard). */
+    suspend fun detached(uploads: Uploads) {
+        if (!scan().connected && !uploads.queue.value.unfinished) prompt.value = false
     }
 
     companion object {
@@ -199,7 +200,7 @@ class RecorderReceiver : BroadcastReceiver() {
         val app = context.fundus
         val pending = goAsync()
         app.scope.launch {
-            try { app.recorder.detached() } finally { pending.finish() }
+            try { app.recorder.detached(app.uploads) } finally { pending.finish() }
         }
     }
 }

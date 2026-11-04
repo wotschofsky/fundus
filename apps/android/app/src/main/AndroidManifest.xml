@@ -56,10 +56,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- Unplugging the mic closes its window. -->
+        <!-- Unplugging the mic closes its window. Not exported: the system's broadcast still arrives. -->
         <receiver
             android:name=".RecorderReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_DETACHED" />
             </intent-filter>
