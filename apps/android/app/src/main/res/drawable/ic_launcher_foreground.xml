@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Mac app icon's waveform and transcript lines (apps/macos/Resources/AppIcon.icon). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="1024" android:viewportHeight="1024">
+    <group android:pivotX="512" android:pivotY="512" android:scaleX="0.82" android:scaleY="0.82">
+        <path android:fillColor="#FFFFFF" android:pathData="M232,417a32,32 0,0 1,32,32V575a32,32 0,0 1,-64,0V449a32,32 0,0 1,32,-32ZM324,307a32,32 0,0 1,32,32V685a32,32 0,0 1,-64,0V339a32,32 0,0 1,32,-32ZM416,367a32,32 0,0 1,32,32V625a32,32 0,0 1,-64,0V399a32,32 0,0 1,32,-32ZM508,282a32,32 0,0 1,32,32V710a32,32 0,0 1,-64,0V314a32,32 0,0 1,32,-32ZM620,356H792a32,32 0,0 1,0,64H620a32,32 0,0 1,0,-64ZM620,480H792a32,32 0,0 1,0,64H620a32,32 0,0 1,0,-64ZM620,604H706a32,32 0,0 1,0,64H620a32,32 0,0 1,0,-64Z" />
+    </group>
+</vector>

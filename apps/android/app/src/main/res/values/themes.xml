@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only the window before Compose draws; the app's colors are in Theme.kt. -->
+    <style name="Theme.Fundus" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+    <color name="window_background">#FFFFFF</color>
+    <color name="ic_launcher_background">#2D2F36</color>
+</resources>
