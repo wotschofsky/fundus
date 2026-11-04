@@ -34,6 +34,8 @@ data class Entry(
     val speakers: List<Speaker>? = null,
     val sources: List<Source>? = null,
     val trimStartFrame: Long? = null,
+    /** The recorder clock it was imported with (e.g. the DJI factory UTC+8), not where the person was. */
+    val timezone: String? = null,
 ) {
     @Serializable
     data class Source(val offsetMs: Long = 0, val recordedAt: String? = null, val format: Format? = null) {

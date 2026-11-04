@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.outlined.MoveToInbox
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -119,6 +121,8 @@ fun LibraryScreen(
 ) {
     val state by library.state.collectAsStateWithLifecycle()
     val server by vault.server.collectAsStateWithLifecycle()
+    val app = LocalContext.current.fundus
+    val recorder by app.recorder.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     var vaultSheet by remember { mutableStateOf(false) }
@@ -221,7 +225,11 @@ fun LibraryScreen(
                             when {
                                 expanded && query.isNotEmpty() -> IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear") }
                                 // Like the account picture in Google's apps: the vault this phone is connected to.
-                                !expanded -> IconButton(onClick = { vaultSheet = true }) { VaultAvatar(server) }
+                                !expanded -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // A mic plugged in before the app opened: its window, on request.
+                                    if (recorder.connected) IconButton(onClick = { app.recorder.prompt.value = true }) { Icon(Icons.Outlined.MoveToInbox, "Import from DJI Mic") }
+                                    IconButton(onClick = { vaultSheet = true }) { VaultAvatar(server) }
+                                }
                             }
                         },
                     )

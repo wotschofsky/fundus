@@ -45,6 +45,14 @@ object Format {
         else -> pattern(if (date.year == today.year) "EEEEMMMMd" else "EEEEyMMMMd").format(date)
     }
 
+    /** `UTC+8`, `UTC−3`, `UTC+5:30`, now, in `zone`. */
+    fun utcOffset(zone: ZoneId = this.zone): String {
+        val seconds = zone.rules.getOffset(Instant.now()).totalSeconds
+        val hours = Math.abs(seconds) / 3600
+        val minutes = Math.abs(seconds) % 3600 / 60
+        return "UTC${if (seconds < 0) "−" else "+"}$hours" + if (minutes == 0) "" else ":%02d".format(minutes)
+    }
+
     val zone: ZoneId get() = ZoneId.systemDefault()
 
     private val patterns = ConcurrentHashMap<String, DateTimeFormatter>()
