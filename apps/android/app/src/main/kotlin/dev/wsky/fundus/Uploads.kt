@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -277,7 +278,8 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                             putJsonArray("sessions") { plans.forEach { plan -> addJsonObject { putJsonArray("source_ids") { plan.sourceIds.forEach(::add) } } } }
                         }
                     }
-                    val id = json(vault.request("/imports", "POST", body)).string("id") ?: throw VaultError("The vault sent an invalid import.")
+                    val created = call(Request.Builder().url(api("/imports")).post(body.toString().toRequestBody(JSON)).build()) { it.body.string() }
+                    val id = json(created).string("id") ?: throw VaultError("The vault sent an invalid import.")
                     update { it.copy(importId = id) }
                 }
                 for (item in _queue.value.files) {
@@ -286,7 +288,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                     if (item.prepared == null) prepare(item.id)
                     upload(item.id)
                 }
-                vault.request("/imports/${segment(_queue.value.importId!!)}/complete", "POST")
+                call(Request.Builder().url(api("/imports/${segment(_queue.value.importId!!)}/complete")).post(ByteArray(0).toRequestBody()).build()) {}
                 update { it.copy(completed = true, state = "verifying") }
             }
             verify()
@@ -363,13 +365,13 @@ class Uploads(private val context: Context, private val vault: Vault, private va
             val item = item(id)
             val metadata = listOfNotNull("import_id" to importId, "filename" to item.prepared!!, "original_name" to item.name, item.sourceId?.let { "source_id" to it })
                 .sortedBy { it.first }.joinToString(",") { (key, value) -> "$key ${Base64.getEncoder().encodeToString(value.toByteArray())}" }
-            val request = Request.Builder().url(vault.url("/uploads")).post(ByteArray(0).toRequestBody())
+            val request = Request.Builder().url(api("/uploads")).post(ByteArray(0).toRequestBody())
                 .header("Tus-Resumable", "1.0.0").header("Upload-Length", item.length.toString()).header("Upload-Metadata", metadata).build()
             val location = call(request) { it.header("Location") }
             if (uploadPath(location) == null) throw VaultError("The vault sent an invalid upload address.")
             updateItem(id) { it.copy(location = location) }
         }
-        val url = _queue.value.server + item(id).location!!
+        val url = api(uploadPath(item(id).location) ?: throw VaultError("The vault sent an invalid upload address."))
         val offset = call(Request.Builder().url(url).head().header("Tus-Resumable", "1.0.0").build()) { it.header("Upload-Offset")?.toLongOrNull() }
         if (offset == null || offset !in 0..item(id).length) throw VaultError("The vault sent an invalid upload offset.")
         updateItem(id) { it.copy(offset = offset, state = "uploading") }
@@ -416,7 +418,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         val id = _queue.value.importId ?: return
         repeat(120) {
             checkStopping()
-            val receipt = json(vault.request("/imports/${segment(id)}"))
+            val receipt = json(call(Request.Builder().url(api("/imports/${segment(id)}")).build()) { it.body.string() })
             val files = receipt["files"]?.jsonArray?.map { it.jsonObject }.orEmpty()
             when (receipt.string("state")) {
                 "failed" -> throw VaultError(files.firstNotNullOfOrNull { it.string("failure") } ?: "The vault could not verify this import.")
@@ -432,7 +434,14 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         throw VaultError("The vault is still verifying this import. Resume to check again.")
     }
 
+    /**
+     * On the upload's own vault, whichever is connected now: Vault signs only its own vault's requests, so after
+     * switching vaults these go out unsigned and fail instead of landing on the other vault.
+     */
+    private fun api(path: String) = endpoint(_queue.value.server, path)
+
     private fun <T> call(request: Request, read: (Response) -> T): T = vault.http.newCall(request).execute().use { response ->
+        if (response.code == 401 && vault.server.value != _queue.value.server) throw VaultError("Connect to ${host(_queue.value.server)} again to finish this upload.")
         if (!response.isSuccessful) {
             val message = runCatching { json(response.body.string()).string("error") }.getOrNull()
             throw VaultError(message ?: "The vault refused the upload (HTTP ${response.code}).")
@@ -466,6 +475,9 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     companion object {
         private const val HISTORY = "source-history"
         private const val CHUNK = 8L * 1024 * 1024
+        private val JSON = "application/json".toMediaType()
+
+        fun endpoint(server: String, path: String) = "$server/api/native/v1$path"
 
         /** The vault's tus address for a file, relative to its native API; anything else is refused. */
         fun uploadPath(location: String?): String? =
@@ -498,13 +510,14 @@ class Uploads(private val context: Context, private val vault: Vault, private va
             } / queue.files.size
         }
 
-        fun headline(queue: QueueState): String {
+        /** [waiting]: sessions asked for meanwhile, still to be copied off the mic. */
+        fun headline(queue: QueueState, waiting: Int = 0): String {
             val done = queue.files.count { it.state in setOf("uploaded", "verified") }
             val count = queue.files.size
             val files = if (count == 1) "file" else "files"
             return when (queue.state) {
                 "copying" -> "Copying from the mic · keep it plugged in"
-                "uploading" -> "Uploading $done of $count $files · the mic can be unplugged"
+                "uploading" -> "Uploading $done of $count $files · " + if (waiting > 0) "keep the mic plugged in for the next one" else "the mic can be unplugged"
                 "verifying" -> "Uploaded · the vault is checking the files"
                 "verified" -> "$count $files sent to the vault"
                 "paused" -> "Upload paused"
@@ -539,7 +552,11 @@ class UploadService : Service() {
         again = true
         if (job?.isActive != true) {
             job = scope.launch {
-                val progress = launch { fundus.uploads.queue.sample(1_000).collect { notifications.notify(NOTIFICATION, notification(it)) } }
+                // The headline also depends on the sessions waiting their turn, so either change redraws it.
+                val progress = launch {
+                    combine(fundus.uploads.queue, fundus.uploads.waiting) { queue, _ -> queue }.sample(1_000)
+                        .collect { notifications.notify(NOTIFICATION, notification(it)) }
+                }
                 while (again) {
                     again = false
                     fundus.uploads.run()
@@ -553,8 +570,8 @@ class UploadService : Service() {
 
     /**
      * Android limits how long data transfers run in the background and wants the service gone within seconds:
-     * pause, and stop now rather than when the transfer unwinds. Nothing is posted here, since the transfer may
-     * still finish; the window shows where it stopped.
+     * pause, and stop now rather than when the transfer unwinds. Nothing is posted here: a step already in flight
+     * may still change the outcome, and the window (from the library's import button) shows where it ended.
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         fundus.uploads.pause()
@@ -582,7 +599,7 @@ class UploadService : Service() {
 
     private fun notification(queue: QueueState) = NotificationCompat.Builder(this, CHANNEL)
         .setSmallIcon(android.R.drawable.stat_sys_upload)
-        .setContentTitle(Uploads.headline(queue).ifEmpty { "Uploading recordings" })
+        .setContentTitle(Uploads.headline(queue, fundus.uploads.waiting.value.size).ifEmpty { "Uploading recordings" })
         .setContentText(host(queue.server))
         .apply { if (queue.isTransferring) setProgress(100, (Uploads.progress(queue) * 100).toInt(), queue.state == "verifying") }
         .setOngoing(queue.isTransferring)

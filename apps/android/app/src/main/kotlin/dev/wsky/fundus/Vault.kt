@@ -201,17 +201,22 @@ class Vault(context: Context) {
         return "$server/api/native/v1$path"
     }
 
-    /** A vault's token goes only to that vault: a request elsewhere (another vault's upload address) goes out without one. */
+    /**
+     * A vault's token goes only to that vault: a request elsewhere (an upload still bound to the vault this phone
+     * was connected to before) goes out unsigned, and is no reason to refresh this vault's token.
+     */
     private fun authorize(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        fun signed(credentials: Credentials) =
-            if (OAuth.sameOrigin(request.url.toString(), credentials.server)) request.newBuilder().header("Authorization", "Bearer ${credentials.accessToken}").build() else request
+        fun ours(credentials: Credentials) = OAuth.sameOrigin(request.url.toString(), credentials.server)
+        fun signed(credentials: Credentials) = request.newBuilder().header("Authorization", "Bearer ${credentials.accessToken}").build()
+        credentials?.let { if (!ours(it)) return chain.proceed(request) }
         val used = runBlocking { current(rejected = null) }
+        if (!ours(used)) return chain.proceed(request)
         val response = chain.proceed(signed(used))
         if (response.code != 401) return response
         response.close()
         val fresh = runBlocking { current(rejected = used.accessToken) }
-        return chain.proceed(signed(fresh))
+        return chain.proceed(if (ours(fresh)) signed(fresh) else request)
     }
 
     /** One refresh at a time: the server rotates refresh tokens and revokes a reused one. */

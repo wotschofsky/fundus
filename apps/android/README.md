@@ -34,7 +34,8 @@ own keystore before handing the APK to anyone else.
   Recordings are copied off the mic first, so it can be unplugged; integer WAV up to 24 bits becomes
   verified FLAC through `native/audio` (float and 32-bit go up unchanged, as on the Mac); tus chunks
   run in a foreground service. An upload the app was closed in the middle of resumes when it starts
-  again; a paused or failed one keeps a notification and waits for Resume in the window.
+  again; a paused or failed one waits for Resume in the window, with a notification unless Android's
+  limit on background transfers stopped it.
 - The DJI case is a USB drive that Android hides from apps (no storage volume, no `MEDIA_MOUNTED`).
   Its USB device (vendor `0x10D6`, `res/xml/dji_mic.xml`) starts the app instead; the files are read
   through the system folder picker, picked once per mic ("Allow" in the window). Header reads are

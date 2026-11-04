@@ -208,15 +208,16 @@ class LogicTest {
     }
 
     @Test
-    fun aPluggedInMicIsOnlyAskedForWhenItWasNeverAllowed() {
-        // Never allowed: ask at once.
-        assertEquals(Recorder.MicState(pending = true, waiting = false), Recorder.micState(mics = 1, drives = 0, readable = 0, withRecordings = 0))
-        // Allowed, drive still mounting: wait for it rather than asking again.
-        assertEquals(Recorder.MicState(pending = true, waiting = true), Recorder.micState(mics = 1, drives = 1, readable = 0, withRecordings = 0))
-        // Allowed and readable but empty (or its listing not there yet): never a permission prompt.
-        assertEquals(Recorder.MicState(pending = false, waiting = true), Recorder.micState(mics = 1, drives = 1, readable = 1, withRecordings = 0))
-        assertEquals(Recorder.MicState(pending = false, waiting = false), Recorder.micState(mics = 1, drives = 1, readable = 1, withRecordings = 1))
-        // A second transmitter that was never allowed.
-        assertEquals(Recorder.MicState(pending = true, waiting = false), Recorder.micState(mics = 2, drives = 1, readable = 1, withRecordings = 1))
+    fun uploadsGoToTheQueuesOwnVault() {
+        assertEquals("https://a.example/api/native/v1/imports", Uploads.endpoint("https://a.example", "/imports"))
+        assertEquals("https://a.example/api/native/v1/uploads/abc", Uploads.endpoint("https://a.example", Uploads.uploadPath("/api/native/v1/uploads/abc")!!))
+    }
+
+    @Test
+    fun theMicIsOnlyFreeWhenNothingElseWaitsForIt() {
+        val file = UploadItem(name = "TX01_MIC001_20261001_120000.wav", source = "x.wav", state = "uploading")
+        val uploading = QueueState(server = "https://vault", state = "uploading", files = listOf(file))
+        assertEquals(true, Uploads.headline(uploading, waiting = 0).contains("the mic can be unplugged"))
+        assertEquals(true, Uploads.headline(uploading, waiting = 1).contains("keep the mic plugged in"))
     }
 }

@@ -33,7 +33,7 @@ class Recorder(private val context: Context) {
     data class State(
         /** Drives with DJI recordings this app may read. */
         val recorders: List<Volume> = emptyList(),
-        /** A mic is plugged in whose drive this app may not read: never allowed, or not answering yet. */
+        /** A mic is plugged in and no allowed drive shows its recordings: never allowed, or the wrong folder was picked. */
         val pending: Boolean = false,
         val sessions: List<RecordingSession> = emptyList(),
         val scanning: Boolean = false,
@@ -115,10 +115,12 @@ class Recorder(private val context: Context) {
         }
         if (headersChanged) runCatching { headerFile.writeText(VaultJson.encodeToString(headers.toMap())) }.onSuccess { headersChanged = false }
         val drives = trees.mapNotNullTo(HashSet()) { drive(DocumentsContract.getTreeDocumentId(it)) }
-        val mic = micState(mics, drives.size, readable.size, recorders.size)
+        // Asking again is the way back from a wrong pick (a folder on the mic, an SD card), so any plugged-in mic
+        // without recordings to show is asked for; only an allowed drive still mounting is waited for first.
+        val pending = mics > recorders.size
         // The same file seen through two grants on one drive is one recording.
         val unique = recordings.distinctBy { DocumentsContract.getDocumentId(Uri.parse(it.uri)) }
-        return Read(State(recorders, mic.pending, SessionGrouper.group(unique)), mic.waiting)
+        return Read(State(recorders, pending, SessionGrouper.group(unique)), waiting = pending && drives.size > readable.size)
     }
 
     private data class FileOnMic(val uri: Uri, val name: String, val size: Long)
@@ -185,20 +187,7 @@ class Recorder(private val context: Context) {
         if (!scan().connected && !uploads.queue.value.unfinished) prompt.value = false
     }
 
-    data class MicState(val pending: Boolean, val waiting: Boolean)
-
     companion object {
-        /**
-         * [mics] plugged in; of the allowed removable [drives], [readable] answer and [withRecordings] list DJI
-         * recordings. Pending: a plugged-in mic has no readable drive, so the window asks for one. Waiting: an
-         * allowed drive shows no recordings yet, which right after plugging in means it is still mounting, so
-         * look again before deciding.
-         */
-        fun micState(mics: Int, drives: Int, readable: Int, withRecordings: Int) =
-            MicState(pending = mics > readable, waiting = mics > withRecordings && drives > withRecordings)
-
-        // ponytail: any removable drive counts, so an SD card picked in the Allow dialog by mistake stands in
-        // for a mic; telling them apart would need the USB device's identity, which Android does not expose.
         /** The removable drive a folder grant is on; null for the phone's own storage, which never holds a mic. */
         fun drive(treeDocumentId: String): String? = treeDocumentId.substringBefore(':').takeIf { it !in setOf("primary", "home") }
 

@@ -190,7 +190,7 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
                 }
             }
 
-            if (queue.files.isNotEmpty() && queue.state != "verified") Transfer(queue, app.uploads)
+            if (queue.files.isNotEmpty() && queue.state != "verified") Transfer(queue, waiting.size, app.uploads)
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val caption = MaterialTheme.typography.labelMedium
@@ -260,11 +260,11 @@ private fun Status(record: ImportRecord?, queued: Boolean, queue: QueueState, ca
 /** The running upload in one line, with Pause, Resume or Discard (the Mac's TransferSummary). */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun Transfer(queue: QueueState, uploads: Uploads) {
+private fun Transfer(queue: QueueState, waiting: Int, uploads: Uploads) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                Uploads.headline(queue),
+                Uploads.headline(queue, waiting),
                 Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (queue.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
