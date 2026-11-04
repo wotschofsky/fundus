@@ -172,8 +172,11 @@ class Recorder(private val context: Context) {
     /** The system's folder picker; the person picks the mic's drive in its menu. */
     fun accessIntent() = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
 
-    /** Android started the app because a mic was plugged in: always open the window; it scans the mic itself. */
-    fun attached() { prompt.value = true }
+    /** A mic was plugged in: always open the window, and read the mic again (the window may already be open). */
+    suspend fun attached() {
+        prompt.value = true
+        scan()
+    }
 
     /** Unplugged: close the window, unless it still holds an upload that has not finished (its Resume and Discard). */
     suspend fun detached(uploads: Uploads) {
