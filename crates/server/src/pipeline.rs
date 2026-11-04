@@ -499,9 +499,12 @@ async fn transcribe(
                 ] {
                     query.execute(&mut *tx).await?;
                 }
-                sqlx::query!("UPDATE entries SET summary=NULL WHERE id=?", entry)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query!(
+                    "UPDATE entries SET summary=NULL WHERE id=? AND summary_manual=0",
+                    entry
+                )
+                .execute(&mut *tx)
+                .await?;
                 tx.commit().await?;
                 // The vault keeps the result; AssemblyAI need not keep the audio or transcript.
                 if let Err(error) = provider::delete(app, &job).await {
@@ -647,10 +650,9 @@ async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Res
 }
 
 async fn spoken(app: &App, entry: &str) -> Result<provider::Transcript> {
-    let duration_ms =
-        sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
-            .fetch_one(&app.db)
-            .await?;
+    let duration_ms = sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
+        .fetch_one(&app.db)
+        .await?;
     let rows = sqlx::query!(
         "SELECT speaker,start_ms,text FROM segments WHERE entry_id=? ORDER BY position",
         entry
@@ -708,10 +710,7 @@ async fn settled_notes(
     merged: &[(String, String)],
     summary: Result<provider::Notes>,
     names: Result<Vec<provider::NameFinding>>,
-) -> (
-    Result<provider::Notes>,
-    Result<Vec<provider::NameFinding>>,
-) {
+) -> (Result<provider::Notes>, Result<Vec<provider::NameFinding>>) {
     if merged.is_empty() {
         return (summary, names);
     }
@@ -1063,6 +1062,7 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         }
     }
     let mut tx = app.db.begin().await?;
+    let summary_changed = display_summary_in(&mut tx, entry).await? != summary;
     sqlx::query!("DELETE FROM passage_fts WHERE entry_id=?", entry)
         .execute(&mut *tx)
         .await?;
@@ -1085,7 +1085,7 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     }
-    if let Some(text) = summary {
+    if let Some(text) = summary.filter(|_| !summary_changed) {
         let pid = format!("{entry}:summary");
         let position = -1i64;
         let start_ms = 0i64;
@@ -1105,6 +1105,9 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         .await?;
     }
     tx.commit().await?;
+    if summary_changed {
+        refresh_summary_passage(app, entry).await?;
+    }
     if let Some(e) = embedding_error {
         return Err(e);
     }
@@ -1113,9 +1116,16 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
 
 /// The summary as a reader sees it, with speaker placeholders replaced by current names.
 async fn display_summary(app: &App, entry: &str) -> Result<Option<String>> {
+    display_summary_in(&mut *app.db.acquire().await?, entry).await
+}
+
+async fn display_summary_in(
+    db: &mut sqlx::SqliteConnection,
+    entry: &str,
+) -> Result<Option<String>> {
     let summary: Option<String> =
         sqlx::query_scalar!("SELECT summary FROM entries WHERE id=?", entry)
-            .fetch_optional(&app.db)
+            .fetch_optional(&mut *db)
             .await?
             .flatten();
     let Some(summary) = summary.filter(|text| !text.trim().is_empty()) else {
@@ -1125,7 +1135,7 @@ async fn display_summary(app: &App, entry: &str) -> Result<Option<String>> {
         r#"SELECT json_group_array(json_array(s.label, p.name)) AS "names?" FROM speakers s LEFT JOIN people p ON p.id = s.person_id WHERE s.entry_id = ?"#,
         entry
     )
-    .fetch_one(&app.db)
+    .fetch_one(&mut *db)
     .await?;
     Ok(Some(crate::retrieval::with_names(
         summary,
@@ -1135,12 +1145,6 @@ async fn display_summary(app: &App, entry: &str) -> Result<Option<String>> {
 
 /// Replaces the one passage that search uses for this recording's summary.
 pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
-    let title: Option<String> = sqlx::query_scalar!("SELECT title FROM entries WHERE id=?", entry)
-        .fetch_optional(&app.db)
-        .await?;
-    let Some(title) = title else {
-        return Ok(());
-    };
     let summary = display_summary(app, entry).await?;
     let embedding = match &summary {
         Some(text) if provider::semantic_search(app) => {
@@ -1158,6 +1162,17 @@ pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
         _ => None,
     };
     let mut tx = app.db.begin().await?;
+    // Embedding calls can finish out of order. Compare the reader-visible text (including
+    // speaker names) in the write transaction, and use the current title for keyword search.
+    let Some(title) = sqlx::query_scalar!("SELECT title FROM entries WHERE id=?", entry)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(());
+    };
+    if display_summary_in(&mut tx, entry).await? != summary {
+        return Ok(());
+    }
     let pid = format!("{entry}:summary");
     sqlx::query!("DELETE FROM passage_fts WHERE id=?", pid)
         .execute(&mut *tx)

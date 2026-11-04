@@ -4,8 +4,7 @@ use crate::{
     auth::Access,
     config::{App, id, now},
     error::{Error, Result},
-    pipeline,
-    voice,
+    pipeline, voice,
 };
 use axum::{
     Extension, Json,
@@ -280,6 +279,7 @@ pub async fn undo(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    drop(_lock);
     if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
         tracing::warn!(%entry, %error, "could not index the summary");
     }
@@ -659,9 +659,9 @@ pub async fn apply(
         sqlx::query!("UPDATE speakers SET evidence='[]',state=CASE WHEN person_id IS NULL THEN 'manual_unknown' ELSE 'manual' END WHERE entry_id=? AND label=?", entry, label).execute(&mut *tx).await?;
     }
     let revision = before.notes.revision + 1;
-    // A hand-edited summary stays. A generated one is cleared, and rewritten when a model is configured.
+    // A hand-edited summary stays. A generated one is cleared. With a model, refresh the generated title too.
     let clear_summary = before.notes.summary_manual == 0;
-    let refresh_summary = clear_summary && !app.config.openai_key.is_empty();
+    let refresh_summary = !app.config.openai_key.is_empty();
     sqlx::query!("UPDATE entries SET summary=CASE WHEN ? THEN NULL ELSE summary END,notes_revision=?,stage=CASE WHEN ? THEN 'queued' ELSE 'complete' END,requested_work=CASE WHEN ? THEN 'summary' ELSE NULL END,active_stage=NULL,pause_requested=0,failure=NULL,updated_at=? WHERE id=?", clear_summary, revision, refresh_summary, refresh_summary, timestamp, entry).execute(&mut *tx).await?;
     let after = fingerprint(&capture(&mut tx, &entry).await?)?;
     let before_json = serde_json::to_string(&before).map_err(anyhow::Error::from)?;
@@ -674,6 +674,7 @@ pub async fn apply(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    drop(_lock);
     if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
         tracing::warn!(%entry, %error, "could not index the summary");
     }
@@ -1169,6 +1170,48 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(notes, ("e".into(), Some("Old attribution".into())));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn a_split_refreshes_the_title_while_keeping_a_manual_summary() {
+        let (_dir, mut app) = fixture().await;
+        let (entered, release, server, _) = notes_mock(&mut app).await;
+        sqlx::query("UPDATE entries SET summary_manual=1 WHERE id='e'")
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let mut tx = app.db.begin().await.unwrap();
+        let (_, _, _, hash) = snapshot(&mut tx, "e").await.unwrap();
+        sqlx::query("UPDATE speaker_correction_reviews SET snapshot=? WHERE id='review'")
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let receipt = accept(&app, choice(0)).await.unwrap().0;
+        assert_eq!(receipt["summary_refresh"], true);
+        let work = tokio::spawn({
+            let app = app.clone();
+            async move {
+                crate::pipeline::regenerate_summary(&app, "e")
+                    .await
+                    .unwrap()
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        release.notify_one();
+        work.await.unwrap();
+        let notes: (String, Option<String>) =
+            sqlx::query_as("SELECT title,summary FROM entries WHERE id='e'")
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            notes,
+            ("Updated title".into(), Some("Old attribution".into()))
+        );
         server.abort();
     }
     #[tokio::test]

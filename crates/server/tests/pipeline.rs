@@ -883,8 +883,29 @@ async fn a_hand_edited_summary_is_kept_and_search_finds_it() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|hit| hit["summary"] == true)
+            .any(|hit| hit["summary"] == true
+                && hit["excerpt"].as_str().unwrap().contains("handmade"))
     );
+    let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(r#"{"summary":""}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    pipeline::regenerate_summary(&app, &entry).await.unwrap();
+    assert_eq!(retrieval::get(&app, &entry).await.unwrap()["summary"], "");
+    let summaries: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM passages WHERE entry_id=? AND position=-1")
+            .bind(&entry)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(summaries, 0);
     task.abort();
 }
 
@@ -906,7 +927,9 @@ async fn long_transcripts_are_summarized_in_one_request() {
             })
             .collect(),
     };
-    fundus::provider::summarize(&app, &transcript).await.unwrap();
+    fundus::provider::summarize(&app, &transcript)
+        .await
+        .unwrap();
     let chats = provider.chats.lock().unwrap().clone();
     assert_eq!(chats.len(), 1);
     assert_eq!(
@@ -965,4 +988,118 @@ async fn reviewed_passage_groups_survive_speaker_reanalysis_and_retries() {
             .unwrap();
     assert_eq!(locked, 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn transcription_keeps_summaries_edited_before_or_during_the_job() {
+    use tower::ServiceExt;
+    for edit_before_job in [true, false] {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (dir, app, provider, task) = setup(Options {
+            gate: Some(gate.clone()),
+            ..Default::default()
+        })
+        .await;
+        let entry = entry(&app, dir.path(), "manual-transcription").await;
+        let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+        let edit = || async {
+            let response =
+                fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+                    .oneshot(
+                        axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+                            .header("Authorization", format!("Bearer {token}"))
+                            .header("Content-Type", "application/json")
+                            .body(axum::body::Body::from(
+                                r#"{"summary":"My handwritten outcome."}"#,
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            assert_eq!(response.status(), 200);
+        };
+        if edit_before_job {
+            edit().await;
+        }
+        let work = tokio::spawn({
+            let app = app.clone();
+            let entry = entry.clone();
+            async move { pipeline::process(&app, &entry).await.unwrap() }
+        });
+        until(|| provider.submits() == 1).await;
+        if !edit_before_job {
+            edit().await;
+        }
+        gate.notify_one();
+        work.await.unwrap();
+        let detail = retrieval::get(&app, &entry).await.unwrap();
+        assert_eq!(detail["summary"], "My handwritten outcome.");
+        assert_eq!(detail["summary_manual"], true);
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn an_older_summary_refresh_cannot_overwrite_a_newer_edit() {
+    for full_index in [false, true] {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (dir, app, provider, task) = setup(Options {
+            first_embedding_gate: Some(gate.clone()),
+            ..Default::default()
+        })
+        .await;
+        let entry = entry(&app, dir.path(), "stale-summary").await;
+        sqlx::query("UPDATE entries SET summary='Earlier outcome' WHERE id=?")
+            .bind(&entry)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let older = tokio::spawn({
+            let app = app.clone();
+            let entry = entry.clone();
+            async move {
+                if full_index {
+                    pipeline::index(&app, &entry).await.unwrap();
+                } else {
+                    pipeline::refresh_summary_passage(&app, &entry)
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        until(|| {
+            provider
+                .embeddings
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 1
+        })
+        .await;
+        sqlx::query(
+            "UPDATE entries SET summary='Newer handmade outcome',summary_manual=1 WHERE id=?",
+        )
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        pipeline::refresh_summary_passage(&app, &entry)
+            .await
+            .unwrap();
+        gate.notify_one();
+        older.await.unwrap();
+        let indexed = text(
+            &app,
+            "SELECT text FROM passages WHERE entry_id=? AND position=-1",
+            &entry,
+        )
+        .await;
+        assert_eq!(indexed, "Newer handmade outcome");
+        let indexed = text(
+            &app,
+            "SELECT text FROM passage_fts WHERE entry_id=?",
+            &entry,
+        )
+        .await;
+        assert_eq!(indexed, "Newer handmade outcome");
+        task.abort();
+    }
 }

@@ -407,8 +407,8 @@ async fn update_entry(
     let summary_edited = p.summary.is_some();
     if let Some(summary) = p.summary {
         let summary = summary.trim();
-        if summary.is_empty() || summary.chars().count() > 12_000 {
-            return Err(Error::bad("Summary must be 1–12000 characters"));
+        if summary.chars().count() > 12_000 {
+            return Err(Error::bad("Summary must be at most 12000 characters"));
         }
         let timestamp = now();
         sqlx::query!(
@@ -454,9 +454,7 @@ async fn update_entry(
             .await?;
     }
     tx.commit().await?;
-    if summary_edited
-        && let Err(error) = pipeline::refresh_summary_passage(&app, &id).await
-    {
+    if summary_edited && let Err(error) = pipeline::refresh_summary_passage(&app, &id).await {
         tracing::warn!(entry = %id, %error, "could not index the summary");
     }
     Ok(Json(retrieval::get(&app, &id).await?))
@@ -746,7 +744,7 @@ async fn rename_person(
     sqlx::query!("UPDATE people SET name=? WHERE id=?", trimmed_name, id)
         .execute(&app.db)
         .await?;
-    refresh_summaries(&app, &entries).await;
+    refresh_summaries(&app, entries);
     Ok(StatusCode::NO_CONTENT)
 }
 async fn delete_person(
@@ -776,7 +774,8 @@ async fn delete_person(
         return Err(Error::not_found());
     }
     tx.commit().await?;
-    refresh_summaries(&app, &entries).await;
+    drop(_lock);
+    refresh_summaries(&app, entries);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -819,12 +818,15 @@ async fn assign_speaker(
     }
     Ok(StatusCode::NO_CONTENT)
 }
-async fn refresh_summaries(app: &App, entries: &[String]) {
-    for entry in entries {
-        if let Err(error) = pipeline::refresh_summary_passage(app, entry).await {
-            tracing::warn!(%entry, %error, "could not index the summary");
+fn refresh_summaries(app: &App, entries: Vec<String>) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        for entry in entries {
+            if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
+                tracing::warn!(%entry, %error, "could not index the summary");
+            }
         }
-    }
+    });
 }
 type WebFiles = std::collections::HashMap<String, axum::body::Bytes>;
 /// The built web app, read once at startup so it is served like an embedded bundle.

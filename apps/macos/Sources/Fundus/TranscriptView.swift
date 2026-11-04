@@ -323,7 +323,7 @@ private struct EditEntrySheet: View {
     /// Sent only when the text changed: a sent summary is kept and is not replaced by a generated one.
     private var changedSummary: String? {
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed == (entry.summary ?? "") ? nil : trimmed
+        return trimmed == (entry.summary ?? "") ? nil : trimmed
     }
     private var changedDate: Date? {
         guard entry.recordedAt != nil || setsDate else { return nil }
