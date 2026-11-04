@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
-  import { Download, FileAudio, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
+  import { Download, FileAudio, Pencil, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
   import {
     ApiError,
     api,
@@ -198,7 +198,10 @@
       </div>
     {/if}
     <div class="detail-actions">
-      <button aria-expanded={editing} onclick={() => (editing = !editing)}>Edit details</button>
+      <button aria-expanded={editing} onclick={() => (editing = !editing)}>
+        <Pencil size={14} aria-hidden="true" />
+        Edit details
+      </button>
       {#if rows.length > 0}
         <button onclick={() => download(e)} title="Save the transcript as a Markdown file">
           <Download size={14} aria-hidden="true" />
