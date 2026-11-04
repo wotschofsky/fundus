@@ -37,7 +37,7 @@
       ...(recordedAt && recordedAt !== initialTime
         ? { recorded_at: new Date(recordedAt).toISOString() }
         : {}),
-      ...(summary !== initialSummary ? { summary } : {}),
+      ...(summary.trim() !== initialSummary.trim() ? { summary: summary.trim() } : {}),
     });
     saving = false;
   }

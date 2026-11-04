@@ -859,7 +859,7 @@ async fn save_notes_at_revision(
     if notes.title.trim().is_empty() {
         return Ok(());
     }
-    let mut tx = app.db.begin().await?;
+    let mut tx = app.db.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(expected) = revision {
         let current = sqlx::query_scalar!(
             "SELECT notes_revision FROM entries WHERE id=? AND trashed_at IS NULL",
@@ -873,7 +873,7 @@ async fn save_notes_at_revision(
     }
     let title = notes.title.trim().chars().take(240).collect::<String>();
     let summary = notes.summary.trim();
-    sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=CASE WHEN summary_manual=1 THEN summary ELSE ? END WHERE id=? AND (? OR summary IS NULL)", title, summary, entry, replace).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=CASE WHEN summary_manual=1 OR (NOT ? AND summary IS NOT NULL) THEN summary ELSE ? END WHERE id=?", title, replace, summary, entry).execute(&mut *tx).await?;
     sqlx::query!(
         "UPDATE passage_fts SET title=(SELECT title FROM entries WHERE id=?) WHERE entry_id=?",
         entry,
@@ -1061,7 +1061,7 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
             }
         }
     }
-    let mut tx = app.db.begin().await?;
+    let mut tx = app.db.begin_with("BEGIN IMMEDIATE").await?;
     let summary_changed = display_summary_in(&mut tx, entry).await? != summary;
     sqlx::query!("DELETE FROM passage_fts WHERE entry_id=?", entry)
         .execute(&mut *tx)
@@ -1161,7 +1161,7 @@ pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
         }
         _ => None,
     };
-    let mut tx = app.db.begin().await?;
+    let mut tx = app.db.begin_with("BEGIN IMMEDIATE").await?;
     // Embedding calls can finish out of order. Compare the reader-visible text (including
     // speaker names) in the write transaction, and use the current title for keyword search.
     let Some(title) = sqlx::query_scalar!("SELECT title FROM entries WHERE id=?", entry)

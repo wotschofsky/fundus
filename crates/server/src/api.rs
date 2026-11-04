@@ -820,7 +820,8 @@ async fn assign_speaker(
 }
 fn refresh_summaries(app: &App, entries: Vec<String>) {
     let app = app.clone();
-    tokio::spawn(async move {
+    let background = app.background.clone();
+    background.spawn(async move {
         for entry in entries {
             if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
                 tracing::warn!(%entry, %error, "could not index the summary");

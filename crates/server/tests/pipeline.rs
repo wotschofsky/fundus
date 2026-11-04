@@ -1033,6 +1033,7 @@ async fn transcription_keeps_summaries_edited_before_or_during_the_job() {
         gate.notify_one();
         work.await.unwrap();
         let detail = retrieval::get(&app, &entry).await.unwrap();
+        assert_eq!(detail["title"], "Cedar launch planning");
         assert_eq!(detail["summary"], "My handwritten outcome.");
         assert_eq!(detail["summary_manual"], true);
         task.abort();
@@ -1102,4 +1103,66 @@ async fn an_older_summary_refresh_cannot_overwrite_a_newer_edit() {
         assert_eq!(indexed, "Newer handmade outcome");
         task.abort();
     }
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_person_summary_refreshes() {
+    use tower::ServiceExt;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (dir, app, provider, task) = setup(Options {
+        first_embedding_gate: Some(gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    let entry = entry(&app, dir.path(), "tracked-summary").await;
+    sqlx::query("UPDATE entries SET summary='{A} outcome' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO people(id,name) VALUES('p','Before')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO speakers(entry_id,label,person_id,state) VALUES(?,'A','p','manual')")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::patch("/api/v1/people/p")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(r#"{"name":"After"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    until(|| {
+        provider
+            .embeddings
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
+    })
+    .await;
+    app.background.close();
+    assert!(!app.background.is_empty());
+    assert!(app.mutations.try_lock().is_ok());
+    gate.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), app.background.wait())
+        .await
+        .unwrap();
+    assert_eq!(
+        text(
+            &app,
+            "SELECT text FROM passages WHERE entry_id=? AND position=-1",
+            &entry
+        )
+        .await,
+        "After outcome"
+    );
+    task.abort();
 }

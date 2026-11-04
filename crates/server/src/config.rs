@@ -123,6 +123,7 @@ pub struct App {
     pub cpu: Arc<Semaphore>,
     pub upload_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub mutations: Arc<Mutex<()>>,
+    pub background: tokio_util::task::TaskTracker,
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 impl App {
@@ -156,6 +157,7 @@ impl App {
             cpu: Arc::new(Semaphore::new(2)),
             upload_locks: Default::default(),
             mutations: Default::default(),
+            background: Default::default(),
             login_attempts: Default::default(),
         })
     }

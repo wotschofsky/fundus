@@ -147,13 +147,13 @@ pub async fn connect(
                 let state = embedding.clone();
                 let gate = embedding_gate.clone();
                 async move {
-                if state.embeddings.fetch_add(1, Ordering::SeqCst) == 0
-                    && let Some(gate) = gate
-                {
-                    gate.notified().await;
-                }
-                let n = body["input"].as_array().map(Vec::len).unwrap_or(1);
-                Json(json!({"data": (0..n).map(|i| json!({"index": i, "embedding": [1., 0., 0.]})).collect::<Vec<_>>()}))
+                    if state.embeddings.fetch_add(1, Ordering::SeqCst) == 0
+                        && let Some(gate) = gate
+                    {
+                        gate.notified().await;
+                    }
+                    let n = body["input"].as_array().map(Vec::len).unwrap_or(1);
+                    Json(json!({"data": (0..n).map(|i| json!({"index": i, "embedding": [1., 0., 0.]})).collect::<Vec<_>>()}))
                 }
             }),
         );
