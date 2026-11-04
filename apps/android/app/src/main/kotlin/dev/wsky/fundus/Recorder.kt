@@ -33,7 +33,7 @@ class Recorder(private val context: Context) {
     data class State(
         /** Drives with DJI recordings this app may read. */
         val recorders: List<Volume> = emptyList(),
-        /** A mic is plugged in that this app has not been allowed to read yet. */
+        /** A mic is plugged in whose drive this app may not read: never allowed, or not answering yet. */
         val pending: Boolean = false,
         val sessions: List<RecordingSession> = emptyList(),
         val scanning: Boolean = false,
@@ -74,7 +74,8 @@ class Recorder(private val context: Context) {
     suspend fun scan(): State = scanning.withLock {
         _state.value = _state.value.copy(scanning = true)
         var result = withContext(Dispatchers.IO) { read() }
-        // The drive mounts a few seconds after the USB device appears; an allowed mic is not "pending" meanwhile.
+        // The drive mounts, and lists its files, a few seconds after the USB device appears: an allowed mic
+        // is not asked for again meanwhile.
         var tries = 0
         while (result.waiting && tries++ < 10) {
             delay(1_000)
@@ -90,28 +91,34 @@ class Recorder(private val context: Context) {
         val mics = usb.deviceList.values.count { it.vendorId == DJI_VENDOR }
         val trees = context.contentResolver.persistedUriPermissions
             .filter { it.isReadPermission && it.uri.authority == STORAGE }.map { it.uri }
+            .filter { drive(DocumentsContract.getTreeDocumentId(it)) != null }
         val recorders = mutableListOf<Volume>()
         val recordings = mutableListOf<SourceRecording>()
         val zone = clock.value
-        var answered = 0
+        // Counted by drive: two grants on one mic (its root and a folder) are still one mic.
+        val readable = HashSet<String>()
         for (tree in trees) {
             val root = DocumentsContract.getTreeDocumentId(tree)
+            val drive = drive(root) ?: continue
             // A drive that is not plugged in does not answer.
             val name = runCatching {
                 context.contentResolver.query(DocumentsContract.buildDocumentUriUsingTree(tree, root), arrayOf(Document.COLUMN_DISPLAY_NAME), null, null, null)
                     ?.use { if (it.moveToFirst()) it.getString(0) else null }
             }.getOrNull() ?: continue
-            answered++
+            readable += drive
             val found = files(tree).mapNotNull { inspect(it, zone) }
             if (found.isEmpty()) Log.w(TAG, "no readable DJI recordings in $tree")
             if (found.isNotEmpty()) {
-                recorders += Volume(root.substringBefore(':'), name)
+                if (recorders.none { it.uuid == drive }) recorders += Volume(drive, name)
                 recordings += found
             }
         }
         if (headersChanged) runCatching { headerFile.writeText(VaultJson.encodeToString(headers.toMap())) }.onSuccess { headersChanged = false }
-        val pending = mics > recorders.size
-        return Read(State(recorders, pending, SessionGrouper.group(recordings)), waiting = pending && trees.size > answered)
+        val drives = trees.mapNotNullTo(HashSet()) { drive(DocumentsContract.getTreeDocumentId(it)) }
+        val mic = micState(mics, drives.size, readable.size, recorders.size)
+        // The same file seen through two grants on one drive is one recording.
+        val unique = recordings.distinctBy { DocumentsContract.getDocumentId(Uri.parse(it.uri)) }
+        return Read(State(recorders, mic.pending, SessionGrouper.group(unique)), mic.waiting)
     }
 
     private data class FileOnMic(val uri: Uri, val name: String, val size: Long)
@@ -178,7 +185,23 @@ class Recorder(private val context: Context) {
         if (!scan().connected && !uploads.queue.value.unfinished) prompt.value = false
     }
 
+    data class MicState(val pending: Boolean, val waiting: Boolean)
+
     companion object {
+        /**
+         * [mics] plugged in; of the allowed removable [drives], [readable] answer and [withRecordings] list DJI
+         * recordings. Pending: a plugged-in mic has no readable drive, so the window asks for one. Waiting: an
+         * allowed drive shows no recordings yet, which right after plugging in means it is still mounting, so
+         * look again before deciding.
+         */
+        fun micState(mics: Int, drives: Int, readable: Int, withRecordings: Int) =
+            MicState(pending = mics > readable, waiting = mics > withRecordings && drives > withRecordings)
+
+        // ponytail: any removable drive counts, so an SD card picked in the Allow dialog by mistake stands in
+        // for a mic; telling them apart would need the USB device's identity, which Android does not expose.
+        /** The removable drive a folder grant is on; null for the phone's own storage, which never holds a mic. */
+        fun drive(treeDocumentId: String): String? = treeDocumentId.substringBefore(':').takeIf { it !in setOf("primary", "home") }
+
         private const val TAG = "Recorder"
         private const val CLOCK = "clock"
         /** What DJI mics ship with; the Mac offers it by name. */
@@ -194,7 +217,7 @@ class Recorder(private val context: Context) {
     }
 }
 
-/** The mic was unplugged: close its window. */
+/** The mic was unplugged: close its window, unless an upload in it has not finished. */
 class RecorderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.fundus

@@ -90,9 +90,15 @@ class MainActivity : ComponentActivity() {
 private fun FundusRoot() {
     val app = LocalContext.current.fundus
     val server by app.vault.server.collectAsStateWithLifecycle()
-    if (server == null) return ConnectScreen(app.vault)
-
     val prompt by app.recorder.prompt.collectAsStateWithLifecycle()
+    if (server == null) {
+        ConnectScreen(app.vault)
+        // Signed out with an upload not finished: its window (from the notification) still offers Discard.
+        val queue by app.uploads.queue.collectAsStateWithLifecycle()
+        if (prompt && queue.unfinished) RecorderSheet(app, onDismiss = { app.recorder.prompt.value = false })
+        return
+    }
+
     if (prompt) RecorderSheet(app, onDismiss = { app.recorder.prompt.value = false })
 
     val navigation = rememberNavController()

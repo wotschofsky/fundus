@@ -197,4 +197,26 @@ class LogicTest {
         assertNull(Uploads.uploadPath("/api/native/v1/entries"))
         assertNull(Uploads.uploadPath(null))
     }
+
+    @Test
+    fun micsAreCountedByDriveNotByGrant() {
+        assertEquals("5D17-AC17", Recorder.drive("5D17-AC17:"))
+        assertEquals("5D17-AC17", Recorder.drive("5D17-AC17:TX_MIC003_20261101_224401"))
+        // The phone's own storage never holds a mic.
+        assertNull(Recorder.drive("primary:Music"))
+        assertNull(Recorder.drive("home:"))
+    }
+
+    @Test
+    fun aPluggedInMicIsOnlyAskedForWhenItWasNeverAllowed() {
+        // Never allowed: ask at once.
+        assertEquals(Recorder.MicState(pending = true, waiting = false), Recorder.micState(mics = 1, drives = 0, readable = 0, withRecordings = 0))
+        // Allowed, drive still mounting: wait for it rather than asking again.
+        assertEquals(Recorder.MicState(pending = true, waiting = true), Recorder.micState(mics = 1, drives = 1, readable = 0, withRecordings = 0))
+        // Allowed and readable but empty (or its listing not there yet): never a permission prompt.
+        assertEquals(Recorder.MicState(pending = false, waiting = true), Recorder.micState(mics = 1, drives = 1, readable = 1, withRecordings = 0))
+        assertEquals(Recorder.MicState(pending = false, waiting = false), Recorder.micState(mics = 1, drives = 1, readable = 1, withRecordings = 1))
+        // A second transmitter that was never allowed.
+        assertEquals(Recorder.MicState(pending = true, waiting = false), Recorder.micState(mics = 2, drives = 1, readable = 1, withRecordings = 1))
+    }
 }

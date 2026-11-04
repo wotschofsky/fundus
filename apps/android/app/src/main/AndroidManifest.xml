@@ -56,7 +56,8 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- Unplugging the mic closes its window. Not exported: the system's broadcast still arrives. -->
+        <!-- Unplugging the mic closes its window, unless an upload in it has not finished. Not exported: the
+             system's broadcast still arrives. -->
         <receiver
             android:name=".RecorderReceiver"
             android:exported="false">

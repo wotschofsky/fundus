@@ -551,9 +551,16 @@ class UploadService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Android limits how long data transfers run in the background: pause, resume later. */
+    /**
+     * Android limits how long data transfers run in the background and wants the service gone within seconds:
+     * pause, and stop now rather than when the transfer unwinds. Nothing is posted here, since the transfer may
+     * still finish; the window shows where it stopped.
+     */
     override fun onTimeout(startId: Int, fgsType: Int) {
         fundus.uploads.pause()
+        job?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     /** Paused or failed: the notification stays (not ongoing), so a stop is never mistaken for done. */

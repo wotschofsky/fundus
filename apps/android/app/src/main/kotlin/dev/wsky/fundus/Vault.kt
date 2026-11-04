@@ -274,7 +274,6 @@ private fun JsonObject.string(key: String) = get(key)?.jsonPrimitive?.contentOrN
 object OAuth {
     const val CALLBACK = "dev.wsky.fundus:/oauth"
 
-    /** `https://Vault.example.com/` → `https://vault.example.com`; a bare host gets `https://`. */
     /** Same scheme, host and port: whether a URL belongs to the vault at [server] (an [origin]). */
     fun sameOrigin(url: String, server: String): Boolean {
         val a = url.toHttpUrlOrNull() ?: return false
@@ -282,6 +281,7 @@ object OAuth {
         return a.scheme == b.scheme && a.host == b.host && a.port == b.port
     }
 
+    /** `https://Vault.example.com/` → `https://vault.example.com`; a bare host gets `https://`. */
     fun origin(address: String): String {
         val trimmed = address.trim()
         if (trimmed.isEmpty()) throw VaultError("Enter your vault’s server address, for example vault.example.com.")
