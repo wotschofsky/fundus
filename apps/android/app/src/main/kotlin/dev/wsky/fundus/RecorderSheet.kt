@@ -83,8 +83,8 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
     val server by app.vault.server.collectAsStateWithLifecycle()
     val records = remember(history, queue, server) { app.uploads.records() }
 
-    // Newest first, imported ones too; fragments too short to be worth importing are left out.
-    val listed = remember(state.sessions) { state.sessions.filter { it.duration >= Imports.WORTH_IMPORTING }.sortedByDescending { it.start } }
+    // Everything on the mic, newest first, imported ones too.
+    val listed = remember(state.sessions) { state.sessions.sortedByDescending { it.start } }
     val proposed = remember(state.sessions, records) { Imports.proposed(state.sessions, records) }
     val showsMic = listed.map { it.transmitter }.toSet().size > 1
 

@@ -202,10 +202,10 @@ final class AppModel {
         importFiles(panel.urls)
     }
 
-    /// A mic was plugged in while the app runs: offer its new recordings in a small window.
+    /// A mic was plugged in while the app runs: always show its recordings in a small window.
     private func recorderConnected() {
         sessions.update(sources.shownFiles, server: uploadServer)
-        if !sessions.proposed(server: uploadServer).isEmpty { recorderPrompt.show(self) }
+        recorderPrompt.show(self)
     }
 
     /// One session from the mic window: now, or after the current upload, as the queue takes one

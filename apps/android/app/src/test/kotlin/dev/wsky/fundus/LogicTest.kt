@@ -127,12 +127,12 @@ class LogicTest {
     @Test
     fun importedSessionsAreNotProposedAgain() {
         val long = SessionGrouper.group(listOf(recording("TX01_MIC001_20261001_100000.wav", 600.0)))
-        val short = SessionGrouper.group(listOf(recording("TX01_MIC002_20261001_120000.wav", 60.0)))
+        val short = SessionGrouper.group(listOf(recording("TX01_MIC002_20261001_120000.wav", 4.0)))
         val sessions = long + short
-        assertEquals(long, Imports.proposed(sessions, emptyList()))
+        assertEquals(sessions, Imports.proposed(sessions, emptyList()))
         val done = ImportRecord(long[0].sourceIds, "complete")
         assertEquals(done, Imports.record(long[0], listOf(done)))
-        assertEquals(emptyList<RecordingSession>(), Imports.proposed(sessions, listOf(done)))
+        assertEquals(short, Imports.proposed(sessions, listOf(done)))
         // Imported trimmed elsewhere: only a part of it is in the vault.
         val trimmed = done.copy(trimStartFrame = 48_000)
         assertNull(Imports.record(long[0], listOf(trimmed)))

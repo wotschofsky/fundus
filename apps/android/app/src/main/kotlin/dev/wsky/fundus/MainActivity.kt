@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         when (intent?.action) {
             Recorder.OPEN_PROMPT -> fundus.recorder.prompt.value = true
-            UsbManager.ACTION_USB_DEVICE_ATTACHED -> fundus.scope.launch { fundus.recorder.attached(fundus.uploads) }
+            UsbManager.ACTION_USB_DEVICE_ATTACHED -> fundus.recorder.attached()
         }
         val callback = intent?.data?.takeIf { it.scheme == "dev.wsky.fundus" } ?: return
         lifecycleScope.launch { fundus.vault.finishSignIn(callback.toString()) }

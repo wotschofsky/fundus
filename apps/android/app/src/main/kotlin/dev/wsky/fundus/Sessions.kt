@@ -131,9 +131,6 @@ data class SourceHistoryEntry(
 data class SourceHistoryPage(val entries: List<SourceHistoryEntry> = emptyList(), val nextCursor: Int? = null)
 
 object Imports {
-    /** Seconds; shorter sessions are usually a stray button press. */
-    const val WORTH_IMPORTING = 120.0
-
     /** The untrimmed session's import; the phone has no trimming, so a trimmed import is only a part. */
     fun record(session: RecordingSession, records: List<ImportRecord>): ImportRecord? {
         val ids = session.sourceIds
@@ -146,9 +143,9 @@ object Imports {
         return session.sourceIds.any { it in imported }
     }
 
-    /** What the window shown on plugging in a mic offers: long enough, and not in the vault yet, even in part. */
+    /** New in the mic window: not in the vault yet, even in part. */
     fun proposed(sessions: List<RecordingSession>, records: List<ImportRecord>) =
-        sessions.filter { it.duration >= WORTH_IMPORTING && record(it, records) == null && !partlyImported(it, records) }
+        sessions.filter { record(it, records) == null && !partlyImported(it, records) }
 }
 
 /** Format and exact frame count from a WAV header (never from file size or dates), as `native/audio` reads it. */

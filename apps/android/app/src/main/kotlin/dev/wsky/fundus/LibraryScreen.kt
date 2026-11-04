@@ -101,7 +101,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.net.URI
 
@@ -139,14 +142,18 @@ fun LibraryScreen(
         query = ""
     }
 
-    // Like the Mac: every few seconds while the vault is working, otherwise once a minute;
-    // only while the app is on screen.
+    // Like the Mac: every few seconds while an import is uploading or the vault is working, otherwise once a
+    // minute; at once whenever this phone's upload moves on (a new import shows up as soon as the vault has it).
+    // Only while the app is on screen.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                library.refresh()
-                delay(if (library.state.value.isProcessing) 5_000 else 60_000)
+            app.uploads.queue.map { it.state }.distinctUntilChanged().collectLatest {
+                while (true) {
+                    library.refresh()
+                    val busy = library.state.value.isProcessing || app.uploads.queue.value.isTransferring
+                    delay(if (busy) 5_000 else 60_000)
+                }
             }
         }
     }

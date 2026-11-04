@@ -48,19 +48,22 @@ final class RecorderSourcesTests: XCTestCase {
         XCTAssertEqual(arrivals, 1, "unplugging and rescanning announce nothing")
     }
 
-    func testProposesLongSessionsTheVaultDoesNotHaveYet() {
+    func testProposesSessionsTheVaultDoesNotHaveYet() {
         let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let files = [recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
                      recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 5),
-                     recording("TX01_MIC003_20261020_140000_orig.wav", seconds: 900)]
+                     recording("TX01_MIC003_20261020_140000_orig.wav", seconds: 900),
+                     recording("TX01_MIC004_20261020_160000_orig.wav", seconds: 30)]
             .map { RecorderFile(url: $0.url, size: $0.fileSize, modified: nil, recorded: $0.start, transmitter: $0.transmitter, recording: $0) }
         sessions.update(files, server: "https://vault")
         XCTAssertEqual(sessions.proposed(server: "https://vault").map(\.recordings[0].filename),
-                       ["TX01_MIC001_20261020_100000_orig.wav", "TX01_MIC003_20261020_140000_orig.wav"])
+                       ["TX01_MIC001_20261020_100000_orig.wav", "TX01_MIC002_20261020_120000_orig.wav",
+                        "TX01_MIC003_20261020_140000_orig.wav", "TX01_MIC004_20261020_160000_orig.wav"])
 
         sessions.register([sessions.sessions[0]], server: "https://vault", importID: "import")
-        XCTAssertEqual(sessions.proposed(server: "https://vault").map(\.recordings[0].filename), ["TX01_MIC003_20261020_140000_orig.wav"])
-        XCTAssertEqual(sessions.proposed(server: "https://other").count, 2, "imports are per vault")
+        XCTAssertEqual(sessions.proposed(server: "https://vault").map(\.recordings[0].filename),
+                       ["TX01_MIC002_20261020_120000_orig.wav", "TX01_MIC003_20261020_140000_orig.wav", "TX01_MIC004_20261020_160000_orig.wav"])
+        XCTAssertEqual(sessions.proposed(server: "https://other").count, 4, "imports are per vault")
     }
 
     func testEjectsAllRecordersAndPreservesFailuresForRetry() async throws {
