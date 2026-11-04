@@ -375,7 +375,7 @@ private fun PassageRow(hit: SearchHit, query: String, shapes: ListItemShapes, on
             // Same width for every time, so the excerpts line up.
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest, contentColor = MaterialTheme.colorScheme.onSurface) {
                 Text(
-                    Format.position(hit.startMs / 1000.0),
+                    if (hit.summary) "Summary" else Format.position(hit.startMs / 1000.0),
                     Modifier.widthIn(min = 56.dp).padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium.merge(TextStyle(fontFeatureSettings = "tnum")),
                     textAlign = TextAlign.Center,

@@ -271,7 +271,7 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         fun escape(value: String) = value.replace("\\", "\\\\").replace("*", "\\*").replace("[", "\\[").replace("]", "\\]")
         val lines = mutableListOf("# ${entry.displayTitle}", "", "- Recorded: ${entry.dateLine}", "- Duration: ${Format.duration(entry.durationSeconds)}")
         if (entry.labels.isNotEmpty()) lines += "- Labels: ${entry.labels.joinToString(", ")}"
-        if (!entry.summary.isNullOrEmpty()) lines += listOf("", "## Summary (generated)", "", entry.summary)
+        if (!entry.summary.isNullOrEmpty()) lines += listOf("", "## Summary", "", entry.summary)
         lines += listOf("", "## Transcript", "")
         for (row in state.rows) lines += listOf("[${row.clock}] **${escape(state.name(row.speaker))}**", row.text, "")
         return lines.joinToString("\n")

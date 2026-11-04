@@ -305,9 +305,10 @@ private struct SpeakerMenu: View {
 
 private struct EditEntrySheet: View {
     let entry: Entry
-    let save: (String?, String, Date?) async throws -> Void
+    let save: (String?, String?, String, Date?) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
+    @State private var summary = ""
     @State private var labels = ""
     @State private var recordedAt = Date()
     @State private var setsDate = false
@@ -319,6 +320,11 @@ private struct EditEntrySheet: View {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == entry.title ? nil : trimmed
     }
+    /// Sent only when the text changed: a sent summary is kept and is not replaced by a generated one.
+    private var changedSummary: String? {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == (entry.summary ?? "") ? nil : trimmed
+    }
     private var changedDate: Date? {
         guard entry.recordedAt != nil || setsDate else { return nil }
         return abs(recordedAt.timeIntervalSince(entry.recordedAt ?? .distantPast)) < 1 ? nil : recordedAt
@@ -327,6 +333,8 @@ private struct EditEntrySheet: View {
     var body: some View {
         Form {
             TextField("Title", text: $title, prompt: Text(entry.displayTitle))
+            TextField("Summary", text: $summary, axis: .vertical)
+                .lineLimit(3...8)
             TextField("Labels", text: $labels, prompt: Text("work, ideas"))
             if entry.recordedAt == nil {
                 Toggle("Set the recording time", isOn: $setsDate)
@@ -349,7 +357,7 @@ private struct EditEntrySheet: View {
                     Task {
                         defer { isSaving = false }
                         do {
-                            try await save(changedTitle, labels, changedDate)
+                            try await save(changedTitle, changedSummary, labels, changedDate)
                             dismiss()
                         } catch {
                             self.error = error.localizedDescription
@@ -361,6 +369,7 @@ private struct EditEntrySheet: View {
         }
         .onAppear {
             title = entry.displayTitle == entry.title ? entry.title : ""
+            summary = entry.summary ?? ""
             labels = entry.labels.joined(separator: ", ")
             recordedAt = entry.recordedAt ?? entry.createdAt
         }

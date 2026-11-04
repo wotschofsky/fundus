@@ -4,7 +4,7 @@ use crate::{
     corrections,
     error::{Error, Result},
     mcp::VaultMcp,
-    oauth, retrieval, settings, uploads,
+    oauth, pipeline, retrieval, settings, uploads,
 };
 use axum::{
     Extension, Json, Router,
@@ -373,6 +373,7 @@ async fn audio_file(
 #[derive(Deserialize)]
 struct EditEntry {
     title: Option<String>,
+    summary: Option<String>,
     labels: Option<Vec<String>>,
     recorded_at: Option<String>,
 }
@@ -402,6 +403,22 @@ async fn update_entry(
         sqlx::query!("UPDATE passage_fts SET title=? WHERE entry_id=?", title, id)
             .execute(&mut *tx)
             .await?;
+    }
+    let summary_edited = p.summary.is_some();
+    if let Some(summary) = p.summary {
+        let summary = summary.trim();
+        if summary.is_empty() || summary.chars().count() > 12_000 {
+            return Err(Error::bad("Summary must be 1–12000 characters"));
+        }
+        let timestamp = now();
+        sqlx::query!(
+            "UPDATE entries SET summary=?,summary_manual=1,updated_at=? WHERE id=?",
+            summary,
+            timestamp,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     if let Some(labels) = p.labels {
         if labels.len() > 20 {
@@ -437,6 +454,11 @@ async fn update_entry(
             .await?;
     }
     tx.commit().await?;
+    if summary_edited
+        && let Err(error) = pipeline::refresh_summary_passage(&app, &id).await
+    {
+        tracing::warn!(entry = %id, %error, "could not index the summary");
+    }
     Ok(Json(retrieval::get(&app, &id).await?))
 }
 async fn retry(
@@ -513,15 +535,22 @@ async fn reanalyze(
     Extension(access): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    queue_rework(&app, &access, &id, "speakers", "identity-analysis.json").await
+    queue_rework(
+        &app,
+        &access,
+        &id,
+        "speakers",
+        &["identity-analysis.json", "identity-names.json"],
+    )
+    .await
 }
-/// A fresh title (unless set by hand) and summary; the speakers stay as they are.
+/// A fresh title (unless set by hand) and summary (unless edited by hand); the speakers stay as they are.
 async fn summarize(
     State(app): State<App>,
     Extension(access): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    queue_rework(&app, &access, &id, "summary", "summary.json").await
+    queue_rework(&app, &access, &id, "summary", &["summary.json"]).await
 }
 /// Queues `work` on a transcribed recording and drops its cached notes, so they are written afresh.
 async fn queue_rework(
@@ -529,7 +558,7 @@ async fn queue_rework(
     access: &Access,
     id: &str,
     work: &str,
-    cache: &str,
+    caches: &[&str],
 ) -> Result<Json<Value>> {
     access.admin()?;
     let _lock = app.mutations.lock().await;
@@ -540,10 +569,12 @@ async fn queue_rework(
     if row.segments == 0 {
         return Err(Error::conflict("Transcribe the recording first"));
     }
-    match tokio::fs::remove_file(app.entry_dir(id).join(cache)).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    for cache in caches {
+        match tokio::fs::remove_file(app.entry_dir(id).join(cache)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     let timestamp = now();
     sqlx::query!("UPDATE entries SET stage='queued',active_stage=NULL,pause_requested=0,requested_work=?,failure=NULL,notes_revision=notes_revision+1,updated_at=? WHERE id=?", work, timestamp, id).execute(&app.db).await?;
@@ -706,9 +737,16 @@ async fn rename_person(
         return Err(Error::bad("Name must be 1–120 characters"));
     }
     let trimmed_name = p.name.trim();
+    let entries = sqlx::query_scalar!(
+        "SELECT DISTINCT entry_id AS \"entry_id!\" FROM speakers WHERE person_id=?",
+        id
+    )
+    .fetch_all(&app.db)
+    .await?;
     sqlx::query!("UPDATE people SET name=? WHERE id=?", trimmed_name, id)
         .execute(&app.db)
         .await?;
+    refresh_summaries(&app, &entries).await;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn delete_person(
@@ -718,6 +756,12 @@ async fn delete_person(
 ) -> Result<StatusCode> {
     a.admin()?;
     let _lock = app.mutations.lock().await;
+    let entries = sqlx::query_scalar!(
+        "SELECT DISTINCT entry_id AS \"entry_id!\" FROM speakers WHERE person_id=?",
+        id
+    )
+    .fetch_all(&app.db)
+    .await?;
     let mut tx = app.db.begin().await?;
     sqlx::query!(
         "UPDATE speakers SET person_id=NULL,state='unknown',evidence='[]' WHERE person_id=?",
@@ -732,6 +776,7 @@ async fn delete_person(
         return Err(Error::not_found());
     }
     tx.commit().await?;
+    refresh_summaries(&app, &entries).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -769,7 +814,17 @@ async fn assign_speaker(
     } else {
         crate::voice::assign(&app, &id, &label, p.person_id.as_deref()).await?;
     }
+    if let Err(error) = pipeline::refresh_summary_passage(&app, &id).await {
+        tracing::warn!(entry = %id, %error, "could not index the summary");
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+async fn refresh_summaries(app: &App, entries: &[String]) {
+    for entry in entries {
+        if let Err(error) = pipeline::refresh_summary_passage(app, entry).await {
+            tracing::warn!(%entry, %error, "could not index the summary");
+        }
+    }
 }
 type WebFiles = std::collections::HashMap<String, axum::body::Bytes>;
 /// The built web app, read once at startup so it is served like an embedded bundle.

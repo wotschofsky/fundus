@@ -72,7 +72,7 @@ fn filter<'a>(q: &mut QueryBuilder<'a, Sqlite>, f: &Filters) -> Result<()> {
 }
 /// Summaries refer to speakers as `{A}`, so each shows the speaker's current name, or the
 /// "Speaker 2" the clients show, numbered in label order like the entry's speaker list.
-fn with_names(summary: String, speakers: &str) -> String {
+pub(crate) fn with_names(summary: String, speakers: &str) -> String {
     let mut speakers: Vec<(String, Option<String>)> =
         serde_json::from_str(speakers).unwrap_or_default();
     speakers.sort();
@@ -85,7 +85,7 @@ fn with_names(summary: String, speakers: &str) -> String {
         })
 }
 fn entry(row: &sqlx::sqlite::SqliteRow) -> Value {
-    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
+    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"summary_manual":row.get::<i64,_>("summary_manual")!=0,"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
 }
 const SELECT: &str = "SELECT e.*,(SELECT json_group_array(label) FROM entry_labels WHERE entry_id=e.id) AS labels,(SELECT json_group_array(json_array(s.label,p.name)) FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=e.id) AS speaker_names FROM entries e WHERE 1=1";
 pub async fn list(app: &App, f: Filters) -> Result<Value> {
@@ -255,7 +255,7 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
             let r = details.get(id)?;
             let eid: String = r.get("entry_id");
             let start: i64 = r.get("start_ms");
-            Some(json!({"id":id,"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)}))
+            Some(json!({"id":id,"entry_id":eid,"title":r.get::<String,_>("title"),"recorded_at":r.get::<Option<String>,_>("recorded_at"),"start_ms":start,"end_ms":r.get::<i64,_>("end_ms"),"excerpt":r.get::<String,_>("text"),"score":score,"summary":id.ends_with(":summary"),"url":format!("{}entries/{eid}?t={}",app.config.public_url,start as f64/1000.)}))
         })
         .collect();
     let pending: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM entries WHERE stage NOT IN ('complete','paused','failed') AND trashed_at IS NULL")

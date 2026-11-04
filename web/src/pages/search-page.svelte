@@ -129,10 +129,13 @@
   {:else}
     <div class="rows">
       {#each data.results as r (r.id)}
-        <a class="search-result" href={`/entries/${r.entry_id}?t=${r.start_ms / 1000}`}>
+        <a
+          class="search-result"
+          href={r.summary ? `/entries/${r.entry_id}` : `/entries/${r.entry_id}?t=${r.start_ms / 1000}`}
+        >
           <div class="recording-meta">
             <span>{date(r.recorded_at)}</span>
-            <span>{timestamp(r.start_ms)}–{timestamp(r.end_ms)}</span>
+            <span>{r.summary ? 'Summary' : `${timestamp(r.start_ms)}–${timestamp(r.end_ms)}`}</span>
           </div>
           <h3>{r.title}<ArrowRight size={14} aria-hidden="true" /></h3>
           <p><Highlight text={r.excerpt} query={q} /></p>

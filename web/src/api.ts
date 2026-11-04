@@ -50,6 +50,7 @@ export type Entry = {
   failure: string | null;
   warnings: string[];
   summary: string | null;
+  summary_manual?: boolean;
   created_at: string;
   trashed_at: string | null;
   labels: string[];
@@ -112,6 +113,7 @@ export type SearchResult = {
   start_ms: number;
   end_ms: number;
   excerpt: string;
+  summary?: boolean;
 };
 export type SearchResponse = {
   results: SearchResult[];

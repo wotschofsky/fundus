@@ -740,21 +740,36 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     pipeline::process(&app, &entry).await.unwrap();
     let transcript = provider.transcripts.lock().unwrap()[0].clone();
     assert_eq!(transcript["prompt"], "Synthetic vocabulary context");
-    let chat = provider.chats.lock().unwrap()[0].clone();
-    assert_eq!(chat["model"], "gpt-6-luna");
-    assert_eq!(chat["response_format"]["json_schema"]["strict"], true);
+    let chats = provider.chats.lock().unwrap().clone();
+    let summary = chats
+        .iter()
+        .find(|chat| chat["response_format"]["json_schema"]["name"] == "recording_summary")
+        .expect("summary request");
+    let names = chats
+        .iter()
+        .find(|chat| chat["response_format"]["json_schema"]["name"] == "speaker_introductions")
+        .expect("name request");
+    assert_eq!(summary["model"], "gpt-6-luna");
+    assert_eq!(summary["response_format"]["json_schema"]["strict"], true);
     assert!(
-        chat["messages"][0]["content"]
+        summary["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("Synthetic vocabulary context")
     );
     assert!(
-        !chat["messages"][1]["content"]
+        !summary["messages"][1]["content"]
             .as_str()
             .unwrap()
             .contains("Synthetic vocabulary context"),
         "context stays out of the transcript evidence"
+    );
+    assert!(
+        !names["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Synthetic vocabulary context"),
+        "recording context is not evidence for a name"
     );
     task.abort();
 }

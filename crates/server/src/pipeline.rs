@@ -473,7 +473,13 @@ async fn transcribe(
                 )
                 .await?;
                 // Notes from an earlier transcript name other labels and other text.
-                for stale in ["enrichment.json", "identity-analysis.json", "summary.json"] {
+                for stale in [
+                    "enrichment.json",
+                    "names.json",
+                    "identity-analysis.json",
+                    "identity-names.json",
+                    "summary.json",
+                ] {
                     let _ = tokio::fs::remove_file(dir.join(stale)).await;
                 }
                 let mut tx = app.db.begin().await?;
@@ -640,32 +646,82 @@ async fn store_segments(app: &App, entry: &str, utterances: &[Utterance]) -> Res
     Ok(())
 }
 
-async fn transcript_lines(app: &App, entry: &str) -> Result<Vec<String>> {
+async fn spoken(app: &App, entry: &str) -> Result<provider::Transcript> {
+    let duration_ms =
+        sqlx::query_scalar!("SELECT duration_ms FROM entries WHERE id=?", entry)
+            .fetch_one(&app.db)
+            .await?;
     let rows = sqlx::query!(
-        "SELECT speaker,text FROM segments WHERE entry_id=? ORDER BY position",
+        "SELECT speaker,start_ms,text FROM segments WHERE entry_id=? ORDER BY position",
         entry
     )
     .fetch_all(&app.db)
     .await?;
-    Ok(rows
-        .iter()
-        .map(|row| format!("[{}] {}", row.speaker.clone(), row.text.clone()))
-        .collect())
+    Ok(provider::Transcript {
+        duration_ms,
+        lines: rows
+            .into_iter()
+            .map(|row| provider::Line {
+                start_ms: row.start_ms,
+                speaker: row.speaker,
+                text: row.text,
+            })
+            .collect(),
+    })
 }
 
 /// Cached provider output: reused on retry so a completed request is not paid for twice.
-async fn cached_notes(app: &App, entry: &str, name: &str) -> Result<provider::Notes> {
+async fn cached<T: serde::Serialize + serde::de::DeserializeOwned>(
+    app: &App,
+    entry: &str,
+    name: &str,
+    fresh: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
     let path = app.entry_dir(entry).join(format!("{name}.json"));
     if let Ok(saved) = tokio::fs::read(&path).await
-        && let Ok(notes) = serde_json::from_slice(&saved)
+        && let Ok(value) = serde_json::from_slice(&saved)
     {
-        return Ok(notes);
+        return Ok(value);
     }
-    let notes = provider::enrich(app, &transcript_lines(app, entry).await?).await?;
+    let value = fresh.await?;
     let pending = app.entry_dir(entry).join(format!("{name}.partial.json"));
-    tokio::fs::write(&pending, serde_json::to_vec_pretty(&notes)?).await?;
+    tokio::fs::write(&pending, serde_json::to_vec_pretty(&value)?).await?;
     commit_artifact(&pending, &path).await?;
-    Ok(notes)
+    Ok(value)
+}
+async fn load_summary(app: &App, entry: &str, name: &str) -> Result<provider::Notes> {
+    let spoken = spoken(app, entry).await?;
+    cached(app, entry, name, provider::summarize(app, &spoken)).await
+}
+async fn load_names(app: &App, entry: &str, name: &str) -> Result<Vec<provider::NameFinding>> {
+    let spoken = spoken(app, entry).await?;
+    cached(app, entry, name, provider::introductions(app, &spoken)).await
+}
+
+/// The parallel notes read the transcript before voice analysis merges labels. A merge changes
+/// who said what, so those notes are dropped and both calls run again on the merged transcript.
+async fn settled_notes(
+    app: &App,
+    entry: &str,
+    summary_cache: &str,
+    names_cache: &str,
+    merged: &[(String, String)],
+    summary: Result<provider::Notes>,
+    names: Result<Vec<provider::NameFinding>>,
+) -> (
+    Result<provider::Notes>,
+    Result<Vec<provider::NameFinding>>,
+) {
+    if merged.is_empty() {
+        return (summary, names);
+    }
+    for name in [summary_cache, names_cache] {
+        let _ = tokio::fs::remove_file(app.entry_dir(entry).join(format!("{name}.json"))).await;
+    }
+    tokio::join!(
+        load_summary(app, entry, summary_cache),
+        load_names(app, entry, names_cache),
+    )
 }
 
 pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
@@ -700,32 +756,55 @@ pub async fn reanalyze_speakers(app: &App, entry: &str) -> Result<()> {
     warnings.retain(|warning| {
         !warning.starts_with("Speaker recognition unavailable:")
             && !warning.starts_with("Speaker name analysis unavailable:")
+            && !warning.starts_with("Summary unavailable:")
     });
-    // As in processing: both at once, results written afterwards.
-    let (voice, notes) = tokio::join!(
+    // Voice analysis and the notes run at once. A merge rewrites both from the updated transcript.
+    let (voice, summary, names) = tokio::join!(
         voice::analyze(app, entry, &playback),
-        cached_notes(app, entry, "identity-analysis")
+        load_summary(app, entry, "identity-analysis"),
+        load_names(app, entry, "identity-names"),
     );
     let analysis = voice.unwrap_or_else(|error| {
         warnings.push(format!("Speaker recognition unavailable: {error}"));
         Analysis::default()
     });
+    let (summary, names) = settled_notes(
+        app,
+        entry,
+        "identity-analysis",
+        "identity-names",
+        &analysis.merged,
+        summary,
+        names,
+    )
+    .await;
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
     stage(app, entry, "enriching").await?;
-    let names = match notes {
-        Ok(mut notes) => {
-            relabel(&mut notes, &analysis.merged);
+    let found = match (summary, names) {
+        (Ok(notes), names) => {
             save_notes(app, entry, &notes, true).await?;
-            notes.names
+            match names {
+                Ok(names) => names,
+                Err(error) => {
+                    warnings.push(format!("Speaker name analysis unavailable: {error}"));
+                    vec![]
+                }
+            }
         }
-        Err(error) => {
-            warnings.push(format!("Speaker name analysis unavailable: {error}"));
-            vec![]
+        (Err(error), names) => {
+            warnings.push(format!("Summary unavailable: {error}"));
+            names.unwrap_or_else(|error| {
+                warnings.push(format!("Speaker name analysis unavailable: {error}"));
+                vec![]
+            })
         }
     };
-    identity::apply(app, entry, &analysis, &names).await?;
+    identity::apply(app, entry, &analysis, &found).await?;
+    if let Err(error) = refresh_summary_passage(app, entry).await {
+        tracing::warn!(%entry, %error, "could not index the summary");
+    }
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
@@ -753,13 +832,16 @@ async fn regenerate_summary_at_revision(app: &App, entry: &str, revision: i64) -
     warnings.retain(|warning| !warning.starts_with("Summary unavailable:"));
     // An older request may finish after Undo or another correction; its cache is never reused.
     let cache = format!("summary-{revision}");
-    match cached_notes(app, entry, &cache).await {
+    match load_summary(app, entry, &cache).await {
         Ok(notes) => save_notes_at_revision(app, entry, &notes, true, Some(revision)).await?,
         Err(error) => warnings.push(format!("Summary unavailable: {error}")),
     }
     let warnings_json = serde_json::to_string(&warnings)?;
     let timestamp = now();
     sqlx::query!("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=? AND notes_revision=? AND trashed_at IS NULL", warnings_json, timestamp, entry, revision).execute(&app.db).await?;
+    if let Err(error) = refresh_summary_passage(app, entry).await {
+        tracing::warn!(%entry, %error, "could not index the summary");
+    }
     Ok(())
 }
 
@@ -792,7 +874,7 @@ async fn save_notes_at_revision(
     }
     let title = notes.title.trim().chars().take(240).collect::<String>();
     let summary = notes.summary.trim();
-    sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=? WHERE id=? AND (? OR summary IS NULL)", title, summary, entry, replace).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE entries SET title=CASE WHEN title_manual=1 THEN title ELSE ? END,summary=CASE WHEN summary_manual=1 THEN summary ELSE ? END WHERE id=? AND (? OR summary IS NULL)", title, summary, entry, replace).execute(&mut *tx).await?;
     sqlx::query!(
         "UPDATE passage_fts SET title=(SELECT title FROM entries WHERE id=?) WHERE entry_id=?",
         entry,
@@ -867,30 +949,50 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         stage(app, entry, "recognizing").await?;
         // Voice analysis is local and the notes come from OpenAI: both run at once, and their
         // results are written afterwards, so neither overwrites the other's speaker evidence.
-        let (voice, notes) = tokio::join!(
+        // A merge rewrites the notes from the transcript as it stands after the merge.
+        let (voice, summary, names) = tokio::join!(
             voice::analyze(app, entry, &playback),
-            cached_notes(app, entry, "enrichment")
+            load_summary(app, entry, "enrichment"),
+            load_names(app, entry, "names"),
         );
         let analysis = voice.unwrap_or_else(|e| {
             warnings.push(format!("Speaker recognition unavailable: {e}"));
             Analysis::default()
         });
+        let (summary, names) = settled_notes(
+            app,
+            entry,
+            "enrichment",
+            "names",
+            &analysis.merged,
+            summary,
+            names,
+        )
+        .await;
         if pause_at_checkpoint(app, entry).await? {
             return Ok(());
         }
         stage(app, entry, "enriching").await?;
-        let names = match notes {
-            Ok(mut notes) => {
-                relabel(&mut notes, &analysis.merged);
+        let found = match (summary, names) {
+            (Ok(notes), names) => {
                 save_notes(app, entry, &notes, false).await?;
-                notes.names
+                match names {
+                    Ok(names) => names,
+                    Err(error) => {
+                        warnings.push(format!("Speaker name analysis unavailable: {error}"));
+                        vec![]
+                    }
+                }
             }
-            Err(e) => {
-                warnings.push(format!("Summary unavailable: {e}"));
-                vec![]
+            (Err(error), names) => {
+                warnings.push(format!("Summary unavailable: {error}"));
+                names.unwrap_or_else(|error| {
+                    warnings.push(format!("Speaker name analysis unavailable: {error}"));
+                    vec![]
+                })
             }
         };
-        identity::apply(app, entry, &analysis, &names).await?;
+        identity::apply(app, entry, &analysis, &found).await?;
         if pause_at_checkpoint(app, entry).await? {
             return Ok(());
         }
@@ -900,21 +1002,6 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         warnings.push(format!("Semantic search unavailable: {e}"));
     }
     complete(app, entry, &warnings, Some(&rendition)).await
-}
-
-/// Notes are written while voice analysis may merge labels: point placeholders and name findings
-/// of an absorbed label at the label it joined, in merge order so chains resolve.
-fn relabel(notes: &mut provider::Notes, merged: &[(String, String)]) {
-    for (from, into) in merged {
-        notes.summary = notes
-            .summary
-            .replace(&format!("{{{from}}}"), &format!("{{{into}}}"));
-        for finding in &mut notes.names {
-            if finding.speaker.trim().trim_matches(['[', ']']) == from {
-                finding.speaker = into.clone();
-            }
-        }
-    }
 }
 
 pub async fn index(app: &App, entry: &str) -> Result<()> {
@@ -947,10 +1034,14 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         }
         start = if end - start > 2 { end - 2 } else { end };
     }
+    let summary = display_summary(app, entry).await?;
     let mut vectors = HashMap::new();
     let mut embedding_error = None;
     if provider::semantic_search(app) {
-        let texts: Vec<String> = chunks.iter().map(|(_, _, t)| t.clone()).collect();
+        let mut texts: Vec<String> = chunks.iter().map(|(_, _, t)| t.clone()).collect();
+        if let Some(text) = &summary {
+            texts.push(text.clone());
+        }
         let batches = join_all(
             texts
                 .chunks(32)
@@ -978,6 +1069,7 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
     sqlx::query!("DELETE FROM passages WHERE entry_id=?", entry)
         .execute(&mut *tx)
         .await?;
+    let summary_vector = chunks.len();
     for (i, (start, end, text)) in chunks.into_iter().enumerate() {
         let pid = format!("{entry}:p{i}");
         let query_position = i as i64;
@@ -993,10 +1085,102 @@ pub async fn index(app: &App, entry: &str) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     }
+    if let Some(text) = summary {
+        let pid = format!("{entry}:summary");
+        let position = -1i64;
+        let start_ms = 0i64;
+        let end_ms = 0i64;
+        let embedding_json = vectors
+            .get(&summary_vector)
+            .map(|vector| serde_json::to_string(vector).unwrap());
+        sqlx::query!("INSERT INTO passages(id,entry_id,position,start_ms,end_ms,text,embedding)VALUES(?,?,?,?,?,?,?)", pid, entry, position, start_ms, end_ms, text, embedding_json).execute(&mut *tx).await?;
+        sqlx::query!(
+            "INSERT INTO passage_fts(id,entry_id,title,text)VALUES(?,?,?,?)",
+            pid,
+            entry,
+            title,
+            text
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     if let Some(e) = embedding_error {
         return Err(e);
     }
+    Ok(())
+}
+
+/// The summary as a reader sees it, with speaker placeholders replaced by current names.
+async fn display_summary(app: &App, entry: &str) -> Result<Option<String>> {
+    let summary: Option<String> =
+        sqlx::query_scalar!("SELECT summary FROM entries WHERE id=?", entry)
+            .fetch_optional(&app.db)
+            .await?
+            .flatten();
+    let Some(summary) = summary.filter(|text| !text.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let speakers: Option<String> = sqlx::query_scalar!(
+        r#"SELECT json_group_array(json_array(s.label, p.name)) AS "names?" FROM speakers s LEFT JOIN people p ON p.id = s.person_id WHERE s.entry_id = ?"#,
+        entry
+    )
+    .fetch_one(&app.db)
+    .await?;
+    Ok(Some(crate::retrieval::with_names(
+        summary,
+        speakers.as_deref().unwrap_or("[]"),
+    )))
+}
+
+/// Replaces the one passage that search uses for this recording's summary.
+pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
+    let title: Option<String> = sqlx::query_scalar!("SELECT title FROM entries WHERE id=?", entry)
+        .fetch_optional(&app.db)
+        .await?;
+    let Some(title) = title else {
+        return Ok(());
+    };
+    let summary = display_summary(app, entry).await?;
+    let embedding = match &summary {
+        Some(text) if provider::semantic_search(app) => {
+            match provider::embeddings(app, std::slice::from_ref(text), true).await {
+                Ok(vectors) => vectors
+                    .into_iter()
+                    .next()
+                    .map(|vector| serde_json::to_string(&vector).unwrap()),
+                Err(error) => {
+                    tracing::warn!(%entry, %error, "summary embedding unavailable");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let mut tx = app.db.begin().await?;
+    let pid = format!("{entry}:summary");
+    sqlx::query!("DELETE FROM passage_fts WHERE id=?", pid)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query!("DELETE FROM passages WHERE id=?", pid)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(text) = summary {
+        let position = -1i64;
+        let start_ms = 0i64;
+        let end_ms = 0i64;
+        sqlx::query!("INSERT INTO passages(id,entry_id,position,start_ms,end_ms,text,embedding)VALUES(?,?,?,?,?,?,?)", pid, entry, position, start_ms, end_ms, text, embedding).execute(&mut *tx).await?;
+        sqlx::query!(
+            "INSERT INTO passage_fts(id,entry_id,title,text)VALUES(?,?,?,?)",
+            pid,
+            entry,
+            title,
+            text
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

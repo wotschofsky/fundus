@@ -146,6 +146,7 @@ data class SearchHit(
     val recordedAt: String? = null,
     val startMs: Long = 0,
     val excerpt: String = "",
+    val summary: Boolean = false,
 )
 
 @Serializable

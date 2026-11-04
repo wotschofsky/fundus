@@ -824,20 +824,101 @@ async fn read_tokens_cannot_list_trash() {
 }
 
 #[tokio::test]
+async fn a_hand_edited_summary_is_kept_and_search_finds_it() {
+    use tower::ServiceExt;
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "search-summary").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    let found = retrieval::search(
+        &app,
+        retrieval::Search {
+            query: "plans".into(),
+            filters: retrieval::Filters {
+                limit: Some(5),
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["summary"] == true && hit["excerpt"].as_str().unwrap().contains("plans"))
+    );
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"summary":"A handmade note about the cedar."}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    pipeline::regenerate_summary(&app, &entry).await.unwrap();
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(detail["summary"], "A handmade note about the cedar.");
+    assert_eq!(detail["summary_manual"], true);
+    let found = retrieval::search(
+        &app,
+        retrieval::Search {
+            query: "handmade".into(),
+            filters: retrieval::Filters {
+                limit: Some(5),
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["summary"] == true)
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn long_transcripts_are_summarized_in_one_request() {
     let (_dir, app, provider, task) = setup(Options::default()).await;
     let lines: Vec<String> = (0..6000)
-        .map(|i| format!("[A] Sentence {i} about the cedar launch plan and the next proposal."))
+        .map(|i| format!("Sentence {i} about the cedar launch plan and the next proposal."))
         .collect();
-    fundus::provider::enrich(&app, &lines).await.unwrap();
+    let transcript = fundus::provider::Transcript {
+        duration_ms: 6_000_000,
+        lines: lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| fundus::provider::Line {
+                start_ms: (i as i64) * 1000,
+                speaker: "A".into(),
+                text,
+            })
+            .collect(),
+    };
+    fundus::provider::summarize(&app, &transcript).await.unwrap();
     let chats = provider.chats.lock().unwrap().clone();
     assert_eq!(chats.len(), 1);
-    assert!(
-        chats[0]["messages"][1]["content"]
-            .as_str()
-            .unwrap()
-            .ends_with("Sentence 5999 about the cedar launch plan and the next proposal.")
+    assert_eq!(
+        chats[0]["response_format"]["json_schema"]["name"],
+        "recording_summary"
     );
+    let system = chats[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Never write a clock time"));
+    let user = chats[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(user.contains("Duration:"));
+    assert!(user.contains("as a short block for each topic"));
+    assert!(user.ends_with("Sentence 5999 about the cedar launch plan and the next proposal."));
     task.abort();
 }
 
