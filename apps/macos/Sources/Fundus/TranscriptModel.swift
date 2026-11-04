@@ -169,9 +169,9 @@ final class TranscriptModel {
         }
     }
 
-    func save(title: String?, labels: String, recordedAt: Date?) async throws {
+    func save(title: String?, summary: String?, labels: String, recordedAt: Date?) async throws {
         let labels = labels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        try await library.update(entryID, title: title, labels: labels, recordedAt: recordedAt)
+        try await library.update(entryID, title: title, summary: summary, labels: labels, recordedAt: recordedAt)
         await refresh()
     }
 
@@ -183,7 +183,7 @@ final class TranscriptModel {
         }
         var lines = ["# \(entry.displayTitle)", "", "- Recorded: \(entry.dateLine)", "- Duration: \(Format.duration(entry.duration))"]
         if !entry.labels.isEmpty { lines.append("- Labels: \(entry.labels.joined(separator: ", "))") }
-        if let summary = entry.summary, !summary.isEmpty { lines += ["", "## Summary (generated)", "", summary] }
+        if let summary = entry.summary, !summary.isEmpty { lines += ["", "## Summary", "", summary] }
         lines += ["", "## Transcript", ""]
         for row in rows { lines += ["[\(row.clock)] **\(escape(name(of: row.speaker)))**", row.text, ""] }
         return lines.joined(separator: "\n")

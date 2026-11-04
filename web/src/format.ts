@@ -63,6 +63,12 @@ export const localInput = (iso: string | null) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+/** The list line: the outcome paragraph, or the whole summary when it has no blank line. */
+export function outcome(summary: string): string {
+  const gap = summary.indexOf('\n\n');
+  return (gap === -1 ? summary : summary.slice(0, gap)).trim();
+}
+
 const escapeMarkdown = (value: string) => value.replace(/[\\*[\]]/g, (c) => `\\${c}`);
 /** The recording as a Markdown file, in the same layout as the Mac app's export. */
 export function transcriptMarkdown(e: Entry, rows: Segment[], names: Map<string, string>) {
@@ -73,7 +79,7 @@ export function transcriptMarkdown(e: Entry, rows: Segment[], names: Map<string,
     `- Duration: ${duration(e.duration_ms)}`,
   ];
   if (e.labels.length > 0) lines.push(`- Labels: ${e.labels.join(', ')}`);
-  if (e.summary) lines.push('', '## Summary (generated)', '', e.summary);
+  if (e.summary) lines.push('', '## Summary', '', e.summary);
   lines.push('', '## Transcript', '');
   for (const r of rows) {
     const name = names.get(r.speaker) ?? r.speaker_name ?? 'Speaker';

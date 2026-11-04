@@ -3,7 +3,7 @@
   import { Trash2 } from '@lucide/svelte';
   import { labelsQuery, type Entry } from '../api';
   import { createEntries } from '../entries';
-  import { day, dayKey, duration, time } from '../format';
+  import { day, dayKey, duration, outcome, time } from '../format';
   import { router } from '../router.svelte';
   import EmptyState from '../components/empty-state.svelte';
   import ErrorNotice from '../components/error-notice.svelte';
@@ -103,7 +103,7 @@
           </div>
           <h3>{e.title}</h3>
           {#if e.summary || e.failure}
-            <p class={e.summary ? '' : 'failure'}>{e.summary ?? e.failure}</p>
+            <p class={e.summary ? '' : 'failure'}>{e.summary ? outcome(e.summary) : e.failure}</p>
           {/if}
           {#if e.labels.length > 0}
             <div class="chips">

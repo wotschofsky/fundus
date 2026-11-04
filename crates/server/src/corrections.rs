@@ -4,7 +4,7 @@ use crate::{
     auth::Access,
     config::{App, id, now},
     error::{Error, Result},
-    voice,
+    pipeline, voice,
 };
 use axum::{
     Extension, Json,
@@ -92,6 +92,9 @@ struct Notes {
     title: String,
     title_manual: i64,
     summary: Option<String>,
+    /// Missing in snapshots taken before a summary could be edited by hand.
+    #[serde(default)]
+    summary_manual: i64,
     warnings: String,
     revision: i64,
 }
@@ -111,7 +114,7 @@ async fn capture(db: &mut sqlx::SqliteConnection, entry: &str) -> Result<Before>
     let locks = sqlx::query_as!(PassageLock, "SELECT segment_id AS \"segment_id!\",speaker,created_at FROM speaker_corrections WHERE entry_id=? ORDER BY segment_id", entry).fetch_all(&mut *db).await?;
     let samples = sqlx::query_as!(Sample, "SELECT id AS \"id!\",person_id,speaker,model,vector_json,provenance,created_at FROM voice_samples WHERE entry_id=? ORDER BY id", entry).fetch_all(&mut *db).await?;
     let probes = sqlx::query_as!(Probe, "SELECT speaker,model,vector_json FROM voice_probes WHERE entry_id=? ORDER BY speaker,model", entry).fetch_all(&mut *db).await?;
-    let notes = sqlx::query_as!(Notes, "SELECT title,title_manual AS \"title_manual!: i64\",summary,warnings,notes_revision AS revision FROM entries WHERE id=?", entry).fetch_one(db).await?;
+    let notes = sqlx::query_as!(Notes, "SELECT title,title_manual AS \"title_manual!: i64\",summary,summary_manual AS \"summary_manual!: i64\",warnings,notes_revision AS revision FROM entries WHERE id=?", entry).fetch_one(db).await?;
     Ok(Before {
         rows,
         speakers,
@@ -122,20 +125,26 @@ async fn capture(db: &mut sqlx::SqliteConnection, entry: &str) -> Result<Before>
     })
 }
 fn fingerprint(state: &Before) -> Result<String> {
-    // Generated notes can refresh without invalidating Undo; a title edited by the owner cannot.
+    // Generated notes can refresh without invalidating Undo; a title or summary edited by the
+    // owner cannot. The summary is part of the hash only once it has been edited, so snapshots
+    // from before that flag existed still match.
     let title = (state.notes.title_manual != 0).then_some(&state.notes.title);
-    Ok(crate::auth::hash(
-        &serde_json::to_string(&(
-            &state.rows,
-            &state.speakers,
-            &state.locks,
-            &state.samples,
-            &state.probes,
-            state.notes.title_manual,
-            title,
-        ))
-        .map_err(anyhow::Error::from)?,
-    ))
+    let base = (
+        &state.rows,
+        &state.speakers,
+        &state.locks,
+        &state.samples,
+        &state.probes,
+        state.notes.title_manual,
+        title,
+    );
+    let encoded = if state.notes.summary_manual == 0 {
+        serde_json::to_string(&base)
+    } else {
+        serde_json::to_string(&(base, state.notes.summary_manual, &state.notes.summary))
+    }
+    .map_err(anyhow::Error::from)?;
+    Ok(crate::auth::hash(&encoded))
 }
 async fn undo_available(
     db: &mut sqlx::SqliteConnection,
@@ -249,7 +258,7 @@ pub async fn undo(
     }
     let timestamp = now();
     // Incrementing the generation also prevents a summary already in flight from overwriting Undo.
-    sqlx::query!("UPDATE entries SET title=?,title_manual=?,summary=?,warnings=?,notes_revision=notes_revision+1,stage='complete',active_stage=NULL,requested_work=NULL,pause_requested=0,failure=NULL,updated_at=? WHERE id=?", before.notes.title, before.notes.title_manual, before.notes.summary, before.notes.warnings, timestamp, entry).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE entries SET title=?,title_manual=?,summary=?,summary_manual=?,warnings=?,notes_revision=notes_revision+1,stage='complete',active_stage=NULL,requested_work=NULL,pause_requested=0,failure=NULL,updated_at=? WHERE id=?", before.notes.title, before.notes.title_manual, before.notes.summary, before.notes.summary_manual, before.notes.warnings, timestamp, entry).execute(&mut *tx).await?;
     sqlx::query!(
         "UPDATE passage_fts SET title=? WHERE entry_id=?",
         before.notes.title,
@@ -270,6 +279,10 @@ pub async fn undo(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    drop(_lock);
+    if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
+        tracing::warn!(%entry, %error, "could not index the summary");
+    }
     Ok(Json(serde_json::json!({"restored":saved.changed})))
 }
 
@@ -646,8 +659,10 @@ pub async fn apply(
         sqlx::query!("UPDATE speakers SET evidence='[]',state=CASE WHEN person_id IS NULL THEN 'manual_unknown' ELSE 'manual' END WHERE entry_id=? AND label=?", entry, label).execute(&mut *tx).await?;
     }
     let revision = before.notes.revision + 1;
+    // A hand-edited summary stays. A generated one is cleared. With a model, refresh the generated title too.
+    let clear_summary = before.notes.summary_manual == 0;
     let refresh_summary = !app.config.openai_key.is_empty();
-    sqlx::query!("UPDATE entries SET summary=NULL,notes_revision=?,stage=CASE WHEN ? THEN 'queued' ELSE 'complete' END,requested_work=CASE WHEN ? THEN 'summary' ELSE NULL END,active_stage=NULL,pause_requested=0,failure=NULL,updated_at=? WHERE id=?", revision, refresh_summary, refresh_summary, timestamp, entry).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE entries SET summary=CASE WHEN ? THEN NULL ELSE summary END,notes_revision=?,stage=CASE WHEN ? THEN 'queued' ELSE 'complete' END,requested_work=CASE WHEN ? THEN 'summary' ELSE NULL END,active_stage=NULL,pause_requested=0,failure=NULL,updated_at=? WHERE id=?", clear_summary, revision, refresh_summary, refresh_summary, timestamp, entry).execute(&mut *tx).await?;
     let after = fingerprint(&capture(&mut tx, &entry).await?)?;
     let before_json = serde_json::to_string(&before).map_err(anyhow::Error::from)?;
     let changed = moving.passages.len() as i64;
@@ -659,6 +674,10 @@ pub async fn apply(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    drop(_lock);
+    if let Err(error) = pipeline::refresh_summary_passage(&app, &entry).await {
+        tracing::warn!(%entry, %error, "could not index the summary");
+    }
     if refresh_summary {
         app.wake.notify_one();
     }
@@ -1151,6 +1170,48 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(notes, ("e".into(), Some("Old attribution".into())));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn a_split_refreshes_the_title_while_keeping_a_manual_summary() {
+        let (_dir, mut app) = fixture().await;
+        let (entered, release, server, _) = notes_mock(&mut app).await;
+        sqlx::query("UPDATE entries SET summary_manual=1 WHERE id='e'")
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let mut tx = app.db.begin().await.unwrap();
+        let (_, _, _, hash) = snapshot(&mut tx, "e").await.unwrap();
+        sqlx::query("UPDATE speaker_correction_reviews SET snapshot=? WHERE id='review'")
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let receipt = accept(&app, choice(0)).await.unwrap().0;
+        assert_eq!(receipt["summary_refresh"], true);
+        let work = tokio::spawn({
+            let app = app.clone();
+            async move {
+                crate::pipeline::regenerate_summary(&app, "e")
+                    .await
+                    .unwrap()
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        release.notify_one();
+        work.await.unwrap();
+        let notes: (String, Option<String>) =
+            sqlx::query_as("SELECT title,summary FROM entries WHERE id='e'")
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            notes,
+            ("Updated title".into(), Some("Old attribution".into()))
+        );
         server.abort();
     }
     #[tokio::test]

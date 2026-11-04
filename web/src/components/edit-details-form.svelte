@@ -1,8 +1,8 @@
 <script module lang="ts">
-  export type EntryEdit = { title: string; labels: string[]; recorded_at?: string };
+  export type EntryEdit = { title: string; labels: string[]; recorded_at?: string; summary?: string };
 </script>
 
-<!-- Title, recording time (in the viewer's local time) and labels of one recording. -->
+<!-- Title, recording time (in the viewer's local time), summary and labels of one recording. -->
 <script lang="ts">
   import type { Entry } from '../api';
   import { localInput } from '../format';
@@ -18,8 +18,10 @@
   const initial = { ...entry, time: localInput(entry.recorded_at) };
   const initialTime = initial.time;
   let title = $state(initial.title);
+  let summary = $state(initial.summary ?? '');
   let labels = $state(initial.labels.join(', '));
   let recordedAt = $state(initialTime);
+  const initialSummary = initial.summary ?? '';
   let saving = $state(false);
 
   async function submit(event: SubmitEvent) {
@@ -35,6 +37,7 @@
       ...(recordedAt && recordedAt !== initialTime
         ? { recorded_at: new Date(recordedAt).toISOString() }
         : {}),
+      ...(summary.trim() !== initialSummary.trim() ? { summary: summary.trim() } : {}),
     });
     saving = false;
   }
@@ -48,6 +51,10 @@
   <label>
     Recorded at <span class="hint">your local time</span>
     <input type="datetime-local" bind:value={recordedAt} />
+  </label>
+  <label>
+    Summary
+    <textarea bind:value={summary} rows="6" maxlength="12000"></textarea>
   </label>
   <label>
     Labels <span class="hint">separated by commas</span>

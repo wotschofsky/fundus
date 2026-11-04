@@ -18,6 +18,7 @@ use std::sync::{
 pub struct Options {
     /// Holds every transcript creation request until notified.
     pub gate: Option<Arc<tokio::sync::Notify>>,
+    pub first_embedding_gate: Option<Arc<tokio::sync::Notify>>,
     /// Polls answered "processing" before a job completes.
     pub pending_polls: usize,
     /// The first this many jobs end in AssemblyAI's error state.
@@ -29,6 +30,7 @@ pub struct Options {
 #[derive(Default)]
 pub struct Provider {
     pub submits: AtomicUsize,
+    pub embeddings: AtomicUsize,
     pub polls: AtomicUsize,
     pub uploads: AtomicUsize,
     pub deletes: AtomicUsize,
@@ -63,6 +65,8 @@ pub async fn connect(
     let (submit, poll, upload, chat) = (state.clone(), state.clone(), state.clone(), state.clone());
     let (list, delete) = (state.clone(), state.clone());
     let gate = options.gate.clone();
+    let embedding = state.clone();
+    let embedding_gate = options.first_embedding_gate.clone();
     let router = Router::new()
         .route(
             "/v2/upload",
@@ -139,9 +143,18 @@ pub async fn connect(
         )
         .route(
             "/embeddings",
-            post(|Json(body): Json<Value>| async move {
-                let n = body["input"].as_array().map(Vec::len).unwrap_or(1);
-                Json(json!({"data": (0..n).map(|i| json!({"index": i, "embedding": [1., 0., 0.]})).collect::<Vec<_>>()}))
+            post(move |Json(body): Json<Value>| {
+                let state = embedding.clone();
+                let gate = embedding_gate.clone();
+                async move {
+                    if state.embeddings.fetch_add(1, Ordering::SeqCst) == 0
+                        && let Some(gate) = gate
+                    {
+                        gate.notified().await;
+                    }
+                    let n = body["input"].as_array().map(Vec::len).unwrap_or(1);
+                    Json(json!({"data": (0..n).map(|i| json!({"index": i, "embedding": [1., 0., 0.]})).collect::<Vec<_>>()}))
+                }
             }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

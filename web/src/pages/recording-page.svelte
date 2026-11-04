@@ -282,7 +282,7 @@
         <section class="summary">
           <div class="section-heading">
             <h2>Summary</h2>
-            <span>Generated</span>
+            <span>{e.summary_manual ? 'Edited' : 'Generated'}</span>
           </div>
           <p>{e.summary}</p>
         </section>

@@ -116,11 +116,12 @@ final class Library {
         await refresh()
     }
 
-    /// `title` and `recordedAt` are sent only when given: a sent title is kept as a manual one and
-    /// is never replaced by a generated title again.
-    func update(_ id: String, title: String?, labels: [String], recordedAt: Date?) async throws {
+    /// `title`, `summary` and `recordedAt` are sent only when given: a sent title or summary is kept
+    /// and is never replaced by a generated one again.
+    func update(_ id: String, title: String?, summary: String?, labels: [String], recordedAt: Date?) async throws {
         var body: [String: Any] = ["labels": labels]
         if let title { body["title"] = title }
+        if let summary { body["summary"] = summary }
         if let recordedAt { body["recorded_at"] = VaultAPI.timestamp(recordedAt) }
         try await VaultAPI.send(VaultAPI.entryPath(id), method: "PATCH", body: body)
         await refresh()

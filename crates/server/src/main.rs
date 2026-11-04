@@ -136,6 +136,8 @@ async fn main() -> Result<()> {
                 .await?;
             shutdown.cancel();
             worker.await?;
+            app.background.close();
+            app.background.wait().await;
             app.db.close().await;
         }
         Cmd::Healthcheck => unreachable!(),
