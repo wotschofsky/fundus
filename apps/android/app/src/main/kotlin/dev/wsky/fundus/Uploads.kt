@@ -215,7 +215,16 @@ class Uploads(private val context: Context, private val vault: Vault, private va
             val entries = mutableListOf<SourceHistoryEntry>()
             var cursor: Int? = 0
             while (cursor != null) {
-                val page = vault.get<SourceHistoryPage>("/source-history?limit=500&cursor=$cursor")
+                // Every page comes from the vault captured above, not whichever is connected by then. The client
+                // signs only requests to the connected vault, so after a switch a page fails instead of mixing
+                // two vaults' histories under one.
+                val request = Request.Builder().url(endpoint(server, "/source-history?limit=500&cursor=$cursor")).build()
+                val page = withContext(Dispatchers.IO) {
+                    vault.http.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw VaultError("The vault could not list its imports (HTTP ${response.code}).")
+                        VaultJson.decodeFromString<SourceHistoryPage>(response.body.string())
+                    }
+                }
                 entries += page.entries
                 cursor = page.nextCursor
             }
