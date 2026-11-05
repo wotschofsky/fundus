@@ -14,7 +14,7 @@ CI runs the same unit tests (`.github/workflows/check.yml`):
 ```sh
 ../../scripts/fetch-native-deps.sh     # libFLAC source, once
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew testDebugUnitTest        # the OAuth, decoding and formatting checks
+./gradlew testDebugUnitTest        # OAuth, decoding, session grouping, import status, formatting
 ./gradlew assembleRelease          # app/build/outputs/apk/release/app-release.apk, about 5 MB
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```

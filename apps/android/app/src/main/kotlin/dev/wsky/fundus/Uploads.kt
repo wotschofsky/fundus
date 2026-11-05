@@ -308,6 +308,10 @@ class Uploads(private val context: Context, private val vault: Vault, private va
             }
             verify()
             // Imported until later reads of the vault's history settle it (see ImportStatus), even if the read below fails.
+            // ponytail: verify() journals "verified" synchronously, and this status is saved later with apply(), so a
+            // process death in between leaves the import's sessions unmarked (and Import offered) until a later history
+            // read lists them. To close it, save the status with commit() before verify() journals, deduplicated for a
+            // retried verify, if that window ever matters.
             val verified = _queue.value
             changeStatus { it.verified(verified.server, verified.sessions.orEmpty().map { plan -> plan.sourceIds }) }
             deleteAudio()

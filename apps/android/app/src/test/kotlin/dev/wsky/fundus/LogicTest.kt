@@ -280,9 +280,11 @@ class LogicTest {
         // They answer from before the vault had it: still imported, however many there are.
         for (ticket in stale) status = status.accept(ticket, "https://a", emptyList())
         assertEquals(waiting, status.records("https://a", idle))
-        // Another vault's newer read neither shows nor settles it.
-        val (other, otherTicket) = status.begin()
-        status = other.accept(otherTicket, "https://b", emptyList())
+        // Another vault's newer reads neither show nor settle it, however many there are.
+        repeat(ImportStatus.SETTLE_READS) {
+            val (other, otherTicket) = status.begin()
+            status = other.accept(otherTicket, "https://b", emptyList())
+        }
         assertEquals(emptyList<ImportRecord>(), status.records("https://b", idle))
         assertEquals(waiting, status.records("https://a", idle))
         assertEquals(emptyList<ImportRecord>(), status.records(null, idle))
