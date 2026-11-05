@@ -7,6 +7,8 @@ plugins {
 android {
     namespace = "dev.wsky.fundus"
     compileSdk = 37
+    // Pinned so local builds and CI install the same NDK (AGP's own default may not be installed).
+    ndkVersion = "27.1.12297006"
 
     defaultConfig {
         applicationId = "dev.wsky.fundus"

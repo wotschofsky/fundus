@@ -7,8 +7,9 @@ recordings, newest first, each with its own Import button.
 
 ## Build
 
-Needs the Android SDK (platform 37), the NDK and CMake 3.22.1 (SDK Manager), and a JDK that Gradle
-supports; Android Studio's bundled one works:
+Needs the Android SDK (platform 37), the NDK version pinned as `ndkVersion` in `app/build.gradle.kts`
+and CMake 3.22.1 (SDK Manager), and a JDK that Gradle supports; Android Studio's bundled one works.
+CI runs the same unit tests (`.github/workflows/check.yml`):
 
 ```sh
 ../../scripts/fetch-native-deps.sh     # libFLAC source, once
