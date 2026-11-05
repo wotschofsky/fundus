@@ -1,4 +1,4 @@
-<!-- How the Mac app, chat apps (MCP) and token clients connect, and what is connected now. -->
+<!-- How the native apps, chat apps (MCP) and token clients connect, and what is connected now. -->
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { KeyRound } from '@lucide/svelte';
@@ -36,8 +36,8 @@
 <section class="settings-section" id="connect">
   <h2>Connect apps</h2>
   <div class="setting">
-    <h3>Mac app</h3>
-    <p>Enter this address in the app’s Settings, then approve access in your browser.</p>
+    <h3>Mac and Android apps</h3>
+    <p>Enter this address when you connect the app, then approve access in your browser.</p>
     <CopyField value={me.public_url} label="Copy server address" />
   </div>
   <div class="setting">
