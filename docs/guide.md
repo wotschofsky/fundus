@@ -113,7 +113,7 @@ Connect an MCP client using Streamable HTTP at `https://your-vault.example/mcp` 
 
 Add `https://your-vault.example/mcp` in your chat app’s MCP or connector settings, then choose its **Connect** or **Sign in** action. Your browser opens the vault, where you sign in and explicitly approve **read access** for that app. The client discovers the OAuth endpoints and registers automatically; no token copying is needed.
 
-OAuth connections can search and read the archive through MCP. They cannot upload, edit, delete, or administer the vault. Access tokens expire after one hour; clients renew them using rotating refresh tokens. **Settings → Connect a chat app** lists approved connections and lets you disconnect one immediately. Reusing an old refresh token revokes its connection.
+OAuth connections can search and read the archive through MCP. They cannot upload, edit, delete, or administer the vault. Access tokens expire after one hour; clients renew them using rotating refresh tokens. **Settings → Connect apps** lists approved connections and lets you disconnect one immediately. Reusing an old refresh token revokes its connection.
 
 **Settings → Connect apps** shows the last authenticated request for each connected app and access token, in your local date and time. Tracking starts when this version is installed; existing credentials show “No usage recorded” until they are used again. OAuth token refreshes alone do not count as use, and rotating tokens retain the connection’s history.
 
