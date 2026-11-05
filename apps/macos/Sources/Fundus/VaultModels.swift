@@ -54,7 +54,9 @@ struct Entry: Decodable, Identifiable, Hashable, Sendable {
     /// What the server is doing with a recording, in words.
     static func describe(stage: String, activeStage: String?, pauseRequested: Bool?) -> String {
         if pauseRequested == true { return "Pausing after this step…" }
-        switch activeStage ?? stage {
+        // A waiting or stopped recording can still carry the step it last ran (a local record
+        // updated on Resume, or an older vault); only a running one is in that step.
+        switch ["queued", "paused", "failed", "complete"].contains(stage) ? stage : activeStage ?? stage {
         case "uploading": return "Uploading"
         case "queued": return "Waiting to process"
         case "preparing": return "Preparing audio"

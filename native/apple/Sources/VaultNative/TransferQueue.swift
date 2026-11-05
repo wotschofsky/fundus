@@ -122,6 +122,12 @@ public struct QueueState: Codable, Sendable {
         try VaultCredentials.save(token)
         snapshot.server = server; snapshot.timezone = timezone; save()
     }
+    /// Stops sending uploads anywhere until a vault is configured again, as when the Mac
+    /// disconnects from the vault the queue uploads to.
+    public func forgetServer() throws {
+        guard ["idle", "verified"].contains(snapshot.state) else { throw failure("Finish or clear the current queue before disconnecting.") }
+        snapshot.server = ""; save()
+    }
     public func configureTimezone(_ timezone: String) throws {
         guard ["idle", "verified"].contains(snapshot.state) else { throw failure("Finish or clear the current queue before changing the recorder clock.") }
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
@@ -224,8 +230,9 @@ public struct QueueState: Codable, Sendable {
         session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         #endif
         for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] { try? FileManager.default.removeItem(at: url) }
-        let server = snapshot.server, timezone = snapshot.timezone
-        snapshot = QueueState(); snapshot.server = server; snapshot.timezone = timezone; save()
+        // One assignment: observers must never see the cleared queue without its vault or recorder clock.
+        var cleared = QueueState(); cleared.server = snapshot.server; cleared.timezone = snapshot.timezone
+        snapshot = cleared; save()
     }
     public func json() throws -> String { String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self) }
     private func connection() throws -> VaultConnection {
