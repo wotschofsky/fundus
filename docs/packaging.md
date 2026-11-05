@@ -13,8 +13,9 @@ publishes a security release.
 ## Container CI
 
 `containers.yml` runs on PRs, pushes to `main`, `v*` tags and manual runs. It calls
-`check.yml` for Rust, web, native codec, Swift and mobile TypeScript checks, then
-builds and smoke-tests each architecture. Fixable HIGH/CRITICAL scan findings
+`check.yml`, every check in the [guide's list](guide.md#checks), so a failing check
+in any app also stops image publication; then it builds and smoke-tests each
+architecture. Fixable HIGH/CRITICAL scan findings
 block publication. PRs never log in or publish.
 
 Native builds use `ubuntu-24.04` and `ubuntu-24.04-arm` runners. Allow package

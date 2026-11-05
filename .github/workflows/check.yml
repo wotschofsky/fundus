@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 26, cache: pnpm, cache-dependency-path: pnpm-lock.yaml}
       - run: pnpm install --frozen-lockfile && pnpm build
+      - run: pnpm --dir web test
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg libflac-dev
       - name: Install SQLx migration CLI
@@ -42,3 +43,33 @@ jobs:
             build/Fundus-*.sha256
           if-no-files-found: error
       - run: pnpm install --frozen-lockfile && pnpm --dir apps/mobile check
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: 21}
+      # Gradle configures the native build even for JVM tests, so the pinned NDK (ndkVersion in
+      # apps/android/app/build.gradle.kts) and CMake must be installed; Gradle fetches the platform.
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools ndk;28.2.13676358 cmake;3.22.1
+      - run: scripts/fetch-native-deps.sh
+      - run: ./gradlew testDebugUnitTest --console=plain
+        working-directory: apps/android
+      # 16 KB memory pages only concern 64-bit processes, so the 32-bit library may keep 4 KB.
+      - name: 64-bit native libraries load on 16 KB-page devices
+        working-directory: apps/android
+        run: |
+          set -euo pipefail
+          ./gradlew :app:externalNativeBuildRelease --console=plain
+          readelf=$(ls "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)
+          libs=$(find app/build/intermediates/cxx -path '*/arm64-v8a/*.so' -o -path '*/x86_64/*.so')
+          test -n "$libs"
+          for so in $libs; do
+            aligns=$("$readelf" -lW "$so" | awk '$1 == "LOAD" { print $NF }')
+            test -n "$aligns"
+            for align in $aligns; do
+              if [ $((align)) -lt 16384 ]; then echo "$so: a LOAD segment is aligned to $align"; exit 1; fi
+            done
+          done
