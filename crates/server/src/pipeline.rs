@@ -63,11 +63,13 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
 
 /// After a crash, work that cannot bill twice resumes on its own, including a request whose job
 /// is found by its saved upload URL. One saved without that URL waits for an explicit Retry.
+/// Work interrupted in Trash stops (paused, so it can be deleted or resumed after a restore);
+/// the ambiguous-submit rule applies there too, so a restore never resubmits on its own.
 async fn recover(app: &App) {
-    let _ = sqlx::query!("UPDATE entries SET stage='failed',failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted' AND t.audio_url IS NULL)")
+    let _ = sqlx::query!("UPDATE entries SET stage='failed',active_stage=NULL,failure='Server stopped while submitting the transcription. Retry explicitly to resubmit.' WHERE stage NOT IN ('queued','complete','failed','paused') AND EXISTS(SELECT 1 FROM transcriptions t WHERE t.entry_id=entries.id AND t.state='submitted' AND t.audio_url IS NULL)")
         .execute(&app.db)
         .await;
-    let _ = sqlx::query!("UPDATE entries SET stage='queued' WHERE stage NOT IN ('queued','complete','failed','paused') AND trashed_at IS NULL")
+    let _ = sqlx::query!("UPDATE entries SET stage=CASE WHEN trashed_at IS NULL THEN 'queued' ELSE 'paused' END,active_stage=NULL WHERE stage NOT IN ('queued','complete','failed','paused')")
         .execute(&app.db)
         .await;
 }
@@ -820,7 +822,9 @@ pub async fn regenerate_summary(app: &App, entry: &str) -> Result<()> {
 }
 
 async fn regenerate_summary_at_revision(app: &App, entry: &str, revision: i64) -> Result<()> {
-    let row = sqlx::query!("UPDATE entries SET stage=CASE WHEN pause_requested=1 THEN 'paused' ELSE 'enriching' END,active_stage=CASE WHEN pause_requested=1 THEN NULL ELSE 'enriching' END,pause_requested=0 WHERE id=? AND notes_revision=? AND trashed_at IS NULL RETURNING warnings,stage", entry, revision).fetch_optional(&app.db).await?;
+    // Trash stops the job like a pause. Each decision is one statement, so a Restore between
+    // statements cannot leave the row claimed ('preparing' or 'enriching') with no job running.
+    let row = sqlx::query!("UPDATE entries SET stage=CASE WHEN pause_requested=1 OR trashed_at IS NOT NULL THEN 'paused' ELSE 'enriching' END,active_stage=CASE WHEN pause_requested=1 OR trashed_at IS NOT NULL THEN NULL ELSE 'enriching' END,pause_requested=0 WHERE id=? AND notes_revision=? RETURNING warnings,stage", entry, revision).fetch_optional(&app.db).await?;
     let Some(row) = row else {
         return Ok(());
     };
@@ -831,14 +835,21 @@ async fn regenerate_summary_at_revision(app: &App, entry: &str, revision: i64) -
     warnings.retain(|warning| !warning.starts_with("Summary unavailable:"));
     // An older request may finish after Undo or another correction; its cache is never reused.
     let cache = format!("summary-{revision}");
-    match load_summary(app, entry, &cache).await {
+    let accepted = match load_summary(app, entry, &cache).await {
         Ok(notes) => save_notes_at_revision(app, entry, &notes, true, Some(revision)).await?,
-        Err(error) => warnings.push(format!("Summary unavailable: {error}")),
-    }
+        Err(error) => {
+            warnings.push(format!("Summary unavailable: {error}"));
+            true
+        }
+    };
     let warnings_json = serde_json::to_string(&warnings)?;
     let timestamp = now();
-    sqlx::query!("UPDATE entries SET stage='complete',active_stage=NULL,failure=NULL,requested_work=NULL,pause_requested=0,warnings=?,updated_at=? WHERE id=? AND notes_revision=? AND trashed_at IS NULL", warnings_json, timestamp, entry, revision).execute(&app.db).await?;
-    if let Err(error) = refresh_summary_passage(app, entry).await {
+    // Notes refused because the recording went to Trash stay requested: Restore and Retry write
+    // them from the cached answer, without paying again.
+    let stage = sqlx::query_scalar!("UPDATE entries SET stage=CASE WHEN ? AND trashed_at IS NULL THEN 'complete' ELSE 'paused' END,active_stage=NULL,failure=NULL,requested_work=CASE WHEN ? AND trashed_at IS NULL THEN NULL ELSE requested_work END,pause_requested=0,warnings=?,updated_at=? WHERE id=? AND notes_revision=? RETURNING stage", accepted, accepted, warnings_json, timestamp, entry, revision).fetch_optional(&app.db).await?;
+    if stage.as_deref() == Some("complete")
+        && let Err(error) = refresh_summary_passage(app, entry).await
+    {
         tracing::warn!(%entry, %error, "could not index the summary");
     }
     Ok(())
@@ -847,17 +858,19 @@ async fn regenerate_summary_at_revision(app: &App, entry: &str, revision: i64) -
 /// The generated title (unless the owner set one) and summary. Reanalyze `replace`s them with
 /// fresh notes; processing keeps a summary that is already there.
 async fn save_notes(app: &App, entry: &str, notes: &provider::Notes, replace: bool) -> Result<()> {
-    save_notes_at_revision(app, entry, notes, replace, None).await
+    save_notes_at_revision(app, entry, notes, replace, None).await?;
+    Ok(())
 }
+/// False when the notes were refused: the recording is in Trash, or a newer revision owns them.
 async fn save_notes_at_revision(
     app: &App,
     entry: &str,
     notes: &provider::Notes,
     replace: bool,
     revision: Option<i64>,
-) -> Result<()> {
+) -> Result<bool> {
     if notes.title.trim().is_empty() {
-        return Ok(());
+        return Ok(true);
     }
     let mut tx = app.db.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(expected) = revision {
@@ -868,7 +881,7 @@ async fn save_notes_at_revision(
         .fetch_optional(&mut *tx)
         .await?;
         if current != Some(expected) {
-            return Ok(());
+            return Ok(false);
         }
     }
     let title = notes.title.trim().chars().take(240).collect::<String>();
@@ -882,7 +895,7 @@ async fn save_notes_at_revision(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
 async fn complete(

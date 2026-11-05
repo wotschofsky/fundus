@@ -84,8 +84,17 @@ pub(crate) fn with_names(summary: String, speakers: &str) -> String {
             text.replace(&format!("{{{label}}}"), &name)
         })
 }
+/// The step a recording is in, reported only while the worker is running it. A waiting or
+/// stopped recording keeps the step it last ran in storage; no reader should show that as current.
+pub(crate) fn active_stage(stage: &str, active: Option<String>) -> Option<String> {
+    if ["queued", "paused", "failed", "complete"].contains(&stage) {
+        None
+    } else {
+        active
+    }
+}
 fn entry(row: &sqlx::sqlite::SqliteRow) -> Value {
-    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":row.get::<Option<String>,_>("active_stage"),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"summary_manual":row.get::<i64,_>("summary_manual")!=0,"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
+    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":active_stage(&row.get::<String,_>("stage"),row.get::<Option<String>,_>("active_stage")),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"summary_manual":row.get::<i64,_>("summary_manual")!=0,"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some()})
 }
 const SELECT: &str = "SELECT e.*,(SELECT json_group_array(label) FROM entry_labels WHERE entry_id=e.id) AS labels,(SELECT json_group_array(json_array(s.label,p.name)) FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=e.id) AS speaker_names FROM entries e WHERE 1=1";
 pub async fn list(app: &App, f: Filters) -> Result<Value> {
