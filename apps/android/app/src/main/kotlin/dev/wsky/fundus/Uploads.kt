@@ -129,7 +129,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                 ?.let { ImportStatus(histories = mapOf(it.server to ImportStatus.History(it.entries))) }
             ?: ImportStatus()
     )
-    /** The vault's imported sessions, from this phone or anywhere else, and this phone's verified ones. */
+    /** Each vault's imported sessions, from this phone or anywhere else, and this phone's verified ones. */
     val status: StateFlow<ImportStatus> = _status.asStateFlow()
 
     private val _waiting = MutableStateFlow<List<RecordingSession>>(emptyList())
@@ -307,7 +307,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                 update { it.copy(completed = true, state = "verifying") }
             }
             verify()
-            // Imported until a newer read of the vault's history decides, even if that read fails now.
+            // Imported until later reads of the vault's history settle it (see ImportStatus), even if the read below fails.
             val verified = _queue.value
             changeStatus { it.verified(verified.server, verified.sessions.orEmpty().map { plan -> plan.sourceIds }) }
             deleteAudio()
@@ -505,7 +505,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
 
         /**
          * The import in this phone's queue, until the vault lists it: only while it is unfinished and on the
-         * connected vault. Once verified, [ImportStatus] keeps it until a later read of the vault settles it.
+         * connected vault. Once verified, [ImportStatus] keeps it until reads of the vault settle it.
          */
         fun queued(queue: QueueState, history: List<ImportRecord>, server: String?): List<ImportRecord> {
             if (!queue.unfinished || queue.server != server) return emptyList()
