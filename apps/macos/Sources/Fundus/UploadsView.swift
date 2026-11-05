@@ -37,9 +37,7 @@ struct UploadsView: View {
                     TransferSummary(showsDetails: false)
                     Spacer()
                     if ["failed", "paused", "verified"].contains(app.transfer.state) {
-                        Button("Clear") {
-                            do { try app.queue.clear() } catch { app.report("Could not clear the uploads", error) }
-                        }
+                        Button("Clear") { app.clearUploads() }
                         .help("Remove the local copies of these files. Recordings already on the vault stay there.")
                     }
                 }

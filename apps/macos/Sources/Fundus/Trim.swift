@@ -16,35 +16,6 @@ struct Trim: Codable, Hashable {
     }
 }
 
-/// One source file's share of a merge: which of its frames are used and where they land.
-struct MergeSegment: Equatable {
-    var index: Int
-    /// First frame used, within the source file.
-    var firstFrame: Int64
-    var frameCount: Int64
-    /// Where these frames start in the merged audio.
-    var outputOffset: Int64
-}
-
-enum MergePlan {
-    /// The files (or parts of files) that make up `range` of the concatenated audio; all of every
-    /// file when `range` is nil. Files entirely outside the range are left out.
-    static func segments(frameCounts: [Int64], keeping range: Range<Int64>?) -> [MergeSegment] {
-        let total = frameCounts.reduce(0, +)
-        let keep = range ?? 0..<total
-        var segments: [MergeSegment] = []
-        var position: Int64 = 0
-        for (index, count) in frameCounts.enumerated() {
-            defer { position += count }
-            let from = max(position, keep.lowerBound), to = min(position + count, keep.upperBound)
-            guard from < to else { continue }
-            segments.append(MergeSegment(index: index, firstFrame: from - position, frameCount: to - from,
-                                         outputOffset: from - keep.lowerBound))
-        }
-        return segments
-    }
-}
-
 extension RecordingSession {
     /// Positions in the session (seconds from its first sample) to clock times, per source file.
     var timeline: SessionTimeline {

@@ -115,7 +115,8 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         cached[credentials.server] = credentials
     }
 
-    static func origin(_ supplied: String) throws -> String {
+    /// A vault address as one canonical origin (lowercase, no default port, no trailing slash).
+    public static func origin(_ supplied: String) throws -> String {
         let connection = try VaultConnection(server: supplied.trimmingCharacters(in: .whitespacesAndNewlines), token: "address-validation")
         var components = URLComponents(url: connection.base, resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme?.lowercased()
