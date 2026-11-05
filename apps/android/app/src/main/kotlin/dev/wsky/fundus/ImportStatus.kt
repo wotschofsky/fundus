@@ -1,5 +1,6 @@
 package dev.wsky.fundus
 
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 
 /**
@@ -46,8 +47,20 @@ data class ImportStatus(
     fun records(server: String?, queue: QueueState): List<ImportRecord> {
         if (server == null) return emptyList()
         val listed = histories[server]?.entries.orEmpty().mapNotNull { it.record }
-        val known = listed.mapTo(HashSet()) { it.sourceIds }
+        // Only a whole-session import settles this phone's: a trimmed one (the Mac can trim) leaves the rest of the
+        // session unimported. The vault stores no trim for a whole session.
+        val whole = listed.filter { (it.trimStartFrame ?: 0) == 0L && it.trimEndFrame == null }
+        val known = whole.mapTo(HashSet()) { it.sourceIds }
         val waiting = unconfirmed.filter { it.server == server && it.sourceIds !in known }.map { ImportRecord(it.sourceIds, "queued") }
-        return listed + waiting + Uploads.queued(queue, listed + waiting, server)
+        return listed + waiting + Uploads.queued(queue, whole + waiting, server)
     }
+}
+
+/** Changes the state and saves a changed result under [lock], so changes on different threads save in the order they happened. */
+internal fun <T> MutableStateFlow<T>.changeAndSave(lock: Any, save: (T) -> Unit, change: (T) -> T): T = synchronized(lock) {
+    val current = value
+    val next = change(current)
+    value = next
+    if (next !== current) save(next)
+    next
 }

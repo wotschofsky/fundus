@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 
@@ -180,7 +181,7 @@ class LogicTest {
         assertEquals(listOf(ImportRecord(listOf("a", "b"), "uploading", importId = "")), Uploads.queued(running, emptyList(), "https://vault"))
         // The vault lists it: the vault's record is the one that counts.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, listOf(ImportRecord(listOf("a", "b"), "complete")), "https://vault"))
-        // Done, then trashed in the vault: importable again.
+        // Verified: the queue no longer stands in for it (ImportStatus does, until a later read of the vault).
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running.copy(state = "verified"), emptyList(), "https://vault"))
         // Another vault knows nothing of it.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, emptyList(), "https://other"))
@@ -198,6 +199,46 @@ class LogicTest {
         assertEquals("Ready", Entry.describe("complete", "indexing", false))
         assertEquals("Transcribing", Entry.describe("transcribing", "transcribing", false))
         assertEquals("Pausing after this step…", Entry.describe("transcribing", "transcribing", true))
+    }
+
+    @Test
+    fun aTrimmedImportElsewhereDoesNotSettleThisPhonesWholeImport() {
+        val ids = listOf("a", "b")
+        // The Mac imported part of the session; this phone then imported all of it.
+        val trimmed = SourceHistoryEntry(id = "t", stage = "complete", trimStartFrame = 480_000, sourceIds = ids)
+        var (status, ticket) = ImportStatus().begin()
+        status = status.accept(ticket, "https://a", listOf(trimmed)).verified("https://a", listOf(ids))
+        val records = status.records("https://a", QueueState())
+        assertTrue(records.any { it.sourceIds == ids && it.trimStartFrame == null && it.trimEndFrame == null })
+        // The same holds while this phone's upload of the whole session is still running.
+        val running = QueueState(server = "https://a", state = "uploading", sessions = listOf(SessionPlan(ids)),
+            files = listOf(UploadItem(name = "TX01_MIC001_20261001_120000.wav", source = "x.wav")))
+        val (before, _) = ImportStatus().begin()
+        val inFlight = before.accept(1, "https://a", listOf(trimmed)).records("https://a", running)
+        assertTrue(inFlight.any { it.sourceIds == ids && it.stage == "uploading" })
+    }
+
+    @Test
+    fun aSecondWriterWaitsUntilTheFirstHasSaved() {
+        val state = kotlinx.coroutines.flow.MutableStateFlow(0)
+        val lock = Any()
+        val saved = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        val saving = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val first = Thread { state.changeAndSave(lock, { saving.countDown(); release.await(); saved += it }) { it + 1 } }
+        val second = Thread { state.changeAndSave(lock, { saved += it }) { it + 10 } }
+        try {
+            first.start()
+            saving.await()
+            second.start()
+            second.join(200)
+            assertTrue("the second change must wait for the first save", second.isAlive)
+        } finally {
+            release.countDown() // never leave the first writer blocked, even when the check fails
+            first.join(); second.join()
+        }
+        assertEquals(listOf(1, 11), saved)
+        assertEquals(11, state.value)
     }
 
     @Test

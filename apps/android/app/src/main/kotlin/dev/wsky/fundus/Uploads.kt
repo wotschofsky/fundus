@@ -153,13 +153,8 @@ class Uploads(private val context: Context, private val vault: Vault, private va
      * Changes the import status; [persist] when it holds something a restart must keep. Change and save happen
      * under one lock, so a history poll and an upload's verification on other threads cannot save out of order.
      */
-    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus = synchronized(statusLock) {
-        val current = _status.value
-        val next = change(current)
-        _status.value = next
-        if (persist && next !== current) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), next)) }
-        next
-    }
+    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus =
+        _status.changeAndSave(statusLock, { if (persist) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), it)) } }, change)
 
     /** One session from the mic window: now, or after the current upload. */
     fun importNext(session: RecordingSession) {
@@ -510,7 +505,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
 
         /**
          * The import in this phone's queue, until the vault lists it: only while it is unfinished and on the
-         * connected vault. Once verified, the vault's history alone decides (it may have been trashed since).
+         * connected vault. Once verified, [ImportStatus] keeps it until a later read of the vault settles it.
          */
         fun queued(queue: QueueState, history: List<ImportRecord>, server: String?): List<ImportRecord> {
             if (!queue.unfinished || queue.server != server) return emptyList()
