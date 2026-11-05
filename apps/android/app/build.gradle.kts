@@ -7,8 +7,9 @@ plugins {
 android {
     namespace = "dev.wsky.fundus"
     compileSdk = 37
-    // Pinned so local builds and CI install the same NDK (AGP's own default may not be installed).
-    ndkVersion = "27.1.12297006"
+    // AGP's default NDK, pinned so CI installs the one the build uses. r28 aligns the 64-bit native
+    // libraries to 16 KB pages, which devices with 16 KB pages (Android 15 and later) need to load them.
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "dev.wsky.fundus"

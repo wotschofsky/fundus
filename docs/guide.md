@@ -150,9 +150,10 @@ Moving an entry to Trash hides it from the library and MCP retrieval until resto
 ## Checks
 
 The checks are the commands in [`.github/workflows/check.yml`](../.github/workflows/check.yml),
-which CI runs on pull requests, pushes to `main` and version tags (through `containers.yml`): the server (format, Clippy, tests and the codec test), the web
-library (build and tests), the Apple packages and Mac bundle, the iOS app's types, and the Android
-app's JVM tests. Run the same commands locally; that file is the one list to keep current. See
+which CI runs on pull requests, pushes to `main` and version tags (through `containers.yml`):
+the server (format, Clippy, tests and the codec test), the web library (build and tests), the
+Apple packages and Mac bundle, the Expo app's types, and the Android app's JVM tests and native
+library alignment. Run the same commands locally; that file is the one list to keep current. See
 [checked SQL](database.md) for the local development database the Rust compiler needs.
 
 The server integration tests run local AssemblyAI and OpenAI mocks and real FFmpeg, covering audio preparation through searchable transcripts, checkpoint reuse across pause/shutdown/restart, failed-job resubmission, keyword-only search without embeddings, PCM deduplication, sample-exact trims, and speaker correction. Additional tests cover scopes/revocation, browser origin checks, resumable offsets after reopening SQLite, and actual MCP initialization/tool discovery. Native tests verify lossless integer conversion and byte-preserving float/int32 passthrough. A separate ignored Rust test can validate inference with the pinned voice model: set `VAULT_VOICE_MODEL` and `ORT_DYLIB_PATH`, then `cargo test pinned_model_runs -- --ignored`.
