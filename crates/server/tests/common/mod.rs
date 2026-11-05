@@ -25,6 +25,8 @@ pub struct Options {
     pub failing_jobs: usize,
     /// The first this many creation requests make a job but lose their answer (HTTP 503).
     pub lost_answers: usize,
+    /// Holds every chat completion (titles and summaries) until notified.
+    pub chat_gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Default)]
@@ -67,6 +69,7 @@ pub async fn connect(
     let gate = options.gate.clone();
     let embedding = state.clone();
     let embedding_gate = options.first_embedding_gate.clone();
+    let chat_gate = options.chat_gate.clone();
     let router = Router::new()
         .route(
             "/v2/upload",
@@ -132,9 +135,12 @@ pub async fn connect(
         .route(
             "/chat/completions",
             post(move |Json(body): Json<Value>| {
-                let state = chat.clone();
+                let (state, gate) = (chat.clone(), chat_gate.clone());
                 async move {
                     state.chats.lock().unwrap().push(body);
+                    if let Some(gate) = gate {
+                        gate.notified().await;
+                    }
                     let notes = json!({"language": "English", "title": "Cedar launch planning", "summary": "{A} plans the launch with {B}.",
                         "names": [{"speaker": "[A]", "name": "Morgan", "quote": "I'm Morgan."}]});
                     Json(json!({"choices": [{"message": {"role": "assistant", "content": notes.to_string()}}]}))
