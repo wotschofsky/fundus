@@ -227,6 +227,20 @@ final class TransferQueueTests: XCTestCase {
         XCTAssertEqual(report.completions, 1)
     }
 
+    func testDisconnectForgetsTheUploadVaultOnlyWhileNothingIsInFlight() throws {
+        func queue(_ state: String) -> TransferQueue {
+            var snapshot = QueueState(); snapshot.server = "https://fixture.example"; snapshot.state = state
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            return TransferQueue(folder: folder, initialState: snapshot, tokenOverride: "synthetic-only")
+        }
+        let finished = queue("verified")
+        try finished.forgetServer()
+        XCTAssertEqual(finished.snapshot.server, "", "a disconnected Mac must not keep uploading to that vault")
+        let paused = queue("paused")
+        XCTAssertThrowsError(try paused.forgetServer())
+        XCTAssertEqual(paused.snapshot.server, "https://fixture.example", "a paused import still belongs to its vault")
+    }
+
     func testOlderQueueJournalRemainsDecodable() throws {
         let data = Data(#"{"server":"https://fixture.example","timezone":"UTC","state":"paused","files":[{"id":"old","name":"clip.wav","source":"copy.wav","offset":0,"length":1,"state":"waiting"}]}"#.utf8)
         let journal = try JSONDecoder().decode(QueueState.self, from: data)

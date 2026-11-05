@@ -50,7 +50,7 @@ private struct VaultSettings: View {
                     }
                     Spacer()
                     if app.isConnected {
-                        Button("Disconnect") { run { await app.native.signOut(); message = "Disconnected" } }
+                        Button("Disconnect") { run { try await app.disconnect(); message = "Disconnected" } }
                             .disabled(!canChangeVault)
                     }
                 }

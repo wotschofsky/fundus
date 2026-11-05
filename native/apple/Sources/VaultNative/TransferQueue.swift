@@ -122,6 +122,12 @@ public struct QueueState: Codable, Sendable {
         try VaultCredentials.save(token)
         snapshot.server = server; snapshot.timezone = timezone; save()
     }
+    /// Stops sending uploads anywhere until a vault is configured again, as when the Mac
+    /// disconnects from the vault the queue uploads to.
+    public func forgetServer() throws {
+        guard ["idle", "verified"].contains(snapshot.state) else { throw failure("Finish or clear the current queue before disconnecting.") }
+        snapshot.server = ""; save()
+    }
     public func configureTimezone(_ timezone: String) throws {
         guard ["idle", "verified"].contains(snapshot.state) else { throw failure("Finish or clear the current queue before changing the recorder clock.") }
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }

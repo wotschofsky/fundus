@@ -28,6 +28,9 @@ final class AppModel {
     private(set) var uploadServer: String
     private(set) var hasUploads: Bool
     private(set) var isCopyingSources = false
+    /// An import is being handed to the queue (it can wait for a token refresh first). Nothing
+    /// else may start or change the vault until it lands, or it could take the import's place.
+    private(set) var isEnqueueing = false
     private(set) var server = ""
     private(set) var isConnected = false
     private(set) var isSigningIn = false
@@ -74,7 +77,7 @@ final class AppModel {
     var vaultName: String { URL(string: server)?.host ?? "Choose Vault" }
     var uploadVaultName: String { URL(string: uploadServer)?.host ?? "" }
     var isTransferring: Bool { ["copying", "uploading", "verifying"].contains(transferState) }
-    var canUpload: Bool { ["idle", "verified"].contains(transferState) && !sources.isEjecting }
+    var canUpload: Bool { ["idle", "verified"].contains(transferState) && !sources.isEjecting && !isEnqueueing }
     /// Imports go to `uploadServer`; while another vault is open in the library they would land
     /// somewhere the person is not looking, so they wait until both agree.
     var canImport: Bool { canUpload && !uploadServer.isEmpty && (server.isEmpty || server == uploadServer) }
@@ -211,6 +214,7 @@ final class AppModel {
     /// One session from the mic window: now, or after the current upload, as the queue takes one
     /// import at a time.
     func importNext(_ session: RecordingSession) {
+        guard !uploadServer.isEmpty else { return }
         waitingSessions.append(session)
         importWaiting()
     }
@@ -231,6 +235,7 @@ final class AppModel {
     }
 
     func importSessions(_ selected: [RecordingSession]) {
+        guard canImport else { return }
         let plan = sessions.uploadPlan(selected)
         pendingSessions = selected
         enqueue(plan.urls, plans: plan.plans, sourceIDs: plan.sourceIDs)
@@ -246,12 +251,28 @@ final class AppModel {
     private func enqueue(_ urls: [URL], plans: [ImportSessionPlan] = [], sourceIDs: [String: String] = [:]) {
         guard canImport else { return }
         preview.stop()
+        isEnqueueing = true
         Task {
+            defer { isEnqueueing = false }
             do { try await queue.enqueue(urls, sessions: plans, sourceIDs: sourceIDs) } catch {
                 pendingSessions = []
                 report("Could not import the recordings", error)
             }
         }
+    }
+
+    /// Clears the upload list. Sessions asked for before the queue gave them an import ID (it
+    /// failed or paused first) never get one now, so they stop counting as queued.
+    func clearUploads() {
+        do { try queue.clear() } catch { return report("Could not clear the uploads", error) }
+        if !isEnqueueing { pendingSessions = [] }
+    }
+
+    /// Uploads to the vault being left stop before the sign-out waits for it, so no import can
+    /// start against that vault in between.
+    func disconnect() async throws {
+        if !uploadServer.isEmpty, uploadServer == native.server { try queue.forgetServer() }
+        await native.signOut()
     }
 
     /// Also cancels processing: the vault stops the recording after its current step.
