@@ -87,7 +87,7 @@
   <div class="setting">
     <h3>Access tokens</h3>
     <p>
-      For the mobile app and other clients without browser sign-in. Upload tokens can only add
+      For the iOS upload app and other clients without browser sign-in. Upload tokens can only add
       recordings; read tokens can only search and read.
     </p>
     <form
