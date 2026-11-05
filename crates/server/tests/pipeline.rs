@@ -1166,3 +1166,155 @@ async fn shutdown_waits_for_person_summary_refreshes() {
     );
     task.abort();
 }
+
+/// Status of an owner request to the browser API.
+async fn owner(app: &App, method: &str, uri: &str) -> u16 {
+    use tower::ServiceExt;
+    let token = fundus::auth::issue(app, "test", "admin").await.unwrap();
+    fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn a_summary_trashed_mid_request_waits_for_restore_and_is_not_paid_twice() {
+    let (dir, mut app, _provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "trashed-summary").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    task.abort();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (provider, task) = common::connect(
+        &mut app,
+        Options {
+            chat_gate: Some(gate.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    sqlx::query("UPDATE entries SET summary='Old summary' WHERE id=?")
+        .bind(&entry)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let uri = |action: &str| format!("/api/v1/entries/{entry}/{action}");
+    assert_eq!(owner(&app, "POST", &uri("summarize")).await, 200);
+    let (work_app, work_entry) = (app.clone(), entry.clone());
+    let job =
+        tokio::spawn(async move { pipeline::regenerate_summary(&work_app, &work_entry).await });
+    until(|| provider.chats.lock().unwrap().len() == 1).await;
+    assert_eq!(owner(&app, "POST", &uri("trash")).await, 204);
+    gate.notify_one();
+    job.await.unwrap().unwrap();
+    // The answer came back after the trash: nothing was written, and the request stays open.
+    assert_eq!(stage(&app, &entry).await, "paused");
+    let open = "SELECT requested_work FROM entries WHERE id=?";
+    assert_eq!(text(&app, open, &entry).await, "summary");
+    let summary = "SELECT summary FROM entries WHERE id=?";
+    assert_eq!(text(&app, summary, &entry).await, "Old summary");
+    assert_eq!(owner(&app, "POST", &uri("restore")).await, 200);
+    assert_eq!(owner(&app, "POST", &uri("retry")).await, 200);
+    gate.notify_one(); // a second request would otherwise wait forever; the count below catches it
+    pipeline::regenerate_summary(&app, &entry).await.unwrap();
+    assert_eq!(stage(&app, &entry).await, "complete");
+    assert_ne!(text(&app, summary, &entry).await, "Old summary");
+    assert_eq!(
+        provider.chats.lock().unwrap().len(),
+        1,
+        "the saved answer is reused, not requested again"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_summary_job_that_finds_its_recording_in_trash_stops_and_can_be_deleted() {
+    let (dir, app, provider, task) = setup(Options::default()).await;
+    let entry = entry(&app, dir.path(), "trashed-early").await;
+    pipeline::process(&app, &entry).await.unwrap();
+    assert_eq!(
+        owner(&app, "POST", &format!("/api/v1/entries/{entry}/summarize")).await,
+        200
+    );
+    // The worker claimed the job, then the owner moved the recording to Trash.
+    sqlx::query(
+        "UPDATE entries SET stage='preparing',active_stage='preparing',trashed_at=? WHERE id=?",
+    )
+    .bind(now())
+    .bind(&entry)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let chats = provider.chats.lock().unwrap().len();
+    pipeline::regenerate_summary(&app, &entry).await.unwrap();
+    assert_eq!(stage(&app, &entry).await, "paused");
+    assert_eq!(provider.chats.lock().unwrap().len(), chats);
+    assert_eq!(
+        owner(&app, "DELETE", &format!("/api/v1/entries/{entry}")).await,
+        204
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn restart_stops_work_interrupted_in_trash_without_resubmitting() {
+    let (_dir, app, provider, task) = setup(Options::default()).await;
+    for (id, step) in [
+        ("trashed-summary", "enriching"),
+        ("trashed-submit", "transcribing"),
+    ] {
+        sqlx::query("INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,active_stage,trashed_at,created_at,updated_at) VALUES(?,?,'Synthetic job',1,'UTC',?,?,?,?,?)")
+            .bind(id).bind(id).bind(step).bind(step).bind(now()).bind(now()).bind(now()).execute(&app.db).await.unwrap();
+    }
+    sqlx::query("INSERT INTO transcriptions(entry_id,state,submitted_at) VALUES('trashed-submit','submitted',?)")
+        .bind(now())
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    stop.cancel();
+    pipeline::worker(app.clone(), stop).await;
+    assert_eq!(stage(&app, "trashed-summary").await, "paused");
+    let (stage_name, failure): (String, String) =
+        sqlx::query_as("SELECT stage,failure FROM entries WHERE id='trashed-submit'")
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(stage_name, "failed");
+    assert!(failure.contains("Retry explicitly"));
+    assert_eq!(provider.submits(), 0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn only_running_recordings_report_the_step_they_are_in() {
+    let (_dir, app, _provider, task) = setup(Options::default()).await;
+    for (id, step) in [
+        ("failed-job", "failed"),
+        ("paused-job", "paused"),
+        ("queued-job", "queued"),
+        ("running-job", "transcribing"),
+    ] {
+        // Stopped and waiting rows keep the step they last ran in storage.
+        sqlx::query("INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,active_stage,created_at,updated_at) VALUES(?,?,'Synthetic job',1,'UTC',?,'transcribing',?,?)")
+            .bind(id).bind(id).bind(step).bind(now()).bind(now()).execute(&app.db).await.unwrap();
+    }
+    for (id, reported) in [
+        ("failed-job", serde_json::Value::Null),
+        ("paused-job", serde_json::Value::Null),
+        ("queued-job", serde_json::Value::Null),
+        ("running-job", serde_json::json!("transcribing")),
+    ] {
+        let detail = retrieval::get(&app, id).await.unwrap();
+        assert_eq!(detail["active_stage"], reported, "{id}");
+    }
+    task.abort();
+}
