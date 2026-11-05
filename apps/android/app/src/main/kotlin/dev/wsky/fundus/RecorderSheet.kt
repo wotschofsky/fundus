@@ -78,10 +78,10 @@ fun RecorderSheet(app: FundusApp, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     val state by app.recorder.state.collectAsStateWithLifecycle()
     val queue by app.uploads.queue.collectAsStateWithLifecycle()
-    val history by app.uploads.history.collectAsStateWithLifecycle()
+    val status by app.uploads.status.collectAsStateWithLifecycle()
     val waiting by app.uploads.waiting.collectAsStateWithLifecycle()
     val server by app.vault.server.collectAsStateWithLifecycle()
-    val records = remember(history, queue, server) { app.uploads.records() }
+    val records = remember(status, queue, server) { app.uploads.records() }
 
     // Everything on the mic, newest first, imported ones too.
     val listed = remember(state.sessions) { state.sessions.sortedByDescending { it.start } }
