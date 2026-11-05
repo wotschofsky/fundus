@@ -99,9 +99,9 @@ other Macs. Output names omit `-local`. Neither mode publishes artifacts.
 
 ## Mobile distribution and validation
 
-Expo remains the shared setup with SwiftUI/Compose UI and native transfer modules.
-The verified Android debug APK and unsigned iOS simulator app are development
-outputs. Release APK/AAB signing and iOS provisioning/TestFlight need this app's
+Android ships as the native app in `apps/android`; the Expo app in `apps/mobile` is
+iOS-only, with SwiftUI controls and the shared Swift transfer module. The unsigned iOS
+simulator app is a development output. Release APK/AAB signing and iOS provisioning/TestFlight need each app's
 own signing configuration and device acceptance checks. Another app's identities,
 keystores or provisioning profiles are not reused.
 

@@ -73,9 +73,13 @@ Connect your server in Settings and sign in through your browser. Saved connecti
 
 The server includes a Svelte library for playback, time-linked transcripts, search, labels, recording dates, and speaker corrections. No separate web deployment is required.
 
-### iOS & Android
+### Android
 
-Expo apps with native SwiftUI and Jetpack Compose controls prepare audio and upload it in resumable chunks. They require a custom native build and an upload token from Fundus Settings. [Mobile build instructions →](docs/guide.md#upload-apps)
+A native Kotlin and Jetpack Compose app: the library with transcripts and playback, speaker names, and import from a plugged-in DJI Mic, prepared and uploaded like on the Mac. It connects through browser approval. [Android build instructions →](apps/android/README.md)
+
+### iOS
+
+An Expo upload app with native SwiftUI controls prepares audio and uploads it in resumable chunks. It requires a custom native build and an upload token from Fundus Settings. [iOS build instructions →](docs/guide.md#upload-apps)
 
 Physical recorder connectivity and background execution depend on the device and OS. See [verification notes](docs/verification.md) for current testing coverage.
 
@@ -114,7 +118,8 @@ Backups include the SQLite database and audio archive. Stop the server before ta
 | Server | Rust, Axum, SQLx, SQLite / FTS5 |
 | Web library | Svelte, TypeScript, Vite |
 | Mac app | SwiftUI, shared Swift audio and transfer code |
-| Mobile upload apps | Expo, React Native, native platform controls |
+| Android app | Kotlin, Jetpack Compose, shared C audio code |
+| iOS upload app | Expo, React Native, native SwiftUI controls |
 | Speaker recognition | Local WeSpeaker ONNX model |
 
 For the server and web app, install Rust 1.94+, Node 26, PNPM 10.34.5, and FFmpeg / ffprobe:

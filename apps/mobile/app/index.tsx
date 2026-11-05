@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, AppState, PermissionsAndroid, Platform } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { Button, Column, Host, ScrollView, Text, TextInput } from '@expo/ui';
 import * as DocumentPicker from 'expo-document-picker';
 import { transfer, type QueueState } from '../modules/vault-transfer';
@@ -45,8 +45,6 @@ export default function UploadScreen() {
     }
   }
   async function pick() {
-    if (Platform.OS === 'android' && Number(Platform.Version) >= 33)
-      await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
     const result = await DocumentPicker.getDocumentAsync({
       type: ['audio/*', 'application/octet-stream'],
       multiple: true,
