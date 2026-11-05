@@ -271,7 +271,8 @@ final class AppModel {
     /// Uploads to the vault being left stop before the sign-out waits for it, so no import can
     /// start against that vault in between.
     func disconnect() async throws {
-        if !uploadServer.isEmpty, uploadServer == native.server { try queue.forgetServer() }
+        // Compared as origins: the queue keeps the address as entered, the session its canonical form.
+        if !uploadServer.isEmpty, (try? NativeVaultSession.origin(uploadServer)) == native.server { try queue.forgetServer() }
         await native.signOut()
     }
 

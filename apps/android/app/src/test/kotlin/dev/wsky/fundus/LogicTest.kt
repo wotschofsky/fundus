@@ -226,6 +226,12 @@ class LogicTest {
         assertEquals(listOf(ImportRecord(ids, "complete")), status.records("https://a", idle))
         // ...and a read that started earlier but answers later cannot bring the older list back.
         assertEquals(status, status.accept(freshTicket, "https://a", emptyList()))
+        // Reads of different vaults never displace each other: a late answer for this vault is kept even after
+        // another vault's newer read was.
+        val (slow, slowTicket) = status.begin()
+        val (quick, quickTicket) = slow.begin()
+        val mixed = quick.accept(quickTicket, "https://b", emptyList()).accept(slowTicket, "https://a", listOf(listed))
+        assertEquals(listOf(ImportRecord(ids, "complete")), mixed.records("https://a", idle))
         // Once settled, the vault's history alone decides: trashed there, importable again.
         val (gone, goneTicket) = status.begin()
         assertEquals(emptyList<ImportRecord>(), gone.accept(goneTicket, "https://a", emptyList()).records("https://a", idle))

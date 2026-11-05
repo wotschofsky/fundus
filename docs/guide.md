@@ -149,7 +149,7 @@ Moving an entry to Trash hides it from the library and MCP retrieval until resto
 ## Checks
 
 The checks are the commands in [`.github/workflows/check.yml`](../.github/workflows/check.yml),
-which CI runs on every change: the server (format, Clippy, tests and the codec test), the web
+which CI runs on pull requests, pushes to `main` and version tags (through `containers.yml`): the server (format, Clippy, tests and the codec test), the web
 library (build and tests), the Apple packages and Mac bundle, the iOS app's types, and the Android
 app's JVM tests. Run the same commands locally; that file is the one list to keep current. See
 [checked SQL](database.md) for the local development database the Rust compiler needs.

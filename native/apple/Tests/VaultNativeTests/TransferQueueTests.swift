@@ -228,10 +228,11 @@ final class TransferQueueTests: XCTestCase {
     }
 
     func testDisconnectForgetsTheUploadVaultOnlyWhileNothingIsInFlight() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         func queue(_ state: String) -> TransferQueue {
             var snapshot = QueueState(); snapshot.server = "https://fixture.example"; snapshot.state = state
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            return TransferQueue(folder: folder, initialState: snapshot, tokenOverride: "synthetic-only")
+            return TransferQueue(folder: root.appendingPathComponent(state), initialState: snapshot, tokenOverride: "synthetic-only")
         }
         let finished = queue("verified")
         try finished.forgetServer()

@@ -126,7 +126,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     private val _status = MutableStateFlow(
         prefs.getString(STATUS, null)?.let { runCatching { VaultJson.decodeFromString<ImportStatus>(it) }.getOrNull() }
             ?: prefs.getString(HISTORY, null)?.let { runCatching { VaultJson.decodeFromString<CachedHistory>(it) }.getOrNull() }
-                ?.let { ImportStatus(server = it.server, history = it.entries) }
+                ?.let { ImportStatus(histories = mapOf(it.server to ImportStatus.History(it.entries))) }
             ?: ImportStatus()
     )
     /** The vault's imported sessions, from this phone or anywhere else, and this phone's verified ones. */
@@ -147,16 +147,18 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     /** The connected vault's imports, this phone's verified ones it does not list yet, then the queue's. */
     fun records(): List<ImportRecord> = _status.value.records(vault.server.value, _queue.value)
 
-    /** Changes the import status atomically; [persist] when it holds something a restart must keep. */
-    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus {
-        while (true) {
-            val current = _status.value
-            val next = change(current)
-            if (_status.compareAndSet(current, next)) {
-                if (persist && next !== current) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), next)) }
-                return next
-            }
-        }
+    private val statusLock = Any()
+
+    /**
+     * Changes the import status; [persist] when it holds something a restart must keep. Change and save happen
+     * under one lock, so a history poll and an upload's verification on other threads cannot save out of order.
+     */
+    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus = synchronized(statusLock) {
+        val current = _status.value
+        val next = change(current)
+        _status.value = next
+        if (persist && next !== current) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), next)) }
+        next
     }
 
     /** One session from the mic window: now, or after the current upload. */
