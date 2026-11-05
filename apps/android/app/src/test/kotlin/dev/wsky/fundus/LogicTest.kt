@@ -242,6 +242,28 @@ class LogicTest {
     }
 
     @Test
+    fun oneReadThatOmitsAVerifiedImportDoesNotOfferItAgain() {
+        val ids = listOf("a", "b")
+        val idle = QueueState()
+        val waiting = listOf(ImportRecord(ids, "queued"))
+        var status = ImportStatus().verified("https://a", listOf(ids))
+        // Later reads that omit it (a skipped page, a session sharing another's entry, or trashed since).
+        repeat(ImportStatus.SETTLE_READS - 1) {
+            val (next, ticket) = status.begin()
+            status = next.accept(ticket, "https://a", emptyList())
+            assertEquals(waiting, status.records("https://a", idle))
+        }
+        val (last, lastTicket) = status.begin()
+        assertEquals(emptyList<ImportRecord>(), last.accept(lastTicket, "https://a", emptyList()).records("https://a", idle))
+        // A read that lists it settles it at once.
+        val listed = SourceHistoryEntry(id = "e", stage = "transcribing", sourceIds = ids)
+        val (fresh, freshTicket) = ImportStatus().verified("https://a", listOf(ids)).begin()
+        val settled = fresh.accept(freshTicket, "https://a", listOf(listed))
+        assertEquals(emptyList<ImportStatus.Unconfirmed>(), settled.unconfirmed)
+        assertEquals(listOf(ImportRecord(ids, "transcribing")), settled.records("https://a", idle))
+    }
+
+    @Test
     fun aVerifiedImportStaysImportedUntilANewerReadOfItsOwnVault() {
         val ids = listOf("a", "b")
         val idle = QueueState()
