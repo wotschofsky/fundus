@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 
@@ -180,7 +181,7 @@ class LogicTest {
         assertEquals(listOf(ImportRecord(listOf("a", "b"), "uploading", importId = "")), Uploads.queued(running, emptyList(), "https://vault"))
         // The vault lists it: the vault's record is the one that counts.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, listOf(ImportRecord(listOf("a", "b"), "complete")), "https://vault"))
-        // Done, then trashed in the vault: importable again.
+        // Verified: the queue no longer stands in for it (ImportStatus does, until a later read of the vault).
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running.copy(state = "verified"), emptyList(), "https://vault"))
         // Another vault knows nothing of it.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, emptyList(), "https://other"))
@@ -188,6 +189,115 @@ class LogicTest {
         assertEquals(true, running.copy(state = "failed").unfinished)
         assertEquals(false, running.copy(state = "verified").unfinished)
         assertEquals(false, QueueState().unfinished)
+    }
+
+    @Test
+    fun onlyARunningRecordingShowsTheStepItIsIn() {
+        assertEquals("Processing stopped", Entry.describe("failed", "transcribing", false))
+        assertEquals("Paused", Entry.describe("paused", "enriching", false))
+        assertEquals("Waiting to process", Entry.describe("queued", "transcribing", false))
+        assertEquals("Ready", Entry.describe("complete", "indexing", false))
+        assertEquals("Transcribing", Entry.describe("transcribing", "transcribing", false))
+        assertEquals("Pausing after this step…", Entry.describe("transcribing", "transcribing", true))
+    }
+
+    @Test
+    fun aTrimmedImportElsewhereDoesNotSettleThisPhonesWholeImport() {
+        val ids = listOf("a", "b")
+        // The Mac imported part of the session; this phone then imported all of it.
+        val trimmed = SourceHistoryEntry(id = "t", stage = "complete", trimStartFrame = 480_000, sourceIds = ids)
+        var (status, ticket) = ImportStatus().begin()
+        status = status.accept(ticket, "https://a", listOf(trimmed)).verified("https://a", listOf(ids))
+        val records = status.records("https://a", QueueState())
+        assertTrue(records.any { it.sourceIds == ids && it.trimStartFrame == null && it.trimEndFrame == null })
+        // The same holds while this phone's upload of the whole session is still running.
+        val running = QueueState(server = "https://a", state = "uploading", sessions = listOf(SessionPlan(ids)),
+            files = listOf(UploadItem(name = "TX01_MIC001_20261001_120000.wav", source = "x.wav")))
+        val (before, _) = ImportStatus().begin()
+        val inFlight = before.accept(1, "https://a", listOf(trimmed)).records("https://a", running)
+        assertTrue(inFlight.any { it.sourceIds == ids && it.stage == "uploading" })
+    }
+
+    @Test
+    fun aSecondWriterWaitsUntilTheFirstHasSaved() {
+        val state = kotlinx.coroutines.flow.MutableStateFlow(0)
+        val lock = Any()
+        val saved = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        val saving = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val first = Thread { state.changeAndSave(lock, { saving.countDown(); release.await(); saved += it }) { it + 1 } }
+        val second = Thread { state.changeAndSave(lock, { saved += it }) { it + 10 } }
+        try {
+            first.start()
+            saving.await()
+            second.start()
+            second.join(200)
+            assertTrue("the second change must wait for the first save", second.isAlive)
+        } finally {
+            release.countDown() // never leave the first writer blocked, even when the check fails
+            first.join(); second.join()
+        }
+        assertEquals(listOf(1, 11), saved)
+        assertEquals(11, state.value)
+    }
+
+    @Test
+    fun oneReadThatOmitsAVerifiedImportDoesNotOfferItAgain() {
+        val ids = listOf("a", "b")
+        val idle = QueueState()
+        val waiting = listOf(ImportRecord(ids, "queued"))
+        var status = ImportStatus().verified("https://a", listOf(ids))
+        // Later reads that omit it (a skipped page, a session sharing another's entry, or trashed since).
+        repeat(ImportStatus.SETTLE_READS - 1) {
+            val (next, ticket) = status.begin()
+            status = next.accept(ticket, "https://a", emptyList())
+            assertEquals(waiting, status.records("https://a", idle))
+        }
+        val (last, lastTicket) = status.begin()
+        assertEquals(emptyList<ImportRecord>(), last.accept(lastTicket, "https://a", emptyList()).records("https://a", idle))
+        // A read that lists it settles it at once.
+        val listed = SourceHistoryEntry(id = "e", stage = "transcribing", sourceIds = ids)
+        val (fresh, freshTicket) = ImportStatus().verified("https://a", listOf(ids)).begin()
+        val settled = fresh.accept(freshTicket, "https://a", listOf(listed))
+        assertEquals(emptyList<ImportStatus.Unconfirmed>(), settled.unconfirmed)
+        assertEquals(listOf(ImportRecord(ids, "transcribing")), settled.records("https://a", idle))
+    }
+
+    @Test
+    fun aVerifiedImportStaysImportedUntilANewerReadOfItsOwnVault() {
+        val ids = listOf("a", "b")
+        val idle = QueueState()
+        val waiting = listOf(ImportRecord(ids, "queued"))
+        // A poll starts, then this phone's upload is verified.
+        var (status, stale) = ImportStatus().begin()
+        status = status.verified("https://a", listOf(ids))
+        assertEquals(waiting, status.records("https://a", idle))
+        // The poll answers from before the vault had it: still imported, not offered again.
+        status = status.accept(stale, "https://a", emptyList())
+        assertEquals(waiting, status.records("https://a", idle))
+        // Another vault's newer read neither shows nor settles it.
+        val (other, otherTicket) = status.begin()
+        status = other.accept(otherTicket, "https://b", emptyList())
+        assertEquals(emptyList<ImportRecord>(), status.records("https://b", idle))
+        assertEquals(waiting, status.records("https://a", idle))
+        assertEquals(emptyList<ImportRecord>(), status.records(null, idle))
+        // A newer read of its own vault decides: it lists the import...
+        val listed = SourceHistoryEntry(id = "e", stage = "complete", sourceIds = ids)
+        val (fresh, freshTicket) = status.begin()
+        val (later, laterTicket) = fresh.begin()
+        status = later.accept(laterTicket, "https://a", listOf(listed))
+        assertEquals(listOf(ImportRecord(ids, "complete")), status.records("https://a", idle))
+        // ...and a read that started earlier but answers later cannot bring the older list back.
+        assertEquals(status, status.accept(freshTicket, "https://a", emptyList()))
+        // Reads of different vaults never displace each other: a late answer for this vault is kept even after
+        // another vault's newer read was.
+        val (slow, slowTicket) = status.begin()
+        val (quick, quickTicket) = slow.begin()
+        val mixed = quick.accept(quickTicket, "https://b", emptyList()).accept(slowTicket, "https://a", listOf(listed))
+        assertEquals(listOf(ImportRecord(ids, "complete")), mixed.records("https://a", idle))
+        // Once settled, the vault's history alone decides: trashed there, importable again.
+        val (gone, goneTicket) = status.begin()
+        assertEquals(emptyList<ImportRecord>(), gone.accept(goneTicket, "https://a", emptyList()).records("https://a", idle))
     }
 
     @Test

@@ -66,8 +66,9 @@ data class Entry(
         /** What the server is doing with a recording, in words. */
         fun describe(stage: String, activeStage: String?, pauseRequested: Boolean): String {
             if (pauseRequested) return "Pausing after this step…"
-            // A stopped recording can still name the step it stopped in; it is no longer doing it.
-            return when (val step = if (stage == "failed" || stage == "paused") stage else activeStage ?: stage) {
+            // A waiting, stopped or finished recording can still name the step it last ran (in a cached history,
+            // or from an older vault); only a running one is in that step.
+            return when (val step = if (stage in setOf("queued", "paused", "failed", "complete")) stage else activeStage ?: stage) {
                 "uploading" -> "Uploading"
                 "queued" -> "Waiting to process"
                 "preparing" -> "Preparing audio"
