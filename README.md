@@ -34,7 +34,7 @@
 - **Keep the original.** Source files on your recorder are never changed. Integer PCM WAV up to 24 bits is converted to verified, lossless FLAC; float and 32-bit WAV pass through unchanged.
 - **Pick up where you left off.** Resumable uploads and durable processing checkpoints preserve progress across interruptions. Playback becomes available while the rest of a recording is processing.
 - **Keep your archive together.** Audio, transcripts, notes, labels, and voice profiles live on your server. SQLite handles storage and keyword search; no separate database or vector service is needed.
-- **Choose your way in.** Use the native Mac app, the web library, mobile upload clients, or your preferred MCP-compatible AI.
+- **Choose your way in.** Use the native Mac or Android app, the web library, the iOS upload app, or your preferred MCP-compatible AI.
 
 ## Get started
 

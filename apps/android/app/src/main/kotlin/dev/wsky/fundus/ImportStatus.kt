@@ -5,12 +5,12 @@ import kotlinx.serialization.Serializable
 
 /**
  * What the phone knows about past imports: each vault's source history, plus this phone's verified imports
- * that no history read since has confirmed.
+ * that their vault has not listed yet.
  *
  * Every history read takes a ticket when it starts. A vault's answer is kept only if no read of that vault that
  * started later was kept first, so a slow read cannot bring back an older list; reads of different vaults never
  * displace each other. A verified import counts as imported until a read of its own vault, started after the
- * verification, lists it, or until [SETTLE_READS] such reads have not: one read can miss a session the vault
+ * verification, lists it as a whole import, or until [SETTLE_READS] such reads have not: one read can miss a session the vault
  * has (a page skipped while something was trashed, a session sharing another's entry), and after a few the
  * recording may well have been trashed since, so that vault's history alone decides.
  */

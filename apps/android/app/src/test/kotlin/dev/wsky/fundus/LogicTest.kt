@@ -181,7 +181,7 @@ class LogicTest {
         assertEquals(listOf(ImportRecord(listOf("a", "b"), "uploading", importId = "")), Uploads.queued(running, emptyList(), "https://vault"))
         // The vault lists it: the vault's record is the one that counts.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, listOf(ImportRecord(listOf("a", "b"), "complete")), "https://vault"))
-        // Verified: the queue no longer stands in for it (ImportStatus does, until a later read of the vault).
+        // Verified: the queue no longer stands in for it; ImportStatus does.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running.copy(state = "verified"), emptyList(), "https://vault"))
         // Another vault knows nothing of it.
         assertEquals(emptyList<ImportRecord>(), Uploads.queued(running, emptyList(), "https://other"))
@@ -210,6 +210,10 @@ class LogicTest {
         status = status.accept(ticket, "https://a", listOf(trimmed)).verified("https://a", listOf(ids))
         val records = status.records("https://a", QueueState())
         assertTrue(records.any { it.sourceIds == ids && it.trimStartFrame == null && it.trimEndFrame == null })
+        // A later read that still lists only the trimmed import leaves this phone's whole one imported.
+        val (later, laterTicket) = status.begin()
+        assertTrue(later.accept(laterTicket, "https://a", listOf(trimmed)).records("https://a", QueueState())
+            .any { it.sourceIds == ids && it.trimStartFrame == null && it.trimEndFrame == null })
         // The same holds while this phone's upload of the whole session is still running.
         val running = QueueState(server = "https://a", state = "uploading", sessions = listOf(SessionPlan(ids)),
             files = listOf(UploadItem(name = "TX01_MIC001_20261001_120000.wav", source = "x.wav")))
@@ -264,16 +268,17 @@ class LogicTest {
     }
 
     @Test
-    fun aVerifiedImportStaysImportedUntilANewerReadOfItsOwnVault() {
+    fun onlyNewerReadsOfItsOwnVaultSettleAVerifiedImport() {
         val ids = listOf("a", "b")
         val idle = QueueState()
         val waiting = listOf(ImportRecord(ids, "queued"))
-        // A poll starts, then this phone's upload is verified.
-        var (status, stale) = ImportStatus().begin()
+        // Polls start, then this phone's upload is verified.
+        var status = ImportStatus()
+        val stale = List(ImportStatus.SETTLE_READS) { status.begin().let { (next, ticket) -> status = next; ticket } }
         status = status.verified("https://a", listOf(ids))
         assertEquals(waiting, status.records("https://a", idle))
-        // The poll answers from before the vault had it: still imported, not offered again.
-        status = status.accept(stale, "https://a", emptyList())
+        // They answer from before the vault had it: still imported, however many there are.
+        for (ticket in stale) status = status.accept(ticket, "https://a", emptyList())
         assertEquals(waiting, status.records("https://a", idle))
         // Another vault's newer read neither shows nor settles it.
         val (other, otherTicket) = status.begin()
@@ -293,8 +298,9 @@ class LogicTest {
         // another vault's newer read was.
         val (slow, slowTicket) = status.begin()
         val (quick, quickTicket) = slow.begin()
-        val mixed = quick.accept(quickTicket, "https://b", emptyList()).accept(slowTicket, "https://a", listOf(listed))
-        assertEquals(listOf(ImportRecord(ids, "complete")), mixed.records("https://a", idle))
+        val another = SourceHistoryEntry(id = "f", stage = "complete", sourceIds = listOf("c"))
+        val mixed = quick.accept(quickTicket, "https://b", emptyList()).accept(slowTicket, "https://a", listOf(listed, another))
+        assertEquals(listOf(ImportRecord(ids, "complete"), ImportRecord(listOf("c"), "complete")), mixed.records("https://a", idle))
         // Once settled, the vault's history alone decides: trashed there, importable again.
         val (gone, goneTicket) = status.begin()
         assertEquals(emptyList<ImportRecord>(), gone.accept(goneTicket, "https://a", emptyList()).records("https://a", idle))

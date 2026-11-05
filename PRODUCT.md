@@ -18,7 +18,7 @@ The Mac app automatically detects recorder volumes, offers per-microphone source
 
 The Mac workspace includes a remote transcript library with playback and editing, People and speaker corrections, recoverable Trash, saved vault profiles, and native connection/recorder/processing/diagnostics Settings. Browser-based native OAuth grants owner access; per-origin credentials live in Keychain. MCP OAuth remains separately scoped to read-only retrieval.
 
-Clients copy, prepare lossless FLAC where appropriate, verify, and transfer durably without modifying originals. Mac stages overlap with bounded concurrency: two copies, two preparations, three file uploads. Mobile keeps a system document-picker upload workflow with native platform controls and transfer modules; server grouping is its fallback.
+Clients copy, prepare lossless FLAC where appropriate, verify, and transfer durably without modifying originals. Mac stages overlap with bounded concurrency: two copies, two preparations, three file uploads. Android imports grouped sessions from a plugged-in DJI Mic, as the Mac does. iOS keeps a system document-picker upload workflow with native controls and the shared transfer module; server grouping is its fallback.
 
 The Rust server owns storage, audio assembly, transcription, enrichment, search, and recurring voice recognition. Recording context describes the audio to the transcription model and gives background for summaries; it is never evidence for a speaker identity. Provider credentials and model selection stay on the server: AssemblyAI transcribes each recording as one job (a configured key is required before startup), OpenAI writes titles, summaries and name evidence and the embeddings for semantic search.
 
@@ -26,7 +26,7 @@ The server serves HTTP behind separately managed HTTPS and browser authenticatio
 
 ## Product Principles
 - Preserve the original Mac recorder workflow; keep expensive processing and archive storage remote.
-- Use native controls and direct source/session actions; mobile clients stay focused on upload.
+- Use native controls and direct source/session actions; the iOS client stays focused on upload.
 - Preserve original audio quality, recording time, and evidence.
 - Uncertain identities remain unnamed; manual corrections win.
 - Each deployment owns its data and credentials.
