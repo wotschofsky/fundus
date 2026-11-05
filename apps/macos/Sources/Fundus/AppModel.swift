@@ -141,7 +141,11 @@ final class AppModel {
         let previous = transfer
         transfer = snapshot
         if transferState != snapshot.state { transferState = snapshot.state }
-        if uploadServer != snapshot.server { uploadServer = snapshot.server }
+        if uploadServer != snapshot.server {
+            uploadServer = snapshot.server
+            // Asked for on the mic window for the previous vault; they do not follow a switch to another one.
+            waitingSessions = []
+        }
         if hasUploads == snapshot.files.isEmpty { hasUploads = !snapshot.files.isEmpty }
         // Cleared before the vault created entries: those sessions are not imported after all.
         if let cleared = previous.importID, snapshot.importID == nil {
