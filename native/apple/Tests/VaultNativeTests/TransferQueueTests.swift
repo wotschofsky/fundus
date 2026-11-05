@@ -242,6 +242,24 @@ final class TransferQueueTests: XCTestCase {
         XCTAssertEqual(paused.snapshot.server, "https://fixture.example", "a paused import still belongs to its vault")
     }
 
+    func testClearingKeepsTheVaultInEveryStateItPublishes() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var snapshot = QueueState(); snapshot.server = "https://fixture.example"; snapshot.timezone = "Asia/Shanghai"; snapshot.state = "failed"
+        let queue = TransferQueue(folder: folder, initialState: snapshot, tokenOverride: "synthetic-only")
+        var published: [QueueState] = []
+        let watching = queue.$snapshot.dropFirst().sink { published.append($0) }
+        defer { watching.cancel() }
+        try queue.clear()
+        // Observers (the Mac app) take a different vault for a vault switch and drop the imports waiting for it.
+        XCTAssertFalse(published.isEmpty)
+        for state in published {
+            XCTAssertEqual(state.server, "https://fixture.example")
+            XCTAssertEqual(state.timezone, "Asia/Shanghai")
+        }
+        XCTAssertEqual(queue.snapshot.state, "idle")
+    }
+
     func testOlderQueueJournalRemainsDecodable() throws {
         let data = Data(#"{"server":"https://fixture.example","timezone":"UTC","state":"paused","files":[{"id":"old","name":"clip.wav","source":"copy.wav","offset":0,"length":1,"state":"waiting"}]}"#.utf8)
         let journal = try JSONDecoder().decode(QueueState.self, from: data)
