@@ -123,12 +123,14 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     val queue: StateFlow<QueueState> = _queue.asStateFlow()
 
     private val prefs = context.getSharedPreferences("uploads", Context.MODE_PRIVATE)
-    private val _history = MutableStateFlow(
-        prefs.getString(HISTORY, null)?.let { runCatching { VaultJson.decodeFromString<CachedHistory>(it) }.getOrNull() }
-            ?.takeIf { it.server == vault.server.value }?.entries.orEmpty()
+    private val _status = MutableStateFlow(
+        prefs.getString(STATUS, null)?.let { runCatching { VaultJson.decodeFromString<ImportStatus>(it) }.getOrNull() }
+            ?: prefs.getString(HISTORY, null)?.let { runCatching { VaultJson.decodeFromString<CachedHistory>(it) }.getOrNull() }
+                ?.let { ImportStatus(histories = mapOf(it.server to ImportStatus.History(it.entries))) }
+            ?: ImportStatus()
     )
-    /** The vault's imported sessions, from this phone or anywhere else. */
-    val history: StateFlow<List<SourceHistoryEntry>> = _history.asStateFlow()
+    /** The vault's imported sessions, from this phone or anywhere else, and this phone's verified ones. */
+    val status: StateFlow<ImportStatus> = _status.asStateFlow()
 
     private val _waiting = MutableStateFlow<List<RecordingSession>>(emptyList())
     /** Asked for from the mic window while another upload runs. */
@@ -142,13 +144,22 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     @Serializable
     private data class CachedHistory(val server: String, val entries: List<SourceHistoryEntry>)
 
-    /** The vault's imports, then the one in this phone's queue until the vault lists it. */
-    fun records(): List<ImportRecord> {
-        val history = _history.value.mapNotNull { it.record }
-        return history + queued(_queue.value, history, vault.server.value)
-    }
+    /** The connected vault's imports, this phone's verified ones it does not list yet, then the queue's. */
+    fun records(): List<ImportRecord> = _status.value.records(vault.server.value, _queue.value)
 
-    fun isQueued(session: RecordingSession) = _waiting.value.any { it.id == session.id }
+    private val statusLock = Any()
+
+    /**
+     * Changes the import status; [persist] when it holds something a restart must keep. Change and save happen
+     * under one lock, so a history poll and an upload's verification on other threads cannot save out of order.
+     */
+    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus = synchronized(statusLock) {
+        val current = _status.value
+        val next = change(current)
+        _status.value = next
+        if (persist && next !== current) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), next)) }
+        next
+    }
 
     /** One session from the mic window: now, or after the current upload. */
     fun importNext(session: RecordingSession) {
@@ -200,17 +211,26 @@ class Uploads(private val context: Context, private val vault: Vault, private va
 
     suspend fun refreshHistory() {
         val server = vault.server.value ?: return
+        // A ticket from before the request, so a slower, older read can never replace this one's answer.
+        val ticket = changeStatus(persist = false) { it.begin().first }.issued
         try {
             val entries = mutableListOf<SourceHistoryEntry>()
             var cursor: Int? = 0
             while (cursor != null) {
-                val page = vault.get<SourceHistoryPage>("/source-history?limit=500&cursor=$cursor")
+                // Every page comes from the vault captured above, not whichever is connected by then. The client
+                // signs only requests to the connected vault, so after a switch a page fails instead of mixing
+                // two vaults' histories under one.
+                val request = Request.Builder().url(endpoint(server, "/source-history?limit=500&cursor=$cursor")).build()
+                val page = withContext(Dispatchers.IO) {
+                    vault.http.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw VaultError("The vault could not list its imports (HTTP ${response.code}).")
+                        VaultJson.decodeFromString<SourceHistoryPage>(response.body.string())
+                    }
+                }
                 entries += page.entries
                 cursor = page.nextCursor
             }
-            if (server != vault.server.value) return
-            _history.value = entries
-            prefs.edit { putString(HISTORY, VaultJson.encodeToString(CachedHistory.serializer(), CachedHistory(server, entries))) }
+            changeStatus { it.accept(ticket, server, entries) }
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
@@ -292,6 +312,9 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                 update { it.copy(completed = true, state = "verifying") }
             }
             verify()
+            // Imported until a newer read of the vault's history decides, even if that read fails now.
+            val verified = _queue.value
+            changeStatus { it.verified(verified.server, verified.sessions.orEmpty().map { plan -> plan.sourceIds }) }
             deleteAudio()
             refreshHistory()
             true
@@ -473,6 +496,8 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     private fun deleteAudio() = folder.listFiles()?.filter { it.name != "queue.json" }?.forEach { it.delete() }
 
     companion object {
+        /** Where the import status is kept; [HISTORY] is the older history-only cache it replaces. */
+        private const val STATUS = "import-status"
         private const val HISTORY = "source-history"
         private const val CHUNK = 8L * 1024 * 1024
         private val JSON = "application/json".toMediaType()

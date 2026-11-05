@@ -191,6 +191,53 @@ class LogicTest {
     }
 
     @Test
+    fun onlyARunningRecordingShowsTheStepItIsIn() {
+        assertEquals("Processing stopped", Entry.describe("failed", "transcribing", false))
+        assertEquals("Paused", Entry.describe("paused", "enriching", false))
+        assertEquals("Waiting to process", Entry.describe("queued", "transcribing", false))
+        assertEquals("Ready", Entry.describe("complete", "indexing", false))
+        assertEquals("Transcribing", Entry.describe("transcribing", "transcribing", false))
+        assertEquals("Pausing after this step…", Entry.describe("transcribing", "transcribing", true))
+    }
+
+    @Test
+    fun aVerifiedImportStaysImportedUntilANewerReadOfItsOwnVault() {
+        val ids = listOf("a", "b")
+        val idle = QueueState()
+        val waiting = listOf(ImportRecord(ids, "queued"))
+        // A poll starts, then this phone's upload is verified.
+        var (status, stale) = ImportStatus().begin()
+        status = status.verified("https://a", listOf(ids))
+        assertEquals(waiting, status.records("https://a", idle))
+        // The poll answers from before the vault had it: still imported, not offered again.
+        status = status.accept(stale, "https://a", emptyList())
+        assertEquals(waiting, status.records("https://a", idle))
+        // Another vault's newer read neither shows nor settles it.
+        val (other, otherTicket) = status.begin()
+        status = other.accept(otherTicket, "https://b", emptyList())
+        assertEquals(emptyList<ImportRecord>(), status.records("https://b", idle))
+        assertEquals(waiting, status.records("https://a", idle))
+        assertEquals(emptyList<ImportRecord>(), status.records(null, idle))
+        // A newer read of its own vault decides: it lists the import...
+        val listed = SourceHistoryEntry(id = "e", stage = "complete", sourceIds = ids)
+        val (fresh, freshTicket) = status.begin()
+        val (later, laterTicket) = fresh.begin()
+        status = later.accept(laterTicket, "https://a", listOf(listed))
+        assertEquals(listOf(ImportRecord(ids, "complete")), status.records("https://a", idle))
+        // ...and a read that started earlier but answers later cannot bring the older list back.
+        assertEquals(status, status.accept(freshTicket, "https://a", emptyList()))
+        // Reads of different vaults never displace each other: a late answer for this vault is kept even after
+        // another vault's newer read was.
+        val (slow, slowTicket) = status.begin()
+        val (quick, quickTicket) = slow.begin()
+        val mixed = quick.accept(quickTicket, "https://b", emptyList()).accept(slowTicket, "https://a", listOf(listed))
+        assertEquals(listOf(ImportRecord(ids, "complete")), mixed.records("https://a", idle))
+        // Once settled, the vault's history alone decides: trashed there, importable again.
+        val (gone, goneTicket) = status.begin()
+        assertEquals(emptyList<ImportRecord>(), gone.accept(goneTicket, "https://a", emptyList()).records("https://a", idle))
+    }
+
+    @Test
     fun uploadAddressesArePathsOnTheConnectedVault() {
         assertEquals("/uploads/abc", Uploads.uploadPath("/api/native/v1/uploads/abc"))
         assertNull(Uploads.uploadPath("https://elsewhere.example/api/native/v1/uploads/abc"))
