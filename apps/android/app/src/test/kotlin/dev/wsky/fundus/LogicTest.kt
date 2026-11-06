@@ -309,6 +309,18 @@ class LogicTest {
     }
 
     @Test
+    fun aRetriedVerificationRecordsTheImportOnce() {
+        val ids = listOf("a", "b")
+        // Saved before the queue says "verified"; a restart in between verifies again.
+        val once = ImportStatus().verified("https://a", listOf(ids))
+        val (later, ticket) = once.begin()
+        val twice = later.accept(ticket, "https://a", emptyList()).verified("https://a", listOf(ids))
+        assertEquals(listOf(ImportStatus.Unconfirmed("https://a", ids, after = ticket)), twice.unconfirmed)
+        // Another vault's record of the same sessions is its own.
+        assertEquals(2, twice.verified("https://b", listOf(ids)).unconfirmed.size)
+    }
+
+    @Test
     fun uploadAddressesArePathsOnTheConnectedVault() {
         assertEquals("/uploads/abc", Uploads.uploadPath("/api/native/v1/uploads/abc"))
         assertNull(Uploads.uploadPath("https://elsewhere.example/api/native/v1/uploads/abc"))
