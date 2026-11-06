@@ -53,7 +53,23 @@ jobs:
       # apps/android/app/build.gradle.kts) and CMake must be installed; Gradle fetches the platform.
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools ndk;27.1.12297006 cmake;3.22.1
+          packages: platform-tools ndk;28.2.13676358 cmake;3.22.1
       - run: scripts/fetch-native-deps.sh
       - run: ./gradlew testDebugUnitTest --console=plain
         working-directory: apps/android
+      # 16 KB memory pages only concern 64-bit processes, so the 32-bit library may keep 4 KB.
+      - name: 64-bit native libraries load on 16 KB-page devices
+        working-directory: apps/android
+        run: |
+          set -euo pipefail
+          ./gradlew :app:externalNativeBuildRelease --console=plain
+          readelf=$(ls "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)
+          libs=$(find app/build/intermediates/cxx -path '*/arm64-v8a/*.so' -o -path '*/x86_64/*.so')
+          test -n "$libs"
+          for so in $libs; do
+            aligns=$("$readelf" -lW "$so" | awk '$1 == "LOAD" { print $NF }')
+            test -n "$aligns"
+            for align in $aligns; do
+              if [ $((align)) -lt 16384 ]; then echo "$so: a LOAD segment is aligned to $align"; exit 1; fi
+            done
+          done

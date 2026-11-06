@@ -99,7 +99,7 @@ object SessionGrouper {
     }
 }
 
-/** A session's import as the vault (or the running upload) knows it. */
+/** A session's import as the vault, the running upload, or this phone's verified import knows it. */
 data class ImportRecord(
     val sourceIds: List<String>,
     val stage: String,

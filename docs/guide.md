@@ -14,7 +14,7 @@ python3 -c 'import getpass; print(getpass.getpass("Fundus password: "))' | docke
 docker compose up -d
 ```
 
-Open your external URL and sign in. Connect the Mac app and compatible chat agents through browser-based OAuth, without copying tokens. Mobile upload clients use **upload** tokens created under Settings; **read** tokens remain available for older MCP clients. The owner password requires at least 12 characters. Upload tokens cannot read transcripts; read tokens cannot mutate the archive. Revocation takes effect immediately. Tokens are displayed once; the database stores hashes. The owner password is Argon2 hashed.
+Open your external URL and sign in. Connect the Mac app, the Android app and compatible chat agents through browser-based OAuth, without copying tokens. The iOS upload app uses **upload** tokens created under Settings; **read** tokens remain available for older MCP clients. The owner password requires at least 12 characters. Upload tokens cannot read transcripts; read tokens cannot mutate the archive. Revocation takes effect immediately. Tokens are displayed once; the database stores hashes. The owner password is Argon2 hashed.
 
 If an authenticating reverse proxy already protects the browser UI, set `VAULT_AUTH_MODE=proxy` and skip `init`. Browser requests reaching the server are then trusted as the owner, with no second password or app-level sign-out. No provider-specific headers or identity validation are required. The default, `VAULT_AUTH_MODE=password`, retains standalone password authentication.
 
@@ -72,9 +72,9 @@ pnpm exec expo run:ios
 
 iOS 17+ is targeted. Connect using the externally served HTTPS URL and an upload token. Use the recorder’s configured timezone. Select multiple audio files from connected storage or any document provider. USB visibility is controlled by the recorder, cable, OS, and file provider; the app makes no undocumented USB protocol assumptions. DJI Mic Mini 2S is an intended compatibility target; physical connectivity has not yet been validated.
 
-The apps copy selected files into private app storage, convert **integer PCM WAV up to 24 bits to full-quality FLAC**, then decode and verify it before upload. Float and 32-bit integer WAV stay byte identical; FLAC, MP3, and M4A pass through. Original recorder files are never modified. Mobile staging can temporarily hold the document picker’s cache copy, the app’s source copy, and the prepared file; allow up to three times the selected size. Document-provider caches are managed by the OS. Keep the app open while copying/preparing. Transfers use bounded 8 MiB tus chunks, with server-confirmed offsets after interruption. iOS uses background URLSession uploads; the Android app uses a data-sync foreground service. Operating systems can stop work, especially after force quit; reopen and Resume. Local copies remain until you clear the queue, including after a verified server receipt.
+The iOS app copies selected files into private app storage, converts **integer PCM WAV up to 24 bits to full-quality FLAC**, then decodes and verifies it before upload. Float and 32-bit integer WAV stay byte identical; FLAC, MP3, and M4A pass through. Original recorder files are never modified. Mobile staging can temporarily hold the document picker’s cache copy, the app’s source copy, and the prepared file; allow up to three times the selected size. Document-provider caches are managed by the OS. Keep the app open while copying/preparing. Transfers use bounded 8 MiB tus chunks, with server-confirmed offsets after interruption. It uploads in the background with URLSession. Operating systems can stop work, especially after force quit; reopen and Resume. Local copies remain until you clear the queue, including after a verified server receipt.
 
-One selected batch runs at a time. On Mac, copying, FLAC preparation, and uploads overlap with limits of two copy operations, two preparation operations, and three file uploads. A batch is finalized only after all files arrive. Mac imports include the selected session order and trims; picker-based mobile imports use server-side grouping. Clearing a local queue does not delete a partially received server import; unfinished imports are retained for manual recovery. No recorder files are deleted, and clients do not transcribe recordings.
+One selected batch runs at a time. On Mac, copying, FLAC preparation, and uploads overlap with limits of two copy operations, two preparation operations, and three file uploads. A batch is finalized only after all files arrive. Mac imports include the selected session order and trims, and Android imports the session order; iOS picker imports use server-side grouping. Clearing a local queue does not delete a partially received server import; unfinished imports are retained for manual recovery. No recorder files are deleted, and clients do not transcribe recordings.
 
 ## Pipeline and retrieval
 
@@ -113,7 +113,7 @@ Connect an MCP client using Streamable HTTP at `https://your-vault.example/mcp` 
 
 Add `https://your-vault.example/mcp` in your chat app’s MCP or connector settings, then choose its **Connect** or **Sign in** action. Your browser opens the vault, where you sign in and explicitly approve **read access** for that app. The client discovers the OAuth endpoints and registers automatically; no token copying is needed.
 
-OAuth connections can search and read the archive through MCP. They cannot upload, edit, delete, or administer the vault. Access tokens expire after one hour; clients renew them using rotating refresh tokens. **Settings → Connect a chat app** lists approved connections and lets you disconnect one immediately. Reusing an old refresh token revokes its connection.
+OAuth connections can search and read the archive through MCP. They cannot upload, edit, delete, or administer the vault. Access tokens expire after one hour; clients renew them using rotating refresh tokens. **Settings → Connect apps** lists approved connections and lets you disconnect one immediately. Reusing an old refresh token revokes its connection.
 
 **Settings → Connect apps** shows the last authenticated request for each connected app and access token, in your local date and time. Tracking starts when this version is installed; existing credentials show “No usage recorded” until they are used again. OAuth token refreshes alone do not count as use, and rotating tokens retain the connection’s history.
 
@@ -149,9 +149,10 @@ Moving an entry to Trash hides it from the library and MCP retrieval until resto
 ## Checks
 
 The checks are the commands in [`.github/workflows/check.yml`](../.github/workflows/check.yml),
-which CI runs on pull requests, pushes to `main` and version tags (through `containers.yml`): the server (format, Clippy, tests and the codec test), the web
-library (build and tests), the Apple packages and Mac bundle, the iOS app's types, and the Android
-app's JVM tests. Run the same commands locally; that file is the one list to keep current. See
+which CI runs on pull requests, pushes to `main` and version tags (through `containers.yml`):
+the server (format, Clippy, tests and the codec test), the web library (build and tests), the
+Apple packages and Mac bundle, the Expo app's types, and the Android app's JVM tests and native
+library alignment. Run the same commands locally; that file is the one list to keep current. See
 [checked SQL](database.md) for the local development database the Rust compiler needs.
 
 The server integration tests run local AssemblyAI and OpenAI mocks and real FFmpeg, covering audio preparation through searchable transcripts, checkpoint reuse across pause/shutdown/restart, failed-job resubmission, keyword-only search without embeddings, PCM deduplication, sample-exact trims, and speaker correction. Additional tests cover scopes/revocation, browser origin checks, resumable offsets after reopening SQLite, and actual MCP initialization/tool discovery. Native tests verify lossless integer conversion and byte-preserving float/int32 passthrough. A separate ignored Rust test can validate inference with the pinned voice model: set `VAULT_VOICE_MODEL` and `ORT_DYLIB_PATH`, then `cargo test pinned_model_runs -- --ignored`.
