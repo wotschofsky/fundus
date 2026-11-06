@@ -12,7 +12,6 @@ import android.os.IBinder
 import android.util.AtomicFile
 import androidx.annotation.Keep
 import androidx.core.app.NotificationCompat
-import androidx.core.content.edit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -150,11 +149,18 @@ class Uploads(private val context: Context, private val vault: Vault, private va
     private val statusLock = Any()
 
     /**
-     * Changes the import status; [persist] when it holds something a restart must keep. Change and save happen
-     * under one lock, so a history poll and an upload's verification on other threads cannot save out of order.
+     * Changes the import status; [persist] when it holds something a restart must keep, on disk before returning
+     * when [sync] (or it throws). Change and save happen under one lock, so a history poll and an upload's
+     * verification on other threads cannot save out of order.
      */
-    private fun changeStatus(persist: Boolean = true, change: (ImportStatus) -> ImportStatus): ImportStatus =
-        _status.changeAndSave(statusLock, { if (persist) prefs.edit { putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), it)) } }, change)
+    private fun changeStatus(persist: Boolean = true, sync: Boolean = false, change: (ImportStatus) -> ImportStatus): ImportStatus =
+        _status.changeAndSave(statusLock, { status ->
+            if (persist) {
+                val edit = prefs.edit().putString(STATUS, VaultJson.encodeToString(ImportStatus.serializer(), status))
+                if (!sync) edit.apply()
+                else if (!edit.commit()) throw VaultError("This phone could not record the finished import. Resume to try again.")
+            }
+        }, change)
 
     /** One session from the mic window: now, or after the current upload. */
     fun importNext(session: RecordingSession) {
@@ -307,13 +313,6 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                 update { it.copy(completed = true, state = "verifying") }
             }
             verify()
-            // Imported until later reads of the vault's history settle it (see ImportStatus), even if the read below fails.
-            // ponytail: verify() journals "verified" synchronously, and this status is saved later with apply(), so a
-            // process death in between leaves the import's sessions unmarked (and Import offered) until a later history
-            // read lists them. To close it, save the status with commit() before verify() journals, deduplicated for a
-            // retried verify, if that window ever matters.
-            val verified = _queue.value
-            changeStatus { it.verified(verified.server, verified.sessions.orEmpty().map { plan -> plan.sourceIds }) }
             deleteAudio()
             refreshHistory()
             true
@@ -447,6 +446,12 @@ class Uploads(private val context: Context, private val vault: Vault, private va
                 "complete" -> {
                     val rejected = files.filter { it.string("state") !in setOf("verified", "duplicate") }
                     if (files.isEmpty() || rejected.isNotEmpty()) throw VaultError(rejected.firstOrNull()?.string("failure") ?: "The vault could not verify every recording.")
+                    // Imported until later reads of the vault's history settle it (see ImportStatus), even if the next
+                    // read fails. On disk before the queue says "verified", or verifying fails here: a process death in
+                    // between leaves the queue verifying, and verifying again replaces this record instead of adding a
+                    // second.
+                    val verified = _queue.value
+                    changeStatus(sync = true) { it.verified(verified.server, verified.sessions.orEmpty().map { plan -> plan.sourceIds }) }
                     update { queue -> queue.copy(state = "verified", files = queue.files.map { it.copy(state = "verified") }) }
                     return
                 }

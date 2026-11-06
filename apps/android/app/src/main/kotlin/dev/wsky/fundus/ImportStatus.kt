@@ -52,9 +52,11 @@ data class ImportStatus(
         )
     }
 
-    /** This phone's import of these sessions was verified by [server]. */
-    fun verified(server: String, sessions: List<List<String>>) =
-        copy(unconfirmed = unconfirmed + sessions.map { Unconfirmed(server, it, issued) })
+    /** This phone's import of these sessions was verified by [server], replacing an earlier record of them. */
+    fun verified(server: String, sessions: List<List<String>>) = copy(
+        unconfirmed = unconfirmed.filterNot { it.server == server && it.sourceIds in sessions } +
+            sessions.map { Unconfirmed(server, it, issued) },
+    )
 
     /** The imports to show for [server]: its history, verified imports it does not list yet, then the queue's. */
     fun records(server: String?, queue: QueueState): List<ImportRecord> {
