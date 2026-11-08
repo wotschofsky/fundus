@@ -6,6 +6,7 @@
   import EmptyState from './components/empty-state.svelte';
   import ErrorNotice from './components/error-notice.svelte';
   import LoadingState from './components/loading-state.svelte';
+  import UploadBar from './components/upload-bar.svelte';
   import AuthorizePage from './pages/authorize-page.svelte';
   import LoginPage from './pages/login-page.svelte';
   import PeoplePage from './pages/people-page.svelte';
@@ -71,6 +72,7 @@
   <AuthorizePage />
 {:else}
   <div class="shell">
+    <UploadBar />
     <header class="app-header">
       <a class="brand" href="/">Fundus</a>
       <nav aria-label="Main">

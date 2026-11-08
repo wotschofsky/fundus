@@ -62,6 +62,8 @@ The Mac app keeps the Mic Ingest layout: an Import screen for the connected reco
 
 **Android:** `apps/android` is a native Kotlin and Jetpack Compose app; see its [README](../apps/android/README.md) for the build, the DJI Mic import and how it mirrors the Mac app.
 
+**Web:** On Recordings, press **Upload** or drop audio files anywhere on the page. Each selection or drop becomes one import with server-side grouping. A bar at the top of every page shows the progress until the server has checked the files, and names any it could not read or already holds; leaving the page mid-upload asks first. The browser sends files as they are, without FLAC preparation, in resumable 8 MiB tus chunks through `/api/web/v1/imports` and `/api/web/v1/uploads`. These use the browser session and, in proxy mode, stay behind the proxy like every other browser route.
+
 **iOS:** `apps/mobile` uses Expo SDK 58, React Native, and **Expo UI’s SwiftUI controls**. It requires a custom native build, not Expo Go:
 
 ```sh

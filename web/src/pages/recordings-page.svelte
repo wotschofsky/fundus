@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { createQuery } from '@tanstack/svelte-query';
-  import { Trash2 } from '@lucide/svelte';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { Trash2, Upload } from '@lucide/svelte';
   import { labelsQuery, type Entry } from '../api';
   import { createEntries } from '../entries';
   import { day, dayKey, duration, outcome, time } from '../format';
   import { router } from '../router.svelte';
+  import { uploads } from '../uploads.svelte';
   import EmptyState from '../components/empty-state.svelte';
   import ErrorNotice from '../components/error-notice.svelte';
   import LoadMoreButton from '../components/load-more-button.svelte';
@@ -34,7 +35,41 @@
   const all = $derived(entries.data ?? []);
   const groups = $derived(byDay(all));
   const filtered = $derived(!!(label || stage));
+
+  const queryClient = useQueryClient();
+  let picker: HTMLInputElement;
+  function start(files: File[]) {
+    uploads.add(files).then(() => queryClient.invalidateQueries({ queryKey: ['entries'] }));
+  }
+
+  // Files dropped anywhere on the page upload. A depth count, since every child fires its own
+  // dragenter and dragleave; links and text being dragged are left alone.
+  let depth = $state(0);
+  const carriesFiles = (event: DragEvent) => !!event.dataTransfer?.types.includes('Files');
+  function ondragenter(event: DragEvent) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    depth++;
+  }
+  function ondragleave(event: DragEvent) {
+    if (carriesFiles(event)) depth = Math.max(0, depth - 1);
+  }
+  function ondragover(event: DragEvent) {
+    if (carriesFiles(event)) event.preventDefault();
+  }
+  function ondrop(event: DragEvent) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    depth = 0;
+    start([...event.dataTransfer!.files]);
+  }
 </script>
+
+<svelte:window {ondragenter} {ondragleave} {ondragover} {ondrop} />
+
+{#if depth}
+  <div class="drop-overlay" aria-hidden="true"><p>Drop audio files to upload</p></div>
+{/if}
 
 <header class="page-header">
   <h1>Recordings</h1>
@@ -44,6 +79,21 @@
       Trash
     </a>
     <a class="text-link" href="/settings#connect">Connect apps</a>
+    <button class="primary" onclick={() => picker.click()}>
+      <Upload size={15} aria-hidden="true" />
+      Upload
+    </button>
+    <input
+      bind:this={picker}
+      type="file"
+      accept="audio/*"
+      multiple
+      hidden
+      onchange={(event) => {
+        start([...event.currentTarget.files!]);
+        event.currentTarget.value = '';
+      }}
+    />
   </div>
 </header>
 <div class="toolbar">
@@ -83,7 +133,7 @@
   {:else}
     <EmptyState
       title="No recordings yet"
-      text="Import recordings with the Mac or mobile app. They appear here while your server transcribes them."
+      text="Upload or drop audio files here, or import them with the Mac or mobile app. They appear here while your server transcribes them."
     >
       <a class="button" href="/settings#connect">Connect an app</a>
     </EmptyState>

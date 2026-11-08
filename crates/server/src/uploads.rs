@@ -195,17 +195,7 @@ pub async fn create(
             return Ok(tus(
                 StatusCode::CREATED,
                 vec![
-                    (
-                        "location",
-                        format!(
-                            "{}/v1/uploads/{id}",
-                            if uri.path().starts_with("/api/native/") {
-                                "/api/native"
-                            } else {
-                                "/api"
-                            }
-                        ),
-                    ),
+                    ("location", format!("{}/{id}", uri.path())),
                     ("upload-offset", prior.offset.to_string()),
                     ("upload-length", length.to_string()),
                 ],
@@ -225,17 +215,8 @@ pub async fn create(
     Ok(tus(
         StatusCode::CREATED,
         vec![
-            (
-                "location",
-                format!(
-                    "{}/v1/uploads/{id}",
-                    if uri.path().starts_with("/api/native/") {
-                        "/api/native"
-                    } else {
-                        "/api"
-                    }
-                ),
-            ),
+            // Under whichever prefix the upload was created: token, native or browser.
+            ("location", format!("{}/{id}", uri.path())),
             ("upload-offset", "0".into()),
         ],
     ))

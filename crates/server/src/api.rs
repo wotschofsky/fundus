@@ -59,6 +59,8 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/tokens", get(tokens).post(create_token))
         .route("/api/v1/tokens/{id}", axum::routing::delete(revoke))
+        // The web library's own uploads: the browser session, kept behind the proxy.
+        .merge(transfer_routes("/api/web/v1"))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_browser,

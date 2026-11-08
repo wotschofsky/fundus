@@ -288,6 +288,73 @@ nav a.active {
   color: var(--ink);
   border-bottom-color: var(--ink);
 }
+/* Uploads: a bar on top of every page, and the recordings page as a drop target */
+.upload-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.upload-bar progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border: 0;
+  appearance: none;
+  background: var(--line);
+}
+.upload-bar progress::-webkit-progress-bar {
+  background: var(--line);
+}
+.upload-bar progress::-webkit-progress-value {
+  background: var(--ink);
+  transition: width 0.2s;
+}
+.upload-bar progress::-moz-progress-bar {
+  background: var(--ink);
+}
+.upload-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  padding: 6px max(28px, calc((100vw - 1000px) / 2));
+  font-size: 13px;
+  color: var(--body);
+  font-variant-numeric: tabular-nums;
+}
+.upload-row > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.upload-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-problem {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.drop-overlay {
+  position: fixed;
+  inset: 12px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--rule-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  pointer-events: none;
+}
+.drop-overlay p {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
 .workspace {
   width: min(1056px, 100%);
   margin: 0 auto;
@@ -1099,6 +1166,7 @@ dialog.confirm p {
     font-size: 24px;
   }
   .page-header {
+    flex-wrap: wrap;
     margin-bottom: 20px;
   }
   .header-links {

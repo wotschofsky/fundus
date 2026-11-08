@@ -400,3 +400,81 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn the_web_library_uploads_with_its_proxy_session_and_same_origin_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::from_env().unwrap();
+    config.data = dir.path().into();
+    config.public_url = "https://vault.example.com".parse().unwrap();
+    config.proxy_auth = true;
+    let app = App::new(config).await.unwrap();
+    let r = fundus::api::router(app, tokio_util::sync::CancellationToken::new());
+    let send = |method: &str, uri: &str, origin: &str, body: Body| {
+        let r = r.clone();
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Origin", origin)
+            .header("Content-Type", "application/json")
+            .header("Tus-Resumable", "1.0.0")
+            .body(body)
+            .unwrap();
+        async move { r.oneshot(request).await.unwrap() }
+    };
+    let own = "https://vault.example.com";
+    let response = send(
+        "POST",
+        "/api/web/v1/imports",
+        "https://attacker.example",
+        "{}".into(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = send("POST", "/api/web/v1/imports", own, "{}".into()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let import = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    use base64::Engine;
+    let encode = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/web/v1/uploads")
+        .header("Origin", own)
+        .header("Tus-Resumable", "1.0.0")
+        .header("Upload-Length", "3")
+        .header(
+            "Upload-Metadata",
+            format!(
+                "import_id {},filename {}",
+                encode(&import),
+                encode("memo.m4a")
+            ),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = r.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    // The upload continues where it was created, behind the proxy, not on the token route.
+    let location = response.headers()["location"].to_str().unwrap().to_string();
+    assert!(location.starts_with("/api/web/v1/uploads/"), "{location}");
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(&location)
+        .header("Origin", own)
+        .header("Tus-Resumable", "1.0.0")
+        .header("Upload-Offset", "0")
+        .header("Content-Type", "application/offset+octet-stream")
+        .body(Body::from("abc"))
+        .unwrap();
+    assert_eq!(
+        r.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    let path = format!("/api/web/v1/imports/{import}/complete");
+    let response = send("POST", &path, own, Body::empty()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
