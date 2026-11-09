@@ -74,9 +74,12 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
             _ = app.wake.notified() => {}
             _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
             Some(Err(error)) = jobs.join_next(), if !jobs.is_empty() => tracing::error!(%error, "processing task panicked"),
-            Some(Err(error)) = conversions.join_next(), if !conversions.is_empty() => {
-                // Nothing recorded how it ended: settle it as a restart would.
-                tracing::error!(%error, "video conversion panicked");
+            Some(ended) = conversions.join_next(), if !conversions.is_empty() => {
+                if let Err(error) = ended {
+                    tracing::error!(%error, "video conversion panicked");
+                }
+                // The only conversion has ended. If a panic or a failed write left it marked as
+                // converting, settle it now, as a restart would.
                 app.conversions.lock().unwrap().clear();
                 video::recover(&app).await;
             }

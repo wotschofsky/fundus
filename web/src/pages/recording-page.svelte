@@ -265,43 +265,48 @@
       {#each e.warnings as w (w)}<p>{w}</p>{/each}
     </details>
   {/if}
-  {#if e.audio_available}
+  {#if e.audio_available || e.video}
     {@const picture = e.video?.state === 'ready' && !unplayable ? e.video : null}
+    {@const playable = picture || e.audio_available}
     <div class="player">
       <!-- The transcript comes from the audio either way; a video recording also shows its picture,
            sized before it loads and never taller than 40% of the screen. -->
-      <svelte:element
-        this={picture ? 'video' : 'audio'}
-        bind:this={playback.media}
-        ontimeupdate={playback.timeUpdate}
-        onplay={() => (playback.playing = true)}
-        onpause={() => (playback.playing = false)}
-        onloadedmetadata={playback.loaded}
-        onerror={() => picture && (unplayable = true)}
-        controls
-        playsinline
-        preload="metadata"
-        style:aspect-ratio={picture && `${picture.width} / ${picture.height}`}
-        style:width={picture && `min(100%, calc(40vh * ${picture.width} / ${picture.height}))`}
-        src={`/api/v1/entries/${id}/${picture ? 'video' : 'audio'}`}
-      ></svelte:element>
+      {#if playable}
+        <svelte:element
+          this={picture ? 'video' : 'audio'}
+          bind:this={playback.media}
+          ontimeupdate={playback.timeUpdate}
+          onplay={() => (playback.playing = true)}
+          onpause={() => (playback.playing = false)}
+          onloadedmetadata={playback.loaded}
+          onerror={() => picture && (unplayable = true)}
+          controls
+          playsinline
+          preload="metadata"
+          style:aspect-ratio={picture && `${picture.width} / ${picture.height}`}
+          style:width={picture && `min(100%, calc(40vh * ${picture.width} / ${picture.height}))`}
+          src={`/api/v1/entries/${id}/${picture ? 'video' : 'audio'}`}
+        ></svelte:element>
+      {/if}
       <div class="player-row">
         <p class="player-note">
           {#if e.video?.state === 'preparing'}
-            Preparing the video. You can listen in the meantime.
+            Preparing the video.{e.audio_available ? ' You can listen in the meantime.' : ''}
           {:else if e.video?.state === 'failed'}
             The video could not be prepared: {e.video.failure}
             <button class="text-button" disabled={busy} onclick={post('video/retry')}
               >Try again</button
             >
           {:else if unplayable}
-            This browser cannot play the video, so you hear the audio.
+            This browser cannot play the video{e.audio_available ? ', so you hear the audio.' : '.'}
           {/if}
         </p>
-        <label>
-          <input type="checkbox" bind:checked={playback.follow} />
-          Follow transcript
-        </label>
+        {#if playable}
+          <label>
+            <input type="checkbox" bind:checked={playback.follow} />
+            Follow transcript
+          </label>
+        {/if}
       </div>
     </div>
   {/if}

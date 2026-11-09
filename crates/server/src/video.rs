@@ -12,7 +12,7 @@
 
 use crate::{
     audio::{self, Format, Video},
-    config::{App, RESERVE, free_space, now},
+    config::{App, now, room_for},
     pipeline::commit_artifact,
 };
 use anyhow::{Context, Result, ensure};
@@ -24,8 +24,6 @@ pub const FILE: &str = "video.mp4";
 const PARTIAL: &str = "video.partial.mp4";
 /// Conversions the server may die in before the video is given up.
 const ATTEMPTS: i64 = 2;
-/// The bitrate ceiling of a conversion, video and audio, which bounds the disk it may need.
-const MAX_BITS_PER_SECOND: u64 = 3_000_000 + 320_000;
 /// Brands browsers read as MP4. QuickTime (`qt  `) is not one.
 const MP4_BRANDS: [&str; 9] = [
     "isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "M4V ",
@@ -79,7 +77,7 @@ fn plays_as_is(format: &Format, video: &Video) -> bool {
 
 /// The shorter side at most 720 pixels, the shape kept, both sides even for H.264.
 fn fit(width: u32, height: u32) -> (u32, u32) {
-    let short = u64::from(width.min(height));
+    let short = u64::from(width.min(height).max(1));
     let target = short.min(720);
     let side = |n: u32| ((u64::from(n) * target / short) & !1).max(2) as u32;
     (side(width), side(height))
@@ -171,28 +169,20 @@ async fn run(app: &App, entry: &str) -> Result<()> {
         .video
         .as_ref()
         .context("This recording has no video")?;
-    let size = (row.video_width, row.video_height);
-    let (Some(width), Some(height)) = size else {
+    let (Some(width), Some(height)) = (row.video_width, row.video_height) else {
         anyhow::bail!("This recording has no video size");
     };
     let _cpu = app.cpu.acquire().await?;
-    // Room for the largest file the bitrate ceiling allows, above what the database keeps free.
-    let largest = row.duration_ms.max(0) as u64 * MAX_BITS_PER_SECOND / 8000 * 105 / 100;
+    // This conversion is already among the promises `room_for` counts, as the one converting.
     ensure!(
-        free_space(&app.config.data)? >= RESERVE + largest,
+        room_for(app, 0).await?,
         "Not enough free disk space to convert this video"
     );
     tokio::fs::create_dir_all(&dir).await?;
     let source = app.upload_path(&row.upload_id);
     let partial = dir.join(PARTIAL);
-    audio::ffmpeg(&arguments(
-        &source,
-        &format,
-        video,
-        (width, height),
-        &partial,
-    ))
-    .await?;
+    let size = (width, height);
+    audio::ffmpeg(&arguments(&source, video, size, row.duration_ms, &partial)).await?;
     commit_artifact(&partial, &dir.join(FILE)).await
 }
 
@@ -200,9 +190,9 @@ async fn run(app: &App, entry: &str) -> Result<()> {
 /// the picture upright before the filter, so `size` is the upright size.
 fn arguments(
     source: &Path,
-    format: &Format,
     video: &Video,
     (width, height): (i64, i64),
+    duration_ms: i64,
     to: &Path,
 ) -> Vec<String> {
     let mut filter = format!("scale={width}:{height},setsar=1");
@@ -211,11 +201,6 @@ fn arguments(
         filter.push_str(",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv");
     }
     filter.push_str(",format=yuv420p");
-    let audio = if format.codec == "aac" {
-        "-c:a copy"
-    } else {
-        "-c:a aac -b:a 128k"
-    };
     // Two threads each way, one for filters: the container has two CPUs, and every decoding
     // thread holds frames of the full-size picture in memory.
     let mut args: Vec<String> = ["-filter_threads", "1", "-threads", "2", "-i"]
@@ -225,13 +210,12 @@ fn arguments(
     args.extend(["-map".into(), format!("0:{}", video.stream)]);
     args.extend(["-map", "0:a:0", "-vf"].map(String::from));
     args.push(filter);
-    args.extend(
-        "-c:v libx264 -preset veryfast -crf 23 -maxrate 3M -bufsize 6M -threads 2"
-            .split(' ')
-            .map(String::from),
-    );
-    args.extend(audio.split(' ').map(String::from));
-    args.extend(["-movflags", "+faststart"].map(String::from));
+    // As long as the recording, which is its audio: a longer picture would outgrow the budget.
+    args.extend(["-t".into(), format!("{:.3}", duration_ms as f64 / 1000.)]);
+    // The ceilings `config::CONVERSION_BYTES_PER_SECOND` budgets for; stereo for the browser.
+    let codecs = "-c:v libx264 -preset veryfast -crf 23 -maxrate 3M -bufsize 6M -threads 2 \
+        -c:a aac -b:a 128k -ac 2 -movflags +faststart";
+    args.extend(codecs.split_whitespace().map(String::from));
     args.push(to.display().to_string());
     args
 }
@@ -381,6 +365,14 @@ mod tests {
             }),
             size(1000, 562)
         );
+        // A pixel shape that rounds a side to nothing still makes a valid size.
+        let sliver = Video {
+            width: 16,
+            height: 16,
+            sar: [1, 40],
+            ..phone()
+        };
+        assert_eq!(convert(sliver), size(2, 16));
         // An ultrawide screen recording keeps its shape.
         assert_eq!(
             convert(Video {
@@ -390,6 +382,21 @@ mod tests {
             }),
             size(2560, 720)
         );
+    }
+
+    #[test]
+    fn a_conversion_is_as_long_as_the_recording_and_within_the_budgeted_bitrates() {
+        let args = arguments(
+            Path::new("in"),
+            &phone(),
+            (1280, 720),
+            1500,
+            Path::new("out"),
+        );
+        let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
+        assert!(has(["-t", "1.500"]), "{args:?}");
+        assert!(has(["-maxrate", "3M"]) && has(["-b:a", "128k"]), "{args:?}");
+        assert!(!args.iter().any(|arg| arg == "copy"), "{args:?}");
     }
 
     #[test]

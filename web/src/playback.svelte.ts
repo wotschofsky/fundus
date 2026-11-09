@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import type { Segment } from './api';
 import { SnippetPlayback } from './snippet-playback';
 
@@ -25,8 +26,10 @@ export class Playback {
   playing = $state(false);
   follow = $state(false);
   #revealed = 0;
-  /** Seconds played, so a player that replaces another (the video once it is ready) goes on. */
-  #position = 0;
+  /** Where a player that replaces another (the video once it is ready) goes on, and whether
+   * it plays: the old one was playing when it went. */
+  #position: number | null = null;
+  #resume = false;
   #rows: () => Segment[];
   #startMs: () => number;
   #snippet = new SnippetPlayback();
@@ -36,7 +39,11 @@ export class Playback {
     this.#startMs = startMs;
     $effect(() => {
       if (!this.media) return;
-      return () => this.#snippet.stop();
+      return () => {
+        // Before the removed player's pause event arrives.
+        this.#resume = untrack(() => this.playing);
+        this.#snippet.stop();
+      };
     });
     // A search link opens a passage: highlight and reveal it once, when the transcript arrives.
     // Later refetches (a speaker assignment, processing) leave the reader where they are.
@@ -89,8 +96,11 @@ export class Playback {
 
   /** Starts where the previous player was, or at the linked passage. */
   loaded = () => {
-    const start = this.#position || this.#startMs() / 1000;
-    if (this.media && start > 0) this.media.currentTime = start;
+    if (!this.media) return;
+    const start = this.#position ?? this.#startMs() / 1000;
+    if (start > 0) this.media.currentTime = start;
+    if (this.#resume) this.media.play().catch(() => {});
+    this.#resume = false;
   };
 
   seek = (ms: number) => {

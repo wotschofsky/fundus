@@ -1,6 +1,6 @@
 use crate::{
     auth::Access,
-    config::{App, RESERVE, free_space, id, now},
+    config::{App, id, now, room_for},
     error::{Error, Result},
     grouping::{self, SessionPlan},
 };
@@ -202,15 +202,8 @@ pub async fn create(
             ));
         }
     }
-    // Room for this file and what other uploads of the last day still have to send. An upload
-    // abandoned for longer stops holding its space.
-    let since = (chrono::Utc::now() - chrono::Duration::days(1))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let promised: i64 = sqlx::query_scalar!("SELECT COALESCE(SUM(u.length-u.offset),0) AS \"bytes!: i64\" FROM uploads u JOIN imports i ON i.id=u.import_id WHERE i.state='uploading' AND i.created_at>?", since)
-        .fetch_one(&app.db)
-        .await?;
-    let free = free_space(&app.config.data.join("uploads"))?;
-    if free < (length + promised) as u64 + RESERVE {
+    // A full disk breaks more than uploads: the database may share it.
+    if !room_for(&app, length as u64).await? {
         return Err(Error(
             StatusCode::INSUFFICIENT_STORAGE,
             "Your vault does not have enough free disk space for this file".into(),

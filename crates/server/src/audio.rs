@@ -45,8 +45,9 @@ impl Video {
     /// The size a player shows: square pixels, upright.
     pub fn display(&self) -> (u32, u32) {
         let [num, den] = self.sar;
-        let width =
-            ((u64::from(self.width) * u64::from(num) + u64::from(den) / 2) / u64::from(den)) as u32;
+        let width = (u64::from(self.width) * u64::from(num) + u64::from(den) / 2) / u64::from(den);
+        // At least a pixel, whatever pixel shape a file claims.
+        let width = width.clamp(1, u64::from(u32::MAX)) as u32;
         if self.rotation.rem_euclid(180) == 90 {
             (self.height, width)
         } else {

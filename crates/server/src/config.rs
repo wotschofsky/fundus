@@ -10,10 +10,30 @@ use tokio_util::sync::CancellationToken;
 /// Disk space uploads and video conversions leave free: the database may share the disk, and a
 /// full disk breaks more than them.
 pub const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
+/// The most a video conversion writes per second of recording: x264's 3 Mbit/s ceiling and
+/// 128 kbit/s AAC (`video::arguments`), with 5% for the container.
+pub const CONVERSION_BYTES_PER_SECOND: u64 = (3_000_000 + 128_000) / 8 * 105 / 100;
 /// Bytes an unprivileged writer may still use at `path`. An error rather than a guess.
 pub fn free_space(path: &Path) -> std::io::Result<u64> {
     let stats = rustix::fs::statvfs(path)?;
     Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
+/// Whether `bytes` more still leave `RESERVE` free after what is already promised: what the
+/// uploads of the last day still have to send (one abandoned for longer stops holding its
+/// space), and the largest file a running conversion may write. Uploads and conversions both
+/// ask, so neither spends the space the other counts on.
+pub async fn room_for(app: &App, bytes: u64) -> Result<bool> {
+    let since = (chrono::Utc::now() - chrono::Duration::days(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let promised = sqlx::query!("SELECT (SELECT COALESCE(SUM(u.length-u.offset),0) FROM uploads u JOIN imports i ON i.id=u.import_id WHERE i.state='uploading' AND i.created_at>?) AS \"uploads!: i64\",(SELECT COALESCE(SUM(duration_ms),0) FROM entries WHERE video_status='converting') AS \"converting_ms!: i64\"", since)
+        .fetch_one(&app.db)
+        .await?;
+    let converting = promised.converting_ms.max(0) as u64 * CONVERSION_BYTES_PER_SECOND / 1000;
+    let promised = promised.uploads.max(0) as u64 + converting;
+    // ponytail: one disk for uploads and recordings, as on the server today. Moving the
+    // originals to their own disk (personal-cloud backlog) splits these promises by disk.
+    let free = free_space(&app.config.data.join("uploads"))?;
+    Ok(free >= RESERVE + promised + bytes)
 }
 
 #[derive(Clone)]
