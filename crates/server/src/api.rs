@@ -110,6 +110,7 @@ fn library_routes(prefix: &str) -> Router<App> {
         )
         .route(&at("/entries/{id}/transcript"), get(read))
         .route(&at("/entries/{id}/audio"), get(audio_file).head(audio_file))
+        .route(&at("/entries/{id}/video"), get(video_file).head(video_file))
         .route(&at("/entries/{id}/trash"), post(trash_entry))
         .route(&at("/entries/{id}/restore"), post(restore_entry))
         .route(&at("/entries/{id}/retry"), post(retry))
@@ -355,18 +356,33 @@ async fn audio_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
+    media_file(&app, &a, &id, r, false).await
+}
+async fn video_file(
+    State(app): State<App>,
+    Extension(a): Extension<Access>,
+    Path(id): Path<String>,
+    r: Request,
+) -> Result<Response> {
+    media_file(&app, &a, &id, r, true).await
+}
+/// A recording's playback file, with range requests for seeking.
+async fn media_file(app: &App, a: &Access, id: &str, r: Request, video: bool) -> Result<Response> {
     a.read()?;
-    let exists: Option<String> = sqlx::query_scalar!(
-        "SELECT audio_path FROM entries WHERE id=? AND trashed_at IS NULL",
+    let row = sqlx::query!(
+        "SELECT audio_path,video_path FROM entries WHERE id=? AND trashed_at IS NULL",
         id
     )
     .fetch_optional(&app.db)
     .await?
-    .flatten();
-    if exists.is_none() {
-        return Err(Error::not_found());
-    }
-    let response = ServeFile::new(app.entry_dir(&id).join("playback.m4a"))
+    .ok_or_else(Error::not_found)?;
+    let file = if video {
+        row.video_path
+    } else {
+        row.audio_path
+    };
+    let file = file.ok_or_else(Error::not_found)?;
+    let response = ServeFile::new(app.entry_dir(id).join(file))
         .oneshot(r)
         .await
         .unwrap();

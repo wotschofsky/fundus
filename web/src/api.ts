@@ -55,6 +55,7 @@ export type Entry = {
   trashed_at: string | null;
   labels: string[];
   audio_available: boolean;
+  video_available: boolean;
   speakers?: Speaker[];
   sources?: { offset_ms: number; recorded_at: string | null; filename: string }[];
 };

@@ -373,6 +373,71 @@ async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
     Ok(rendition)
 }
 
+/// Shorter side at most 720 pixels, both sides even, after FFmpeg has applied the rotation.
+const SCALE_720: &str = "scale=w='if(gte(iw,ih),-2,min(720,trunc(iw/2)*2))':h='if(gte(iw,ih),min(720,trunc(ih/2)*2),-2)'";
+
+/// The browser copy of a recording made from a video, `video.mp4`. H.264 and AAC are kept as
+/// they are; anything else is converted to H.264 at 720p. The transcript only uses the audio.
+async fn video(app: &App, entry: &str) -> Result<()> {
+    let dir = app.entry_dir(entry);
+    if !dir.join("video.mp4").exists() {
+        let rows = sqlx::query!("SELECT es.upload_id,e.trim_start_frame FROM entry_sources es JOIN entries e ON e.id=es.entry_id WHERE es.entry_id=?", entry)
+            .fetch_all(&app.db)
+            .await?;
+        // ponytail: one untrimmed file only. Joining or trimming video needs matching streams;
+        // add it when a camera splits its recordings.
+        let [row] = rows.as_slice() else {
+            return Ok(());
+        };
+        if row.trim_start_frame.is_some() {
+            return Ok(());
+        }
+        let source = app.upload_path(&row.upload_id);
+        let Some(found) = audio::video(&source).await? else {
+            return Ok(());
+        };
+        let _cpu = app.cpu.acquire().await?;
+        let mut args: Vec<String> = vec![
+            "-i".into(),
+            source.display().to_string(),
+            "-map".into(),
+            format!("0:{}", found.index),
+            "-map".into(),
+            "0:a:0".into(),
+        ];
+        let codec: &[&str] = if found.copy_video {
+            &["-c:v", "copy"]
+        } else {
+            // ponytail: HDR (most iPhone videos) is not tone-mapped and looks flat at 8 bit;
+            // add zscale+tonemap if that matters.
+            &[
+                "-vf", SCALE_720, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p",
+            ]
+        };
+        args.extend(codec.iter().map(|value| value.to_string()));
+        let codec: &[&str] = if found.copy_audio {
+            &["-c:a", "copy"]
+        } else {
+            &["-c:a", "aac", "-b:a", "128k"]
+        };
+        args.extend(codec.iter().map(|value| value.to_string()));
+        args.extend(["-movflags".into(), "+faststart".into()]);
+        args.push(dir.join("video.partial.mp4").display().to_string());
+        audio::ffmpeg(&args).await?;
+        commit_artifact(&dir.join("video.partial.mp4"), &dir.join("video.mp4")).await?;
+    }
+    let timestamp = now();
+    sqlx::query!(
+        "UPDATE entries SET video_path='video.mp4',updated_at=? WHERE id=?",
+        timestamp,
+        entry
+    )
+    .execute(&app.db)
+    .await?;
+    Ok(())
+}
+
 async fn pause_at_checkpoint(app: &App, entry: &str) -> Result<bool> {
     let row = sqlx::query!(
         "SELECT stage,pause_requested,trashed_at FROM entries WHERE id=?",
@@ -949,14 +1014,27 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         return Ok(());
     }
     stage(app, entry, "transcribing").await?;
-    let Some(utterances) = transcribe(app, entry, &rendition, stop).await? else {
+    // The video copy is made while AssemblyAI works. Without it the recording still plays as audio.
+    let (made, transcript) = tokio::join!(
+        async {
+            tokio::select! {
+                made = video(app, entry) => made,
+                _ = stop.cancelled() => Ok(()),
+            }
+        },
+        transcribe(app, entry, &rendition, stop),
+    );
+    let mut warnings: Vec<String> = vec![];
+    if let Err(error) = made {
+        warnings.push(format!("Video unavailable: {error}"));
+    }
+    let Some(utterances) = transcript? else {
         return Ok(());
     };
     store_segments(app, entry, &utterances).await?;
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
-    let mut warnings: Vec<String> = vec![];
     if !utterances.is_empty() {
         stage(app, entry, "recognizing").await?;
         // Voice analysis is local and the notes come from OpenAI: both run at once, and their

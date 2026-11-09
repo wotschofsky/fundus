@@ -16,6 +16,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const MAX_FILE: i64 = 32 * 1024 * 1024 * 1024;
+/// Disk space an upload must leave free.
+const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
 #[derive(Deserialize)]
 pub struct NewImport {
     pub recorder_timezone: Option<String>,
@@ -201,6 +203,16 @@ pub async fn create(
                 ],
             ));
         }
+    }
+    // A full disk breaks more than uploads (the database may share it), so stop well before.
+    // ponytail: uploads still in flight are not counted; the reserve covers a few at once.
+    let uploads = app.config.data.join("uploads");
+    let free = rustix::fs::statvfs(&uploads).map_or(u64::MAX, |s| s.f_bavail * s.f_frsize);
+    if free < length as u64 + RESERVE {
+        return Err(Error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "Your vault does not have enough free disk space for this file".into(),
+        ));
     }
     let id = id();
     let file = tokio::fs::OpenOptions::new()

@@ -1,7 +1,8 @@
 import { upload, verified } from './upload';
 
-const isAudio = (file: File) =>
-  file.type.startsWith('audio/') || /\.(wav|flac|mp3|m4a|aac|ogg|opus)$/i.test(file.name);
+const isMedia = (file: File) =>
+  /^(audio|video)\//.test(file.type) ||
+  /\.(wav|flac|mp3|m4a|aac|ogg|opus|mp4|m4v|mov|mkv|webm)$/i.test(file.name);
 
 /** Uploads started in the browser, sent one batch after another, for the bar at the top. */
 class Uploads {
@@ -17,14 +18,14 @@ class Uploads {
   #queue = Promise.resolve();
   #batches = 0;
 
-  /** Queues the audio among `files`. Resolves, never rejects, once the server has checked them. */
+  /** Queues the audio and video among `files`. Resolves, never rejects, once the server has checked them. */
   add(files: File[]) {
     if (!this.#batches) this.problems = [];
     for (const file of files) {
-      if (!isAudio(file)) this.problems.push(`${file.name} is not an audio file.`);
+      if (!isMedia(file)) this.problems.push(`${file.name} is not an audio or video file.`);
       else if (!file.size) this.problems.push(`${file.name} is empty.`);
     }
-    files = files.filter((file) => isAudio(file) && file.size);
+    files = files.filter((file) => isMedia(file) && file.size);
     if (!files.length) return Promise.resolve();
     const size = files.reduce((sum, file) => sum + file.size, 0);
     const first = this.count;

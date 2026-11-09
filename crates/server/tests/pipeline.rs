@@ -76,6 +76,89 @@ async fn stage(app: &App, entry: &str) -> String {
     text(app, "SELECT stage FROM entries WHERE id=?", entry).await
 }
 
+/// The first video stream's codec and size, as `h264,1280,720`.
+fn probe(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .args(["stream=codec_name,width,height", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+#[tokio::test]
+async fn videos_get_a_browser_copy_and_cover_art_does_not() {
+    use tower::ServiceExt;
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let token = fundus::auth::issue(&app, "test", "read").await.unwrap();
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let cases = [
+        // H.264 and AAC play in every browser: copied, so still 1080p.
+        (
+            "h264.mp4",
+            "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v libx264 -pix_fmt yuv420p -c:a aac",
+            "h264,1920,1080",
+        ),
+        // Anything else becomes H.264 with its shorter side at 720.
+        (
+            "portrait.mkv",
+            "-f lavfi -i testsrc=s=1080x1920:r=5:d=2 -f lavfi -i sine=f=550:d=2 -c:v mpeg4 -c:a flac",
+            "h264,720,1280",
+        ),
+        // Cover art in an audio file is not a video.
+        (
+            "cover.m4a",
+            "-f lavfi -i sine=f=660:d=2 -f lavfi -i color=c=red:s=64x64:r=1:d=1 -map 0:a -map 1:v -c:a aac -c:v png -disposition:v attached_pic",
+            "",
+        ),
+    ];
+    for (name, args, expected) in cases {
+        let source = dir.path().join(name);
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(args.split_whitespace())
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(made.success(), "{name}");
+        add(&app, &source, name, &format!("{name}-upload")).await;
+        pipeline::finalize(&app, name).await.unwrap();
+        let entry: String =
+            sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
+                .bind(name)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        pipeline::process(&app, &entry).await.unwrap();
+        let detail = retrieval::get(&app, &entry).await.unwrap();
+        assert_eq!(stage(&app, &entry).await, "complete", "{name}");
+        assert_eq!(
+            detail["video_available"],
+            !expected.is_empty(),
+            "{name}: {}",
+            detail["warnings"]
+        );
+        let copy = app.entry_dir(&entry).join("video.mp4");
+        assert_eq!(probe(&copy), expected, "{name}");
+        // Served with range requests, so the browser can seek.
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/api/v1/entries/{entry}/video"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Range", "bytes=0-31")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = if expected.is_empty() { 404 } else { 206 };
+        assert_eq!(response.status(), status, "{name}");
+    }
+    task.abort();
+}
+
 #[tokio::test]
 async fn audio_to_search_checkpoints_and_pcm_deduplication() {
     let (dir, app, provider, task) = setup(Options {

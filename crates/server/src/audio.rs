@@ -27,7 +27,7 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
         .context("FFmpeg is required on the server")?;
     if !output.status.success() {
         bail!(
-            "Audio processing failed: {}",
+            "Media processing failed: {}",
             String::from_utf8_lossy(&output.stderr)
                 .chars()
                 .take(500)
@@ -80,6 +80,41 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         is_float,
         frames: 0,
     })
+}
+/// A file's first real video stream. `copy_*`: plays in every browser as it is.
+pub struct Video {
+    pub index: u64,
+    pub copy_video: bool,
+    pub copy_audio: bool,
+}
+/// The video in a recording, if any. Cover art (`attached_pic`, common in m4a and mp3) is not.
+pub async fn video(path: &Path) -> Result<Option<Video>> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries"])
+        .arg("stream=index,codec_type,codec_name,pix_fmt:stream_disposition=attached_pic")
+        .args(["-of", "json"])
+        .arg(path)
+        .kill_on_drop(true)
+        .output()
+        .await?;
+    ensure!(output.status.success(), "Unreadable video file");
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    let Some(video) = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+    else {
+        return Ok(None);
+    };
+    // The audio `verify` and `render` use: the first audio stream.
+    let audio = streams.iter().find(|s| s["codec_type"] == "audio");
+    Ok(Some(Video {
+        index: video["index"].as_u64().context("Missing stream index")?,
+        // 8-bit 4:2:0 H.264 plays everywhere; 10-bit or 4:2:2 does not.
+        copy_video: video["codec_name"] == "h264"
+            && ["yuv420p", "yuvj420p"].contains(&video["pix_fmt"].as_str().unwrap_or("")),
+        copy_audio: audio.is_some_and(|a| a["codec_name"] == "aac"),
+    }))
 }
 // Canonical integer samples are signed 32-bit LE, left aligned (FFmpeg s32le).
 // Float samples retain their source width. Format fields domain-separate the hash.

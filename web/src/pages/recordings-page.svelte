@@ -68,7 +68,7 @@
 <svelte:window {ondragenter} {ondragleave} {ondragover} {ondrop} />
 
 {#if depth}
-  <div class="drop-overlay" aria-hidden="true"><p>Drop audio files to upload</p></div>
+  <div class="drop-overlay" aria-hidden="true"><p>Drop audio or video files to upload</p></div>
 {/if}
 
 <header class="page-header">
@@ -86,7 +86,7 @@
     <input
       bind:this={picker}
       type="file"
-      accept="audio/*"
+      accept="audio/*,video/*"
       multiple
       hidden
       onchange={(event) => {
@@ -133,7 +133,7 @@
   {:else}
     <EmptyState
       title="No recordings yet"
-      text="Upload or drop audio files here, or import them with the Mac or mobile app. They appear here while your server transcribes them."
+      text="Upload or drop audio or video files here, or import them with the Mac or mobile app. They appear here while your server transcribes them."
     >
       <a class="button" href="/settings#connect">Connect an app</a>
     </EmptyState>

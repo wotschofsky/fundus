@@ -18,10 +18,12 @@ RUN VAULT_MODEL_DIR=/models sh /tmp/fetch-speaker-model.sh
 
 # Only what crates/server/src/audio.rs and pipeline.rs run: common recorder and phone formats in
 # (WAV, AIFF, CAF, FLAC, MP3, M4A with AAC or ALAC, Ogg and WebM with Opus or Vorbis); WAV, FLAC,
-# M4A/AAC and raw PCM out.
+# M4A/AAC and raw PCM out. Video from phones and cameras (MP4, MOV, MKV, WebM with H.264, HEVC,
+# VP8/9, MPEG-4 or MJPEG) becomes an MP4 for the browser, scaled and rotated, with x264.
+# x264 makes this FFmpeg binary GPL; it is a separate program, so the server stays MIT.
 # Debian's ffmpeg package would add ~390 MB of codecs, devices and X11/SDL libraries.
 FROM buildpack-deps:bookworm AS ffmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends nasm && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends nasm libx264-dev && rm -rf /var/lib/apt/lists/*
 # Release tarball signed by the FFmpeg release key FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8.
 ARG FFMPEG_VERSION=8.1.3
 ARG FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
@@ -30,14 +32,15 @@ RUN curl --fail --silent --show-error --location --retry 3 "https://ffmpeg.org/r
     && echo "$FFMPEG_SHA256  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/ffmpeg.tar.xz --strip-components=1 \
     && ./configure --disable-autodetect --disable-everything --disable-doc --disable-debug \
-        --disable-network --disable-avdevice --disable-swscale \
+        --disable-network --disable-avdevice --enable-gpl --enable-libx264 \
         --enable-protocol=file,pipe \
         --enable-demuxer=wav,aiff,caf,flac,mp3,aac,mov,ogg,matroska \
-        --enable-parser=flac,mpegaudio,aac,opus,vorbis \
-        --enable-decoder=pcm_u8,pcm_s8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,flac,mp3float,mp3,aac,alac,opus,vorbis \
-        --enable-encoder=pcm_s16le,pcm_s32le,pcm_f32le,pcm_f64le,flac,aac \
-        --enable-muxer=wav,flac,ipod,pcm_s32le,pcm_f32le,pcm_f64le \
-        --enable-filter=aformat,anull,aresample,asetpts,asplit,atrim,concat \
+        --enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg \
+        --enable-decoder=pcm_u8,pcm_s8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,flac,mp3float,mp3,aac,alac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg \
+        --enable-encoder=pcm_s16le,pcm_s32le,pcm_f32le,pcm_f64le,flac,aac,libx264 \
+        --enable-muxer=wav,flac,ipod,mp4,pcm_s32le,pcm_f32le,pcm_f64le \
+        --enable-filter=aformat,anull,aresample,asetpts,asplit,atrim,concat,scale,format,null,transpose,hflip,vflip \
+        --enable-bsf=aac_adtstoasc \
     && make -j"$(nproc)" \
     && install -D -m 755 -t /opt/ffmpeg ffmpeg ffprobe
 
@@ -56,7 +59,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,targe
     && cp target/release/fundus /usr/local/bin/fundus
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 --create-home vault && mkdir /data && chown vault:vault /data
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 libx264-164 && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 --create-home vault && mkdir /data && chown vault:vault /data
 COPY --from=ffmpeg /opt/ffmpeg/ /usr/local/bin/
 COPY --from=runtime-deps /runtime/onnxruntime/capi/libonnxruntime.so.1.31.0 /usr/local/lib/libonnxruntime.so.1.31.0
 COPY --from=model /models /opt/vault/models

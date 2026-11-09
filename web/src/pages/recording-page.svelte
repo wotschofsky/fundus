@@ -263,16 +263,19 @@
   {/if}
   {#if e.audio_available}
     <div class="player">
-      <audio
-        bind:this={playback.audio}
+      <!-- The transcript comes from the audio either way; a video recording plays its picture too. -->
+      <svelte:element
+        this={e.video_available ? 'video' : 'audio'}
+        bind:this={playback.media}
         ontimeupdate={playback.timeUpdate}
         onplay={() => (playback.playing = true)}
         onpause={() => (playback.playing = false)}
         onloadedmetadata={playback.loaded}
         controls
+        playsinline
         preload="metadata"
-        src={`/api/v1/entries/${id}/audio`}
-      ></audio>
+        src={`/api/v1/entries/${id}/${e.video_available ? 'video' : 'audio'}`}
+      ></svelte:element>
       <label>
         <input type="checkbox" bind:checked={playback.follow} />
         Follow transcript

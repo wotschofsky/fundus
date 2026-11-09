@@ -71,7 +71,7 @@ Connect your server in Settings and sign in through your browser. Saved connecti
 
 ### Web
 
-The server includes a Svelte library for playback, time-linked transcripts, search, labels, recording dates, and speaker corrections. No separate web deployment is required.
+The server includes a Svelte library for audio and video playback, upload, time-linked transcripts, search, labels, recording dates, and speaker corrections. No separate web deployment is required.
 
 ### Android
 

@@ -5,10 +5,15 @@ speaker model. Node and Python are build dependencies, absent from the final ima
 Upload clients remain separate native applications.
 
 FFmpeg is built from the signed release tarball pinned in the `Dockerfile`
-(`FFMPEG_VERSION`, `FFMPEG_SHA256`) with only what the server runs: WAV, FLAC, MP3
-and M4A (AAC/ALAC) in; WAV, FLAC, M4A and raw PCM out. Other formats fail
-verification. The image scan cannot see this build: bump both values when FFmpeg
-publishes a security release.
+(`FFMPEG_VERSION`, `FFMPEG_SHA256`) with only what the server runs: recorder and
+phone audio (WAV, AIFF, CAF, FLAC, MP3, M4A, Ogg, WebM) and phone and camera video
+(MP4, MOV, MKV, WebM with H.264, HEVC, VP8/9, MPEG-4 or MJPEG) in; WAV, FLAC, M4A,
+raw PCM and H.264 MP4 out. Other audio fails verification; video in another codec
+(AV1, ProRes) is still transcribed and plays as audio, with a processing note.
+H.264 comes from Debian's x264 (`libx264-dev` to build, `libx264-164` at runtime),
+which makes this FFmpeg binary GPL. It is a separate program the server runs, so
+the server's MIT license is unaffected. The image scan cannot see the FFmpeg build:
+bump both values when FFmpeg publishes a security release.
 
 ## Container CI
 

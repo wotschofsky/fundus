@@ -19,7 +19,8 @@ export function activeIndex(rows: Segment[], ms: number) {
  * Create it while a component initializes: it registers effects.
  */
 export class Playback {
-  audio = $state<HTMLAudioElement>();
+  /** The audio or video player. */
+  media = $state<HTMLMediaElement>();
   active = $state(-1);
   playing = $state(false);
   follow = $state(false);
@@ -32,7 +33,7 @@ export class Playback {
     this.#rows = rows;
     this.#startMs = startMs;
     $effect(() => {
-      if (!this.audio) return;
+      if (!this.media) return;
       return () => this.#snippet.stop();
     });
     // A search link opens a passage: highlight and reveal it once, when the transcript arrives.
@@ -64,10 +65,11 @@ export class Playback {
     $effect(() => {
       const onKey = (event: KeyboardEvent) => {
         const target = event.target as HTMLElement;
-        const player = this.audio;
+        const player = this.media;
         if (event.key !== ' ' || !player) return;
         if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
-        if (target.closest('input, textarea, select, button, a, audio, dialog, summary')) return;
+        if (target.closest('input, textarea, select, button, a, audio, video, dialog, summary'))
+          return;
         event.preventDefault();
         if (player.paused) player.play().catch(() => {});
         else player.pause();
@@ -78,23 +80,23 @@ export class Playback {
   }
 
   timeUpdate = () => {
-    if (this.audio) this.active = activeIndex(this.#rows(), this.audio.currentTime * 1000);
+    if (this.media) this.active = activeIndex(this.#rows(), this.media.currentTime * 1000);
   };
 
   /** Starts at the linked passage. */
   loaded = () => {
-    if (this.audio && this.#startMs() > 0) this.audio.currentTime = this.#startMs() / 1000;
+    if (this.media && this.#startMs() > 0) this.media.currentTime = this.#startMs() / 1000;
   };
 
   seek = (ms: number) => {
     this.#snippet.stop();
-    if (!this.audio) return;
-    this.audio.currentTime = ms / 1000;
-    this.audio.play().catch(() => {});
+    if (!this.media) return;
+    this.media.currentTime = ms / 1000;
+    this.media.play().catch(() => {});
   };
 
   listen = (segment: Pick<Segment, 'start_ms' | 'end_ms'>) => {
-    if (this.audio) this.#snippet.play(this.audio, segment.start_ms, segment.end_ms);
+    if (this.media) this.#snippet.play(this.media, segment.start_ms, segment.end_ms);
   };
 
   stopListening = () => this.#snippet.stop();
