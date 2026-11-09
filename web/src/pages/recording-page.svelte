@@ -37,11 +37,15 @@
   let correctionNotice = $state<'saved' | 'undone' | null>(null);
   let correctionReceipt: CorrectionReceipt | null = $state(null);
   let notThisSpeaker = $state(false);
+  /** This browser could not play the video, so the player went back to the audio. */
+  let unplayable = $state(false);
 
   const entry = createQuery(() => ({
     queryKey: ['entry', id],
     queryFn: () => api<Entry>(`/v1/entries/${id}`),
-    refetchInterval: (q) => (q.state.data && isProcessing(q.state.data) ? 3000 : false),
+    // Also while the video is being prepared, which goes on after the transcript is done.
+    refetchInterval: ({ state: { data } }) =>
+      data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
   }));
   const stage = $derived(entry.data?.stage);
   // Segments only change when processing moves on, so the stage is part of the key.
@@ -262,24 +266,43 @@
     </details>
   {/if}
   {#if e.audio_available}
+    {@const picture = e.video?.state === 'ready' && !unplayable ? e.video : null}
     <div class="player">
-      <!-- The transcript comes from the audio either way; a video recording plays its picture too. -->
+      <!-- The transcript comes from the audio either way; a video recording also shows its picture,
+           sized before it loads and never taller than 40% of the screen. -->
       <svelte:element
-        this={e.video_available ? 'video' : 'audio'}
+        this={picture ? 'video' : 'audio'}
         bind:this={playback.media}
         ontimeupdate={playback.timeUpdate}
         onplay={() => (playback.playing = true)}
         onpause={() => (playback.playing = false)}
         onloadedmetadata={playback.loaded}
+        onerror={() => picture && (unplayable = true)}
         controls
         playsinline
         preload="metadata"
-        src={`/api/v1/entries/${id}/${e.video_available ? 'video' : 'audio'}`}
+        style:aspect-ratio={picture && `${picture.width} / ${picture.height}`}
+        style:width={picture && `min(100%, calc(40vh * ${picture.width} / ${picture.height}))`}
+        src={`/api/v1/entries/${id}/${picture ? 'video' : 'audio'}`}
       ></svelte:element>
-      <label>
-        <input type="checkbox" bind:checked={playback.follow} />
-        Follow transcript
-      </label>
+      <div class="player-row">
+        <p class="player-note">
+          {#if e.video?.state === 'preparing'}
+            Preparing the video. You can listen in the meantime.
+          {:else if e.video?.state === 'failed'}
+            The video could not be prepared: {e.video.failure}
+            <button class="text-button" disabled={busy} onclick={post('video/retry')}
+              >Try again</button
+            >
+          {:else if unplayable}
+            This browser cannot play the video, so you hear the audio.
+          {/if}
+        </p>
+        <label>
+          <input type="checkbox" bind:checked={playback.follow} />
+          Follow transcript
+        </label>
+      </div>
     </div>
   {/if}
   <div class="detail-grid">

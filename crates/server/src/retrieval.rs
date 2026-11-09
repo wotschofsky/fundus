@@ -94,7 +94,20 @@ pub(crate) fn active_stage(stage: &str, active: Option<String>) -> Option<String
     }
 }
 fn entry(row: &sqlx::sqlite::SqliteRow) -> Value {
-    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":active_stage(&row.get::<String,_>("stage"),row.get::<Option<String>,_>("active_stage")),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"summary_manual":row.get::<i64,_>("summary_manual")!=0,"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some(),"video_available":row.get::<Option<String>,_>("video_path").is_some()})
+    json!({"id":row.get::<String,_>("id"),"title":row.get::<String,_>("title"),"recorded_at":row.get::<Option<String>,_>("recorded_at"),"duration_ms":row.get::<i64,_>("duration_ms"),"trim_start_frame":row.get::<Option<i64>,_>("trim_start_frame"),"trim_end_frame":row.get::<Option<i64>,_>("trim_end_frame"),"trashed_at":row.get::<Option<String>,_>("trashed_at"),"timezone":row.get::<String,_>("timezone"),"stage":row.get::<String,_>("stage"),"active_stage":active_stage(&row.get::<String,_>("stage"),row.get::<Option<String>,_>("active_stage")),"pause_requested":row.get::<bool,_>("pause_requested") && row.get::<String,_>("stage") != "paused","failure":row.get::<Option<String>,_>("failure"),"warnings":serde_json::from_str::<Value>(&row.get::<String,_>("warnings")).unwrap_or(json!([])),"summary":row.get::<Option<String>,_>("summary").map(|s|with_names(s,&row.get::<String,_>("speaker_names"))),"summary_manual":row.get::<i64,_>("summary_manual")!=0,"created_at":row.get::<String,_>("created_at"),"labels":serde_json::from_str::<Value>(&row.get::<String,_>("labels")).unwrap_or(json!([])),"audio_available":row.get::<Option<String>,_>("audio_path").is_some(),"video":video(row)})
+}
+/// What the player needs: `preparing` (queued or converting), `ready` (from the upload or its
+/// conversion), or `failed`. The size is the upright picture's, known before it is ready.
+fn video(row: &sqlx::sqlite::SqliteRow) -> Value {
+    let Some(status) = row.get::<Option<String>, _>("video_status") else {
+        return Value::Null;
+    };
+    let state = match status.as_str() {
+        "original" | "ready" => "ready",
+        "failed" => "failed",
+        _ => "preparing",
+    };
+    json!({"state":state,"width":row.get::<i64,_>("video_width"),"height":row.get::<i64,_>("video_height"),"failure":row.get::<Option<String>,_>("video_failure")})
 }
 const SELECT: &str = "SELECT e.*,(SELECT json_group_array(label) FROM entry_labels WHERE entry_id=e.id) AS labels,(SELECT json_group_array(json_array(s.label,p.name)) FROM speakers s LEFT JOIN people p ON p.id=s.person_id WHERE s.entry_id=e.id) AS speaker_names FROM entries e WHERE 1=1";
 pub async fn list(app: &App, f: Filters) -> Result<Value> {

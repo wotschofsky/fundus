@@ -76,86 +76,308 @@ async fn stage(app: &App, entry: &str) -> String {
     text(app, "SELECT stage FROM entries WHERE id=?", entry).await
 }
 
-/// The first video stream's codec and size, as `h264,1280,720`.
+/// The first video stream's codec, size and display rotation, as `h264,1280,720,`.
 fn probe(path: &std::path::Path) -> String {
     let output = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
-        .args(["stream=codec_name,width,height", "-of", "csv=p=0"])
+        .args([
+            "stream=codec_name,width,height:stream_side_data=rotation",
+            "-of",
+            "csv=p=0",
+        ])
         .arg(path)
         .output()
         .unwrap();
-    String::from_utf8(output.stdout).unwrap().trim().into()
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .replace('\n', ",")
 }
-
-#[tokio::test]
-async fn videos_get_a_browser_copy_and_cover_art_does_not() {
-    use tower::ServiceExt;
-    let (dir, app, _provider, task) = setup(Options::default()).await;
-    let token = fundus::auth::issue(&app, "test", "read").await.unwrap();
-    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
-    let cases = [
-        // H.264 and AAC play in every browser: copied, so still 1080p.
-        (
-            "h264.mp4",
-            "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v libx264 -pix_fmt yuv420p -c:a aac",
-            "h264,1920,1080",
-        ),
-        // Anything else becomes H.264 with its shorter side at 720.
-        (
-            "portrait.mkv",
-            "-f lavfi -i testsrc=s=1080x1920:r=5:d=2 -f lavfi -i sine=f=550:d=2 -c:v mpeg4 -c:a flac",
-            "h264,720,1280",
-        ),
-        // Cover art in an audio file is not a video.
-        (
-            "cover.m4a",
-            "-f lavfi -i sine=f=660:d=2 -f lavfi -i color=c=red:s=64x64:r=1:d=1 -map 0:a -map 1:v -c:a aac -c:v png -disposition:v attached_pic",
-            "",
-        ),
-    ];
-    for (name, args, expected) in cases {
-        let source = dir.path().join(name);
+/// A media file made by FFmpeg from `args`, then turned by `rotation` degrees in its display
+/// matrix, as phones store portrait video.
+fn media(
+    dir: &std::path::Path,
+    name: &str,
+    args: &str,
+    rotation: Option<i32>,
+) -> std::path::PathBuf {
+    let ffmpeg = |args: Vec<String>| {
         let made = std::process::Command::new("ffmpeg")
             .args(["-v", "error", "-y"])
-            .args(args.split_whitespace())
-            .arg(&source)
+            .args(args)
             .status()
             .unwrap();
         assert!(made.success(), "{name}");
-        add(&app, &source, name, &format!("{name}-upload")).await;
-        pipeline::finalize(&app, name).await.unwrap();
-        let entry: String =
-            sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
-                .bind(name)
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
-        pipeline::process(&app, &entry).await.unwrap();
-        let detail = retrieval::get(&app, &entry).await.unwrap();
-        assert_eq!(stage(&app, &entry).await, "complete", "{name}");
-        assert_eq!(
-            detail["video_available"],
-            !expected.is_empty(),
-            "{name}: {}",
-            detail["warnings"]
-        );
-        let copy = app.entry_dir(&entry).join("video.mp4");
-        assert_eq!(probe(&copy), expected, "{name}");
-        // Served with range requests, so the browser can seek.
-        let response = router
-            .clone()
-            .oneshot(
-                axum::http::Request::get(format!("/api/v1/entries/{entry}/video"))
-                    .header("Authorization", format!("Bearer {token}"))
-                    .header("Range", "bytes=0-31")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = if expected.is_empty() { 404 } else { 206 };
-        assert_eq!(response.status(), status, "{name}");
+    };
+    let path = dir.join(name);
+    let made = dir.join(format!("unrotated-{name}"));
+    let mut first: Vec<String> = args.split_whitespace().map(String::from).collect();
+    first.push(made.display().to_string());
+    ffmpeg(first);
+    match rotation {
+        Some(degrees) => ffmpeg(vec![
+            "-display_rotation".into(),
+            degrees.to_string(),
+            "-i".into(),
+            made.display().to_string(),
+            "-c".into(),
+            "copy".into(),
+            path.display().to_string(),
+        ]),
+        None => std::fs::rename(&made, &path).unwrap(),
     }
+    path
+}
+/// The entry `finalize` made from `source`, uploaded alone.
+async fn import(app: &App, source: &std::path::Path, batch: &str) -> String {
+    add(app, source, batch, &format!("{batch}-upload")).await;
+    pipeline::finalize(app, batch).await.unwrap();
+    sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
+        .bind(batch)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+async fn call(
+    router: &axum::Router,
+    token: &str,
+    method: &str,
+    path: String,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Range", "bytes=0-31")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_holding_up_the_transcript()
+ {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let video = |entry: &serde_json::Value| entry["video"].clone();
+
+    // A phone's MP4 plays in every browser as it is: no conversion, no second file.
+    let phone = media(
+        dir.path(),
+        "phone.mp4",
+        "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v libx264 -pix_fmt yuv420p -c:a aac",
+        None,
+    );
+    let entry = import(&app, &phone, "phone").await;
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(
+        video(&detail),
+        serde_json::json!({"state":"ready","width":1920,"height":1080,"failure":null})
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(bytes[..], std::fs::read(&phone).unwrap()[..32]);
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
+
+    // A portrait video in another codec, stored as landscape frames plus a display matrix.
+    let portrait = media(
+        dir.path(),
+        "portrait.mov",
+        "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=550:d=2 -c:v mpeg4 -c:a pcm_s16le",
+        Some(90),
+    );
+    let entry = import(&app, &portrait, "portrait").await;
+    // The transcript does not wait for the conversion.
+    pipeline::process(&app, &entry).await.unwrap();
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(detail["stage"], "complete");
+    assert_eq!(
+        video(&detail),
+        serde_json::json!({"state":"preparing","width":720,"height":1280,"failure":null})
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 404);
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    assert_eq!(
+        video(&retrieval::get(&app, &entry).await.unwrap())["state"],
+        "ready"
+    );
+    // Upright H.264 at 720 pixels, with no rotation left for the browser to apply twice.
+    assert_eq!(
+        probe(&app.entry_dir(&entry).join(fundus::video::FILE)),
+        "h264,720,1280"
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+
+    // Cover art in an audio file is not a video.
+    let cover = media(
+        dir.path(),
+        "cover.m4a",
+        "-f lavfi -i sine=f=660:d=2 -f lavfi -i color=c=red:s=64x64:r=1:d=1 -map 0:a -map 1:v -c:a aac -c:v png -disposition:v attached_pic",
+        None,
+    );
+    let entry = import(&app, &cover, "cover").await;
+    assert_eq!(
+        video(&retrieval::get(&app, &entry).await.unwrap()),
+        serde_json::Value::Null
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 404);
+    task.abort();
+}
+
+#[tokio::test]
+async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let source = media(
+        dir.path(),
+        "clip.mkv",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v mpeg4 -c:a flac",
+        None,
+    );
+    let entry = import(&app, &source, "clip").await;
+    let status = || async {
+        sqlx::query_as::<_, (Option<String>, i64)>(
+            "SELECT video_status,video_attempts FROM entries WHERE id=?",
+        )
+        .bind(&entry)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+    };
+
+    // Claimed, and waiting for a CPU the test holds, as behind a long import.
+    let cpus = app.cpu.clone().acquire_many_owned(2).await.unwrap();
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    let stop = tokio_util::sync::CancellationToken::new();
+    app.conversions
+        .lock()
+        .unwrap()
+        .insert(entry.clone(), stop.clone());
+    let (work_app, work_entry) = (app.clone(), entry.clone());
+    let converting =
+        tokio::spawn(async move { fundus::video::convert(&work_app, &work_entry, stop).await });
+    let path = format!("/api/v1/entries/{entry}");
+    assert_eq!(
+        call(&router, &token, "DELETE", path.clone()).await.status(),
+        409
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/trash"))
+            .await
+            .status(),
+        204
+    );
+    // Trash stopped it at once, though it never got a CPU.
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(10), converting);
+    stopped.await.unwrap().unwrap();
+    drop(cpus);
+    // Back in the queue, without counting as an attempt, and not claimed while in Trash.
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert_eq!(fundus::video::claim(&app).await, None);
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/restore"))
+            .await
+            .status(),
+        200
+    );
+    // Trashed between the claim and the registration that lets Trash stop it.
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/trash"))
+            .await
+            .status(),
+        204
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/restore"))
+            .await
+            .status(),
+        200
+    );
+
+    // A conversion the server dies in twice is given up, and Retry starts it over.
+    for attempts in [1, 2] {
+        assert_eq!(
+            fundus::video::claim(&app).await.as_deref(),
+            Some(entry.as_str())
+        );
+        assert_eq!(status().await, (Some("converting".into()), attempts));
+        fundus::video::recover(&app).await;
+    }
+    assert_eq!(status().await, (Some("failed".into()), 0));
+    let failure = &retrieval::get(&app, &entry).await.unwrap()["video"]["failure"];
+    assert!(
+        failure.as_str().unwrap().contains("more than once"),
+        "{failure}"
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/video/retry"))
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/video/retry"))
+            .await
+            .status(),
+        409
+    );
+    assert_eq!(call(&router, &token, "DELETE", path).await.status(), 204);
     task.abort();
 }
 

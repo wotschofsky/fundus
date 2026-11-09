@@ -91,6 +91,8 @@ mod tests {
                 bit_depth: 24,
                 is_float: false,
                 frames: (ms * 48) as u64,
+                codec: "pcm_s24le".into(),
+                video: None,
             },
             recorded_at: Some(t),
             stream,

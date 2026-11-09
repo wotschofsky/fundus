@@ -9,10 +9,12 @@ FFmpeg is built from the signed release tarball pinned in the `Dockerfile`
 phone audio (WAV, AIFF, CAF, FLAC, MP3, M4A, Ogg, WebM) and phone and camera video
 (MP4, MOV, MKV, WebM with H.264, HEVC, VP8/9, MPEG-4 or MJPEG) in; WAV, FLAC, M4A,
 raw PCM and H.264 MP4 out. Other audio fails verification; video in another codec
-(AV1, ProRes) is still transcribed and plays as audio, with a processing note.
-H.264 comes from Debian's x264 (`libx264-dev` to build, `libx264-164` at runtime),
-which makes this FFmpeg binary GPL. It is a separate program the server runs, so
-the server's MIT license is unaffected. The image scan cannot see the FFmpeg build:
+(AV1, ProRes) is still transcribed, and its conversion fails visibly while the
+recording plays as audio. H.264 comes from Debian's x264 and HDR tone mapping from
+zimg (`libx264-dev`, `libzimg-dev` to build; `libx264-164`, `libzimg2` at runtime).
+x264 makes this FFmpeg binary GPL. It is a separate program the server runs, so the
+server's MIT license is unaffected. The container smoke test fails if the image's
+FFmpeg loses an encoder, decoder, muxer or filter the video conversion needs. The image scan cannot see the FFmpeg build:
 bump both values when FFmpeg publishes a security release.
 
 ## Container CI

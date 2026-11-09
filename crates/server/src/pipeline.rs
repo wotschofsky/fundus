@@ -4,6 +4,7 @@ use crate::{
     grouping::{self, Source},
     identity,
     provider::{self, Job, ProviderError, Utterance},
+    video,
     voice::{self, Analysis},
 };
 use anyhow::{Result, bail, ensure};
@@ -23,7 +24,11 @@ const MAX_DURATION_MS: i64 = 10 * 60 * 60 * 1000;
 
 pub async fn worker(app: App, shutdown: CancellationToken) {
     recover(&app).await;
+    video::recover(&app).await;
     let mut jobs = tokio::task::JoinSet::new();
+    // One video conversion at a time, beside the transcripts: it keeps a CPU busy for as long
+    // as the video runs, and the transcripts never wait for it.
+    let mut conversions = tokio::task::JoinSet::new();
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -50,15 +55,38 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
             jobs.spawn(async move { run(&app, &entry, work.as_deref(), revision, &stop).await });
             continue;
         }
+        if conversions.is_empty()
+            && let Some(entry) = video::claim(&app).await
+        {
+            let stop = shutdown.child_token();
+            app.conversions
+                .lock()
+                .unwrap()
+                .insert(entry.clone(), stop.clone());
+            let app = app.clone();
+            conversions.spawn(async move {
+                video::convert(&app, &entry, stop).await;
+                app.conversions.lock().unwrap().remove(&entry);
+            });
+            continue;
+        }
         tokio::select! {
             _ = app.wake.notified() => {}
             _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
             Some(Err(error)) = jobs.join_next(), if !jobs.is_empty() => tracing::error!(%error, "processing task panicked"),
+            Some(Err(error)) = conversions.join_next(), if !conversions.is_empty() => {
+                // Nothing recorded how it ended: settle it as a restart would.
+                tracing::error!(%error, "video conversion panicked");
+                app.conversions.lock().unwrap().clear();
+                video::recover(&app).await;
+            }
             _ = shutdown.cancelled() => break,
         }
     }
-    // Drain: every in-flight job finishes its current provider request and saves it before exit.
+    // Drain: every in-flight job finishes its current provider request and saves it before exit;
+    // a conversion stops and goes back to the queue.
     while jobs.join_next().await.is_some() {}
+    while conversions.join_next().await.is_some() {}
 }
 
 /// After a crash, work that cannot bill twice resumes on its own, including a request whose job
@@ -244,7 +272,13 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
         let trim_end = group.is_trimmed().then_some(group.end_frame as i64);
         let created_at = now();
         let updated_at = now();
-        let inserted = sqlx::query!("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame)VALUES(?,?,?,?,?,?,'queued',?,?,?,?)", eid, fingerprint, title, recorded, duration, zone, created_at, updated_at, trim_start, trim_end).execute(&mut *tx).await?;
+        // Decided with the entry, in the same statement: a crash cannot leave it without one.
+        let formats: Vec<_> = group.sources.iter().map(|source| &source.format).collect();
+        let plan = video::plan(&formats, group.is_trimmed()).map(|plan| plan.columns());
+        let video_status = plan.map(|(status, _, _)| status);
+        let video_width = plan.map(|(_, width, _)| width);
+        let video_height = plan.map(|(_, _, height)| height);
+        let inserted = sqlx::query!("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame,video_status,video_width,video_height)VALUES(?,?,?,?,?,?,'queued',?,?,?,?,?,?,?)", eid, fingerprint, title, recorded, duration, zone, created_at, updated_at, trim_start, trim_end, video_status, video_width, video_height).execute(&mut *tx).await?;
         let entry_id = if inserted.rows_affected() > 0 {
             let mut offset = 0;
             for (position, source) in group.sources.iter().enumerate() {
@@ -371,71 +405,6 @@ async fn render(app: &App, entry: &str, upload: bool) -> Result<PathBuf> {
         commit_artifact(&dir.join(partial), &dir.join(done)).await?;
     }
     Ok(rendition)
-}
-
-/// Shorter side at most 720 pixels, both sides even, after FFmpeg has applied the rotation.
-const SCALE_720: &str = "scale=w='if(gte(iw,ih),-2,min(720,trunc(iw/2)*2))':h='if(gte(iw,ih),min(720,trunc(ih/2)*2),-2)'";
-
-/// The browser copy of a recording made from a video, `video.mp4`. H.264 and AAC are kept as
-/// they are; anything else is converted to H.264 at 720p. The transcript only uses the audio.
-async fn video(app: &App, entry: &str) -> Result<()> {
-    let dir = app.entry_dir(entry);
-    if !dir.join("video.mp4").exists() {
-        let rows = sqlx::query!("SELECT es.upload_id,e.trim_start_frame FROM entry_sources es JOIN entries e ON e.id=es.entry_id WHERE es.entry_id=?", entry)
-            .fetch_all(&app.db)
-            .await?;
-        // ponytail: one untrimmed file only. Joining or trimming video needs matching streams;
-        // add it when a camera splits its recordings.
-        let [row] = rows.as_slice() else {
-            return Ok(());
-        };
-        if row.trim_start_frame.is_some() {
-            return Ok(());
-        }
-        let source = app.upload_path(&row.upload_id);
-        let Some(found) = audio::video(&source).await? else {
-            return Ok(());
-        };
-        let _cpu = app.cpu.acquire().await?;
-        let mut args: Vec<String> = vec![
-            "-i".into(),
-            source.display().to_string(),
-            "-map".into(),
-            format!("0:{}", found.index),
-            "-map".into(),
-            "0:a:0".into(),
-        ];
-        let codec: &[&str] = if found.copy_video {
-            &["-c:v", "copy"]
-        } else {
-            // ponytail: HDR (most iPhone videos) is not tone-mapped and looks flat at 8 bit;
-            // add zscale+tonemap if that matters.
-            &[
-                "-vf", SCALE_720, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-pix_fmt", "yuv420p",
-            ]
-        };
-        args.extend(codec.iter().map(|value| value.to_string()));
-        let codec: &[&str] = if found.copy_audio {
-            &["-c:a", "copy"]
-        } else {
-            &["-c:a", "aac", "-b:a", "128k"]
-        };
-        args.extend(codec.iter().map(|value| value.to_string()));
-        args.extend(["-movflags".into(), "+faststart".into()]);
-        args.push(dir.join("video.partial.mp4").display().to_string());
-        audio::ffmpeg(&args).await?;
-        commit_artifact(&dir.join("video.partial.mp4"), &dir.join("video.mp4")).await?;
-    }
-    let timestamp = now();
-    sqlx::query!(
-        "UPDATE entries SET video_path='video.mp4',updated_at=? WHERE id=?",
-        timestamp,
-        entry
-    )
-    .execute(&app.db)
-    .await?;
-    Ok(())
 }
 
 async fn pause_at_checkpoint(app: &App, entry: &str) -> Result<bool> {
@@ -1014,27 +983,14 @@ async fn process_until(app: &App, entry: &str, stop: &CancellationToken) -> Resu
         return Ok(());
     }
     stage(app, entry, "transcribing").await?;
-    // The video copy is made while AssemblyAI works. Without it the recording still plays as audio.
-    let (made, transcript) = tokio::join!(
-        async {
-            tokio::select! {
-                made = video(app, entry) => made,
-                _ = stop.cancelled() => Ok(()),
-            }
-        },
-        transcribe(app, entry, &rendition, stop),
-    );
-    let mut warnings: Vec<String> = vec![];
-    if let Err(error) = made {
-        warnings.push(format!("Video unavailable: {error}"));
-    }
-    let Some(utterances) = transcript? else {
+    let Some(utterances) = transcribe(app, entry, &rendition, stop).await? else {
         return Ok(());
     };
     store_segments(app, entry, &utterances).await?;
     if pause_at_checkpoint(app, entry).await? {
         return Ok(());
     }
+    let mut warnings: Vec<String> = vec![];
     if !utterances.is_empty() {
         stage(app, entry, "recognizing").await?;
         // Voice analysis is local and the notes come from OpenAI: both run at once, and their
@@ -1290,7 +1246,7 @@ pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
     Ok(())
 }
 
-async fn commit_artifact(pending: &Path, final_path: &Path) -> Result<()> {
+pub(crate) async fn commit_artifact(pending: &Path, final_path: &Path) -> Result<()> {
     tokio::fs::OpenOptions::new()
         .write(true)
         .open(pending)

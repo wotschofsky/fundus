@@ -25,6 +25,8 @@ export class Playback {
   playing = $state(false);
   follow = $state(false);
   #revealed = 0;
+  /** Seconds played, so a player that replaces another (the video once it is ready) goes on. */
+  #position = 0;
   #rows: () => Segment[];
   #startMs: () => number;
   #snippet = new SnippetPlayback();
@@ -80,12 +82,15 @@ export class Playback {
   }
 
   timeUpdate = () => {
-    if (this.media) this.active = activeIndex(this.#rows(), this.media.currentTime * 1000);
+    if (!this.media) return;
+    this.#position = this.media.currentTime;
+    this.active = activeIndex(this.#rows(), this.#position * 1000);
   };
 
-  /** Starts at the linked passage. */
+  /** Starts where the previous player was, or at the linked passage. */
   loaded = () => {
-    if (this.media && this.#startMs() > 0) this.media.currentTime = this.#startMs() / 1000;
+    const start = this.#position || this.#startMs() / 1000;
+    if (this.media && start > 0) this.media.currentTime = start;
   };
 
   seek = (ms: number) => {

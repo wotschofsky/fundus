@@ -1,6 +1,6 @@
 use crate::{
     auth::Access,
-    config::{App, id, now},
+    config::{App, RESERVE, free_space, id, now},
     error::{Error, Result},
     grouping::{self, SessionPlan},
 };
@@ -16,8 +16,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const MAX_FILE: i64 = 32 * 1024 * 1024 * 1024;
-/// Disk space an upload must leave free.
-const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
 #[derive(Deserialize)]
 pub struct NewImport {
     pub recorder_timezone: Option<String>,
@@ -204,11 +202,15 @@ pub async fn create(
             ));
         }
     }
-    // A full disk breaks more than uploads (the database may share it), so stop well before.
-    // ponytail: uploads still in flight are not counted; the reserve covers a few at once.
-    let uploads = app.config.data.join("uploads");
-    let free = rustix::fs::statvfs(&uploads).map_or(u64::MAX, |s| s.f_bavail * s.f_frsize);
-    if free < length as u64 + RESERVE {
+    // Room for this file and what other uploads of the last day still have to send. An upload
+    // abandoned for longer stops holding its space.
+    let since = (chrono::Utc::now() - chrono::Duration::days(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let promised: i64 = sqlx::query_scalar!("SELECT COALESCE(SUM(u.length-u.offset),0) AS \"bytes!: i64\" FROM uploads u JOIN imports i ON i.id=u.import_id WHERE i.state='uploading' AND i.created_at>?", since)
+        .fetch_one(&app.db)
+        .await?;
+    let free = free_space(&app.config.data.join("uploads"))?;
+    if free < (length + promised) as u64 + RESERVE {
         return Err(Error(
             StatusCode::INSUFFICIENT_STORAGE,
             "Your vault does not have enough free disk space for this file".into(),

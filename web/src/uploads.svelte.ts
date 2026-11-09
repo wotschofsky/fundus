@@ -1,8 +1,10 @@
 import { upload, verified } from './upload';
 
-const isMedia = (file: File) =>
-  /^(audio|video)\//.test(file.type) ||
-  /\.(wav|flac|mp3|m4a|aac|ogg|opus|mp4|m4v|mov|mkv|webm)$/i.test(file.name);
+const isAudio = (file: File) =>
+  file.type.startsWith('audio/') || /\.(wav|flac|mp3|m4a|aac|ogg|opus)$/i.test(file.name);
+const isVideo = (file: File) =>
+  file.type.startsWith('video/') || /\.(mp4|m4v|mov|mkv|webm)$/i.test(file.name);
+const isMedia = (file: File) => isAudio(file) || isVideo(file);
 
 /** Uploads started in the browser, sent one batch after another, for the bar at the top. */
 class Uploads {

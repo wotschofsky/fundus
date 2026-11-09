@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio};
 use tokio::{io::AsyncReadExt, process::Command};
 
+/// What verification found in an upload: its first audio stream, and its picture if it has one.
+/// Stored as `uploads.format_json`; rows from before a field existed read it as its default.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Format {
     pub sample_rate: u32,
@@ -11,6 +13,49 @@ pub struct Format {
     pub bit_depth: u16,
     pub is_float: bool,
     pub frames: u64,
+    /// The audio codec, as FFmpeg names it ("aac", "flac", "pcm_s24le").
+    #[serde(default)]
+    pub codec: String,
+    #[serde(default)]
+    pub video: Option<Video>,
+}
+/// The first video stream that is not cover art. Facts only: what to do with them is
+/// `video::plan`'s decision, so it can change without probing the uploads again.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Video {
+    /// Its index in the file.
+    pub stream: u64,
+    pub codec: String,
+    pub pix_fmt: String,
+    /// Coded size; `display` applies the pixel shape and rotation.
+    pub width: u32,
+    pub height: u32,
+    /// Sample (pixel) aspect ratio; [1, 1] is square.
+    pub sar: [u32; 2],
+    /// Degrees, from the display matrix.
+    pub rotation: i32,
+    /// `color_transfer`: "smpte2084" (PQ) and "arib-std-b67" (HLG) are HDR.
+    pub transfer: String,
+    /// The file's MP4 major brand ("isom", "mp42", "qt  " for QuickTime); empty in other containers.
+    pub brand: String,
+    /// Streams in the file, cover art and data tracks included.
+    pub streams: usize,
+}
+impl Video {
+    /// The size a player shows: square pixels, upright.
+    pub fn display(&self) -> (u32, u32) {
+        let [num, den] = self.sar;
+        let width =
+            ((u64::from(self.width) * u64::from(num) + u64::from(den) / 2) / u64::from(den)) as u32;
+        if self.rotation.rem_euclid(180) == 90 {
+            (self.height, width)
+        } else {
+            (width, self.height)
+        }
+    }
+    pub fn hdr(&self) -> bool {
+        matches!(self.transfer.as_str(), "smpte2084" | "arib-std-b67")
+    }
 }
 impl Format {
     pub fn duration_ms(&self) -> i64 {
@@ -37,13 +82,29 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
     Ok(())
 }
 pub async fn inspect(path: &Path) -> Result<Format> {
-    let output=Command::new("ffprobe").args(["-v","error","-select_streams","a:0","-show_entries","stream=sample_rate,channels,bits_per_raw_sample,bits_per_sample,sample_fmt,duration,duration_ts,time_base","-of","json"]).arg(path).kill_on_drop(true).output().await?;
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries"])
+        .arg(concat!(
+            "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
+            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer",
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format_tags=major_brand"
+        ))
+        .args(["-of", "json"])
+        .arg(path)
+        .kill_on_drop(true)
+        .output()
+        .await?;
     ensure!(
         output.status.success(),
         "Unreadable or unfinished audio file"
     );
     let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let s = &v["streams"][0];
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    // The stream `-map 0:a:0` decodes: the first audio stream.
+    let s = streams
+        .iter()
+        .find(|s| s["codec_type"] == "audio")
+        .context("The file has no audio to transcribe")?;
     let rate = s["sample_rate"]
         .as_str()
         .unwrap_or("")
@@ -79,43 +140,43 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         bit_depth,
         is_float,
         frames: 0,
+        codec: text(&s["codec_name"]),
+        video: picture(&streams, &v["format"]["tags"]["major_brand"]),
     })
 }
-/// A file's first real video stream. `copy_*`: plays in every browser as it is.
-pub struct Video {
-    pub index: u64,
-    pub copy_video: bool,
-    pub copy_audio: bool,
+fn text(value: &serde_json::Value) -> String {
+    value.as_str().unwrap_or_default().to_string()
 }
-/// The video in a recording, if any. Cover art (`attached_pic`, common in m4a and mp3) is not.
-pub async fn video(path: &Path) -> Result<Option<Video>> {
-    let output = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries"])
-        .arg("stream=index,codec_type,codec_name,pix_fmt:stream_disposition=attached_pic")
-        .args(["-of", "json"])
-        .arg(path)
-        .kill_on_drop(true)
-        .output()
-        .await?;
-    ensure!(output.status.success(), "Unreadable video file");
-    let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let streams = v["streams"].as_array().cloned().unwrap_or_default();
-    let Some(video) = streams
+/// Cover art (`attached_pic`, common in m4a and mp3) is not a picture.
+fn picture(streams: &[serde_json::Value], brand: &serde_json::Value) -> Option<Video> {
+    let s = streams
         .iter()
-        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
-    else {
-        return Ok(None);
-    };
-    // The audio `verify` and `render` use: the first audio stream.
-    let audio = streams.iter().find(|s| s["codec_type"] == "audio");
-    Ok(Some(Video {
-        index: video["index"].as_u64().context("Missing stream index")?,
-        // 8-bit 4:2:0 H.264 plays everywhere; 10-bit or 4:2:2 does not.
-        copy_video: video["codec_name"] == "h264"
-            && ["yuv420p", "yuvj420p"].contains(&video["pix_fmt"].as_str().unwrap_or("")),
-        copy_audio: audio.is_some_and(|a| a["codec_name"] == "aac"),
-    }))
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)?;
+    let size = |key: &str| s[key].as_u64().filter(|n| *n > 0).map(|n| n as u32);
+    let sar = text(&s["sample_aspect_ratio"])
+        .split_once(':')
+        .and_then(|(num, den)| Some([num.parse().ok()?, den.parse().ok()?]))
+        .filter(|[num, den]: &[u32; 2]| *num > 0 && *den > 0)
+        .unwrap_or([1, 1]);
+    let rotation = s["side_data_list"]
+        .as_array()
+        .and_then(|list| list.iter().find_map(|d| d["rotation"].as_f64()))
+        .unwrap_or(0.)
+        .round() as i32;
+    Some(Video {
+        stream: s["index"].as_u64()?,
+        codec: text(&s["codec_name"]),
+        pix_fmt: text(&s["pix_fmt"]),
+        width: size("width")?,
+        height: size("height")?,
+        sar,
+        rotation,
+        transfer: text(&s["color_transfer"]),
+        brand: text(brand),
+        streams: streams.len(),
+    })
 }
+
 // Canonical integer samples are signed 32-bit LE, left aligned (FFmpeg s32le).
 // Float samples retain their source width. Format fields domain-separate the hash.
 pub async fn verify(path: &Path) -> Result<(Format, String)> {

@@ -1,7 +1,20 @@
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, Notify, Semaphore};
+use tokio_util::sync::CancellationToken;
+
+/// Disk space uploads and video conversions leave free: the database may share the disk, and a
+/// full disk breaks more than them.
+pub const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
+/// Bytes an unprivileged writer may still use at `path`. An error rather than a guess.
+pub fn free_space(path: &Path) -> std::io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -125,6 +138,8 @@ pub struct App {
     pub mutations: Arc<Mutex<()>>,
     pub background: tokio_util::task::TaskTracker,
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
+    /// The running video conversion, by entry, so Trash can stop it (`video::convert`).
+    pub conversions: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
 }
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
@@ -159,7 +174,14 @@ impl App {
             mutations: Default::default(),
             background: Default::default(),
             login_attempts: Default::default(),
+            conversions: Default::default(),
         })
+    }
+    /// Stops `entry`'s video conversion if it is running; the video goes back to the queue.
+    pub fn stop_conversion(&self, entry: &str) {
+        if let Some(stop) = self.conversions.lock().unwrap().get(entry) {
+            stop.cancel();
+        }
     }
     pub fn upload_path(&self, id: &str) -> PathBuf {
         self.config.data.join("uploads").join(id)
