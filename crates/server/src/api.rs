@@ -725,7 +725,7 @@ async fn delete_entry(
     if deleted.rows_affected() == 0 {
         retrieval::get_including_trash(&app, &id).await?;
         return Err(Error::conflict(
-            "Wait for processing to finish before deleting",
+            "Wait for processing and any video conversion to finish before deleting",
         ));
     }
     let _ = tokio::fs::remove_dir_all(app.entry_dir(&id)).await;

@@ -8,11 +8,12 @@
 //!
 //! `entries.video_status`: NULL without video, `original`, or `queued` → `converting` →
 //! `ready` or `failed`. `video_width` and `video_height` are the size the browser shows, set
-//! with the status. `video_attempts` counts conversions the server did not live through.
+//! with the status. `video_attempts` counts conversions that ended without recording how (a
+//! crash, a failed write).
 
 use crate::{
     audio::{self, Format, Video},
-    config::{App, now, room_for},
+    config::{App, now},
     pipeline::commit_artifact,
 };
 use anyhow::{Context, Result, ensure};
@@ -21,8 +22,9 @@ use tokio_util::sync::CancellationToken;
 
 /// A converted video, beside `playback.m4a`.
 pub const FILE: &str = "video.mp4";
+const NO_ROOM: &str = "Not enough free disk space to convert this video";
 const PARTIAL: &str = "video.partial.mp4";
-/// Conversions the server may die in before the video is given up.
+/// Conversions that may end without recording how before the video is given up.
 const ATTEMPTS: i64 = 2;
 /// Brands browsers read as MP4. QuickTime (`qt  `) is not one.
 const MP4_BRANDS: [&str; 9] = [
@@ -83,10 +85,11 @@ fn fit(width: u32, height: u32) -> (u32, u32) {
     (side(width), side(height))
 }
 
-/// After a restart: a conversion the server died in is queued again, until it has done so
-/// `ATTEMPTS` times. Runs before the worker claims anything.
+/// Settles conversions that ended without recording how: at startup, before the worker claims
+/// anything, and whenever the running conversion ends (a panic, a failed write). Each is
+/// queued again until that has happened `ATTEMPTS` times.
 pub async fn recover(app: &App) {
-    let failure = "The server stopped while converting this video, more than once.";
+    let failure = "Converting this video was cut short twice without finishing.";
     let given_up: Vec<String> = sqlx::query_scalar!("UPDATE entries SET video_status='failed',video_failure=?,video_attempts=0 WHERE video_status='converting' AND video_attempts>=? RETURNING id AS \"id!\"", failure, ATTEMPTS)
         .fetch_all(&app.db)
         .await
@@ -173,16 +176,26 @@ async fn run(app: &App, entry: &str) -> Result<()> {
         anyhow::bail!("This recording has no video size");
     };
     let _cpu = app.cpu.acquire().await?;
-    // This conversion is already among the promises `room_for` counts, as the one converting.
-    ensure!(
-        room_for(app, 0).await?,
-        "Not enough free disk space to convert this video"
-    );
     tokio::fs::create_dir_all(&dir).await?;
+    ensure!(app.has_room(&dir, 0)?, NO_ROOM);
     let source = app.upload_path(&row.upload_id);
     let partial = dir.join(PARTIAL);
     let size = (width, height);
-    audio::ffmpeg(&arguments(&source, video, size, row.duration_ms, &partial)).await?;
+    let args = arguments(&source, video, size, row.duration_ms, &partial);
+    // An encoder's output has no exact ceiling, so the disk is watched while it writes. Dropping
+    // FFmpeg kills it, and `convert` removes what it wrote.
+    let full = async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if !app.has_room(&dir, 0).unwrap_or(false) {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        done = audio::ffmpeg(&args) => done?,
+        _ = full => anyhow::bail!(NO_ROOM),
+    }
     commit_artifact(&partial, &dir.join(FILE)).await
 }
 
@@ -201,8 +214,8 @@ fn arguments(
         filter.push_str(",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv");
     }
     filter.push_str(",format=yuv420p");
-    // Two threads each way, one for filters: the container has two CPUs, and every decoding
-    // thread holds frames of the full-size picture in memory.
+    // Two threads each way, one for filters: the production container gets two CPUs, and every
+    // decoding thread holds frames of the full-size picture in memory.
     let mut args: Vec<String> = ["-filter_threads", "1", "-threads", "2", "-i"]
         .map(String::from)
         .into();
@@ -210,9 +223,9 @@ fn arguments(
     args.extend(["-map".into(), format!("0:{}", video.stream)]);
     args.extend(["-map", "0:a:0", "-vf"].map(String::from));
     args.push(filter);
-    // As long as the recording, which is its audio: a longer picture would outgrow the budget.
+    // As long as the recording, which is its audio: a longer picture adds nothing to watch.
     args.extend(["-t".into(), format!("{:.3}", duration_ms as f64 / 1000.)]);
-    // The ceilings `config::CONVERSION_BYTES_PER_SECOND` budgets for; stereo for the browser.
+    // Stereo for the browser.
     let codecs = "-c:v libx264 -preset veryfast -crf 23 -maxrate 3M -bufsize 6M -threads 2 \
         -c:a aac -b:a 128k -ac 2 -movflags +faststart";
     args.extend(codecs.split_whitespace().map(String::from));

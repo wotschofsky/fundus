@@ -26,8 +26,8 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
     recover(&app).await;
     video::recover(&app).await;
     let mut jobs = tokio::task::JoinSet::new();
-    // One video conversion at a time, beside the transcripts: it keeps a CPU busy for as long
-    // as the video runs, and the transcripts never wait for it.
+    // One video conversion at a time, beside the transcripts, which never wait for it to finish.
+    // It holds one of the two `app.cpu` permits for as long as the video runs.
     let mut conversions = tokio::task::JoinSet::new();
     loop {
         if shutdown.is_cancelled() {

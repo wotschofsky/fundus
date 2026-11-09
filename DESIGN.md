@@ -214,7 +214,7 @@ Loading uses a status label with a rotating indicator (1s linear). There is no d
 
 ### Performance notes
 
-The library polls only while a visible recording is processing; a recording polls its status only while processing and refetches its transcript only when the stage changes. The full transcript loads page by page in the background. Turns are memoized and use `content-visibility: auto`, and playback updates state only when the spoken segment changes, so playback cost does not grow with transcript length.
+The library polls only while a visible recording is processing; a recording polls its status only while processing or preparing its video, and refetches its transcript only when the stage changes. The full transcript loads page by page in the background. Turns are memoized and use `content-visibility: auto`, and playback updates state only when the spoken segment changes, so playback cost does not grow with transcript length.
 
 ## Do's and Don'ts
 

@@ -13,9 +13,12 @@ raw PCM and H.264 MP4 out. Other audio fails verification; video in another code
 recording plays as audio. H.264 comes from Debian's x264 and HDR tone mapping from
 zimg (`libx264-dev`, `libzimg-dev` to build; `libx264-164`, `libzimg2` at runtime).
 x264 makes this FFmpeg binary GPL. It is a separate program the server runs, so the
-server's MIT license is unaffected. The container smoke test fails if the image's
-FFmpeg loses an encoder, decoder, muxer or filter the video conversion needs. The image scan cannot see the FFmpeg build:
-bump both values when FFmpeg publishes a security release.
+server's MIT license is unaffected; published images do distribute it, built from the
+FFmpeg release and configure line pinned in the `Dockerfile` and Debian's x264 and zimg
+packages. The container smoke test fails if the image's FFmpeg loses the libx264 or AAC
+encoder, the H.264, HEVC or VP9 decoder, the MP4 muxer, or the scale, setsar, transpose,
+zscale or tonemap filter. The image scan cannot see the FFmpeg build: bump both values
+when FFmpeg publishes a security release.
 
 ## Container CI
 

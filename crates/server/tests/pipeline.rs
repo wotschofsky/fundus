@@ -269,6 +269,38 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
 }
 
 #[tokio::test]
+async fn a_conversion_stops_short_of_the_disk_reserve() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::from_env().unwrap();
+    config.data = dir.path().join("vault");
+    config.voice_model = None;
+    // More than the disk has free.
+    config.reserve = u64::MAX / 2;
+    let mut app = App::new(config).await.unwrap();
+    let (_provider, task) = common::connect(&mut app, Options::default()).await;
+    let source = media(
+        dir.path(),
+        "clip.mkv",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v mpeg4 -c:a flac",
+        None,
+    );
+    let entry = import(&app, &source, "clip").await;
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "failed", "{video}");
+    assert_eq!(
+        video["failure"],
+        "Not enough free disk space to convert this video"
+    );
+    assert!(!app.entry_dir(&entry).join("video.partial.mp4").exists());
+    task.abort();
+}
+
+#[tokio::test]
 async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
     let (dir, app, _provider, task) = setup(Options::default()).await;
     let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
@@ -361,7 +393,7 @@ async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
     assert_eq!(status().await, (Some("failed".into()), 0));
     let failure = &retrieval::get(&app, &entry).await.unwrap()["video"]["failure"];
     assert!(
-        failure.as_str().unwrap().contains("more than once"),
+        failure.as_str().unwrap().contains("cut short twice"),
         "{failure}"
     );
     assert_eq!(

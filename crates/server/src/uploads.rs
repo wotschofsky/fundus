@@ -1,6 +1,6 @@
 use crate::{
     auth::Access,
-    config::{App, id, now, room_for},
+    config::{App, id, now},
     error::{Error, Result},
     grouping::{self, SessionPlan},
 };
@@ -16,6 +16,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const MAX_FILE: i64 = 32 * 1024 * 1024 * 1024;
+/// The most one PATCH may carry.
+const CHUNK: i64 = 8 * 1024 * 1024;
+fn no_room() -> Error {
+    Error(
+        StatusCode::INSUFFICIENT_STORAGE,
+        "Your vault does not have enough free disk space for this file".into(),
+    )
+}
 #[derive(Deserialize)]
 pub struct NewImport {
     pub recorder_timezone: Option<String>,
@@ -202,12 +210,9 @@ pub async fn create(
             ));
         }
     }
-    // A full disk breaks more than uploads: the database may share it.
-    if !room_for(&app, length as u64).await? {
-        return Err(Error(
-            StatusCode::INSUFFICIENT_STORAGE,
-            "Your vault does not have enough free disk space for this file".into(),
-        ));
+    // A full disk breaks more than uploads: the database may share it. Each chunk asks again.
+    if !app.has_room(&app.config.data.join("uploads"), length as u64)? {
+        return Err(no_room());
     }
     let id = id();
     let file = tokio::fs::OpenOptions::new()
@@ -283,6 +288,13 @@ pub async fn patch(
             "Offset mismatch or import already finalized; query HEAD before retrying",
         ));
     }
+    // Measured now, not at create: other uploads and a video conversion write to the same disk.
+    if !app.has_room(
+        &app.config.data.join("uploads"),
+        (length - saved).min(CHUNK) as u64,
+    )? {
+        return Err(no_room());
+    }
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(app.upload_path(&id))
@@ -294,7 +306,7 @@ pub async fn patch(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| Error::bad("Upload body interrupted; resume using HEAD"))?;
         count += chunk.len() as i64;
-        if saved + count > length || count > 8 * 1024 * 1024 {
+        if saved + count > length || count > CHUNK {
             file.set_len(saved as u64).await?;
             return Err(Error::bad(
                 "Chunk exceeds upload length or 8 MiB chunk limit",
