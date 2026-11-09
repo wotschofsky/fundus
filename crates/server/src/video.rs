@@ -66,9 +66,11 @@ pub fn plan(sources: &[&Format], trimmed: bool) -> Option<Plan> {
 
 /// A plain MP4: one H.264 picture, 8-bit 4:2:0, SDR, square pixels, and one AAC track. Nothing
 /// else in the file: the timecode and metadata tracks of iPhone videos are known to stall
-/// players.
+/// players. Speech and picture start at 0, so the player's time is the transcript's.
 fn plays_as_is(format: &Format, video: &Video) -> bool {
-    MP4_BRANDS.contains(&video.brand.as_str())
+    format.start_ms.abs() <= 100
+        && video.start_ms.abs() <= 100
+        && MP4_BRANDS.contains(&video.brand.as_str())
         && video.streams == 2
         && video.codec == "h264"
         && matches!(video.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
@@ -181,7 +183,7 @@ async fn run(app: &App, entry: &str) -> Result<()> {
     let source = app.upload_path(&row.upload_id);
     let partial = dir.join(PARTIAL);
     let size = (width, height);
-    let args = arguments(&source, video, size, row.duration_ms, &partial);
+    let args = arguments(&source, &format, video, size, row.duration_ms, &partial);
     // An encoder's output has no exact ceiling, so the disk is watched while it writes. Dropping
     // FFmpeg kills it, and `convert` removes what it wrote.
     let full = async {
@@ -203,6 +205,7 @@ async fn run(app: &App, entry: &str) -> Result<()> {
 /// the picture upright before the filter, so `size` is the upright size.
 fn arguments(
     source: &Path,
+    format: &Format,
     video: &Video,
     (width, height): (i64, i64),
     duration_ms: i64,
@@ -214,15 +217,24 @@ fn arguments(
         filter.push_str(",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv");
     }
     filter.push_str(",format=yuv420p");
-    // Two threads each way, one for filters: the production container gets two CPUs, and every
-    // decoding thread holds frames of the full-size picture in memory.
-    let mut args: Vec<String> = ["-filter_threads", "1", "-threads", "2", "-i"]
+    // Two threads each way, one for filters: it shares the server with one other CPU-heavy step
+    // (`app.cpu`), and every decoding thread holds frames of the full-size picture in memory.
+    let mut args: Vec<String> = ["-filter_threads", "1", "-threads", "2"]
         .map(String::from)
         .into();
-    args.push(source.display().to_string());
+    // Speech that starts after the file does: picture before it is dropped, the rest keeps its
+    // place beside the speech. `-ss` counts from the file's start, not from 0.
+    let seek_ms = format.start_ms - video.file_start_ms;
+    if seek_ms > 0 {
+        args.extend(["-ss".into(), format!("{:.3}", seek_ms as f64 / 1000.)]);
+    }
+    args.extend(["-i".into(), source.display().to_string()]);
     args.extend(["-map".into(), format!("0:{}", video.stream)]);
     args.extend(["-map", "0:a:0", "-vf"].map(String::from));
     args.push(filter);
+    // The audio on the transcript's clock: its samples back to back from 0, as the transcript
+    // decoded them, whatever gaps the file's timestamps have. The picture keeps its own timing.
+    args.extend(["-af", "asetpts=N/SR/TB"].map(String::from));
     // As long as the recording, which is its audio: a longer picture adds nothing to watch.
     args.extend(["-t".into(), format!("{:.3}", duration_ms as f64 / 1000.)]);
     // Stereo for the browser.
@@ -245,6 +257,7 @@ mod tests {
             is_float: true,
             frames: 48000,
             codec: codec.into(),
+            start_ms: 0,
             video: Some(video),
         }
     }
@@ -261,6 +274,8 @@ mod tests {
             transfer: "bt709".into(),
             brand: "isom".into(),
             streams: 2,
+            start_ms: 0,
+            file_start_ms: 0,
         }
     }
 
@@ -326,6 +341,15 @@ mod tests {
                 },
             ),
             ("opus", phone()),
+            // A picture or speech that does not start at 0 would put the player off the
+            // transcript.
+            (
+                "aac",
+                Video {
+                    start_ms: 500,
+                    ..phone()
+                },
+            ),
         ] {
             assert_eq!(
                 plan_of(codec, video.clone()),
@@ -398,18 +422,55 @@ mod tests {
     }
 
     #[test]
-    fn a_conversion_is_as_long_as_the_recording_and_within_the_budgeted_bitrates() {
-        let args = arguments(
-            Path::new("in"),
-            &phone(),
-            (1280, 720),
-            1500,
-            Path::new("out"),
+    fn a_conversion_follows_the_transcript_from_its_first_sample_to_its_last() {
+        let args = |audio_ms: i64, file_ms: i64| {
+            let video = Video {
+                file_start_ms: file_ms,
+                ..phone()
+            };
+            let format = Format {
+                start_ms: audio_ms,
+                ..format("aac", video.clone())
+            };
+            arguments(
+                Path::new("in"),
+                &format,
+                &video,
+                (1280, 720),
+                1500,
+                Path::new("out"),
+            )
+        };
+        let has = |args: &[String], pair: [&str; 2]| args.windows(2).any(|w| w == pair);
+        // Seeking before `-i` moves every timestamp, so the picture keeps its place beside the
+        // speech. The seek counts from the file's start: audio at 2 s in a file that starts at
+        // 1 s is 1 s in.
+        assert!(has(&args(2000, 1000), ["-ss", "1.000"]));
+        let seek = args(1000, 0);
+        let at = |arg: &str| seek.iter().position(|a| a == arg).unwrap();
+        assert!(
+            has(&seek, ["-ss", "1.000"]) && at("-ss") < at("-i"),
+            "{seek:?}"
         );
-        let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
-        assert!(has(["-t", "1.500"]), "{args:?}");
-        assert!(has(["-maxrate", "3M"]) && has(["-b:a", "128k"]), "{args:?}");
-        assert!(!args.iter().any(|arg| arg == "copy"), "{args:?}");
+        // The audio's samples back to back from 0, and all of them: as long as the recording.
+        assert!(has(&seek, ["-af", "asetpts=N/SR/TB"]), "{seek:?}");
+        assert!(has(&seek, ["-t", "1.500"]), "{seek:?}");
+        assert!(has(&seek, ["-maxrate", "3M"]) && has(&seek, ["-b:a", "128k"]));
+        // Audio that starts with the file, or a little before the picture (AAC priming), needs
+        // no seek.
+        for (audio, file) in [(0, 0), (-21, -21), (1000, 1000)] {
+            let args = args(audio, file);
+            assert!(!args.iter().any(|a| a == "-ss"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn video_facts_stored_before_the_start_times_still_load() {
+        let mut stored = serde_json::to_value(phone()).unwrap();
+        for key in ["start_ms", "file_start_ms"] {
+            stored.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(serde_json::from_value::<Video>(stored).unwrap(), phone());
     }
 
     #[test]

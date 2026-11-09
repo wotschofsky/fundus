@@ -16,6 +16,10 @@ pub struct Format {
     /// The audio codec, as FFmpeg names it ("aac", "flac", "pcm_s24le").
     #[serde(default)]
     pub codec: String,
+    /// Where the audio starts on the file's timeline. Decoding starts at its first sample, so
+    /// that is the transcript's time 0.
+    #[serde(default)]
+    pub start_ms: i64,
     #[serde(default)]
     pub video: Option<Video>,
 }
@@ -40,6 +44,12 @@ pub struct Video {
     pub brand: String,
     /// Streams in the file, cover art and data tracks included.
     pub streams: usize,
+    /// Where the picture starts on the file's timeline.
+    #[serde(default)]
+    pub start_ms: i64,
+    /// Where the file's timeline starts: FFmpeg seeks from there, not from 0.
+    #[serde(default)]
+    pub file_start_ms: i64,
 }
 impl Video {
     /// The size a player shows: square pixels, upright.
@@ -87,8 +97,8 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .args(["-v", "error", "-show_entries"])
         .arg(concat!(
             "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
-            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer",
-            ":stream_disposition=attached_pic:stream_side_data=rotation:format_tags=major_brand"
+            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time",
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time:format_tags=major_brand"
         ))
         .args(["-of", "json"])
         .arg(path)
@@ -142,14 +152,20 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         is_float,
         frames: 0,
         codec: text(&s["codec_name"]),
-        video: picture(&streams, &v["format"]["tags"]["major_brand"]),
+        start_ms: millis(&s["start_time"]),
+        video: picture(&streams, &v["format"]),
     })
 }
 fn text(value: &serde_json::Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
+/// FFprobe's seconds, as "1.000000"; 0 when it has none.
+fn millis(value: &serde_json::Value) -> i64 {
+    let seconds = value.as_str().and_then(|s| s.parse::<f64>().ok());
+    seconds.map_or(0, |s| (s * 1000.).round() as i64)
+}
 /// Cover art (`attached_pic`, common in m4a and mp3) is not a picture.
-fn picture(streams: &[serde_json::Value], brand: &serde_json::Value) -> Option<Video> {
+fn picture(streams: &[serde_json::Value], file: &serde_json::Value) -> Option<Video> {
     let s = streams
         .iter()
         .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)?;
@@ -173,8 +189,10 @@ fn picture(streams: &[serde_json::Value], brand: &serde_json::Value) -> Option<V
         sar,
         rotation,
         transfer: text(&s["color_transfer"]),
-        brand: text(brand),
+        brand: text(&file["tags"]["major_brand"]),
         streams: streams.len(),
+        start_ms: millis(&s["start_time"]),
+        file_start_ms: millis(&file["start_time"]),
     })
 }
 

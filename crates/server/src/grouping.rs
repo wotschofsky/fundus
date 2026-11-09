@@ -92,6 +92,7 @@ mod tests {
                 is_float: false,
                 frames: (ms * 48) as u64,
                 codec: "pcm_s24le".into(),
+                start_ms: 0,
                 video: None,
             },
             recorded_at: Some(t),

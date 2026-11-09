@@ -269,6 +269,56 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
 }
 
 #[tokio::test]
+async fn a_converted_video_holds_its_audio_as_the_transcript_does() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // The file's timeline starts at 1 s with the picture; the speech starts a second later, as
+    // after a cut in an editor, and its timestamps skip a second after its first second.
+    let late = media(
+        dir.path(),
+        "late.mkv",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=4 -itsoffset 1 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v mpeg4 -c:a aac -output_ts_offset 1",
+        None,
+    );
+    let entry = import(&app, &late, "late").await;
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(detail["video"]["state"], "ready", "{}", detail["video"]);
+    // Its audio starts at 0 and is every sample the transcript was made from, back to back.
+    let video = app.entry_dir(&entry).join(fundus::video::FILE);
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "a:0", "-show_entries"])
+        .args(["stream=start_time", "-of", "csv=p=0"])
+        .arg(&video)
+        .output()
+        .unwrap();
+    let start: f64 = String::from_utf8(probe.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(start.abs() < 0.05, "starts at {start}");
+    let decoded = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&video)
+        .args([
+            "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s32le", "-",
+        ])
+        .output()
+        .unwrap();
+    let seconds = decoded.stdout.len() as f64 / 4. / 48000.;
+    let recording = detail["duration_ms"].as_f64().unwrap() / 1000.;
+    assert!(
+        (seconds - recording).abs() < 0.05,
+        "keeps {seconds} s of {recording}"
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn a_conversion_stops_short_of_the_disk_reserve() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env().unwrap();

@@ -288,6 +288,12 @@ pub async fn patch(
             "Offset mismatch or import already finalized; query HEAD before retrying",
         ));
     }
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(app.upload_path(&id))
+        .await?;
+    // What an interrupted chunk left past the offset goes first: its space is this upload's own.
+    file.set_len(saved as u64).await?;
     // Measured now, not at create: other uploads and a video conversion write to the same disk.
     if !app.has_room(
         &app.config.data.join("uploads"),
@@ -295,11 +301,6 @@ pub async fn patch(
     )? {
         return Err(no_room());
     }
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(app.upload_path(&id))
-        .await?;
-    file.set_len(saved as u64).await?;
     file.seek(std::io::SeekFrom::Start(saved as u64)).await?;
     let mut stream = request.into_body().into_data_stream();
     let mut count = 0i64;

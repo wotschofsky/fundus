@@ -549,4 +549,14 @@ async fn uploads_stop_short_of_the_disk_reserve() {
     // And no new upload starts.
     let refused = send(&full, "POST", "/api/v1/uploads", &create, "").await;
     assert_eq!(refused.status(), StatusCode::INSUFFICIENT_STORAGE);
+    // An interrupted chunk leaves bytes past the offset. They are the upload's own, so the next
+    // chunk gets their space back instead of being refused for it.
+    let id = location.rsplit('/').next().unwrap();
+    let mut file = std::fs::File::create(roomy.upload_path(id)).unwrap();
+    std::io::Write::write_all(&mut file, &vec![1u8; 64 * 1024 * 1024]).unwrap();
+    file.sync_all().unwrap();
+    let free = fundus::config::free_space(dir.path()).unwrap();
+    let tight = App::new(config(free + 32 * 1024 * 1024)).await.unwrap();
+    let patched = send(&tight, "PATCH", &location, &chunk, "abc").await;
+    assert_eq!(patched.status(), StatusCode::NO_CONTENT);
 }
