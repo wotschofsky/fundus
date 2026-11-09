@@ -66,7 +66,8 @@ pub fn plan(sources: &[&Format], trimmed: bool) -> Option<Plan> {
 
 /// A plain MP4: one H.264 picture, 8-bit 4:2:0, SDR, square pixels, and one AAC track. Nothing
 /// else in the file: the timecode and metadata tracks of iPhone videos are known to stall
-/// players. Speech and picture start at 0, so the player's time is the transcript's.
+/// players. Speech and picture start within 100 ms of 0, so the player's clock starts on the
+/// transcript's; a gap in the audio's timestamps still shifts it from there.
 fn plays_as_is(format: &Format, video: &Video) -> bool {
     format.start_ms.abs() <= 100
         && video.start_ms.abs() <= 100
@@ -223,7 +224,8 @@ fn arguments(
         .map(String::from)
         .into();
     // Speech that starts after the file does: picture before it is dropped, the rest keeps its
-    // place beside the speech. `-ss` counts from the file's start, not from 0.
+    // place beside the speech up to the first gap in the audio's timestamps. `-ss` counts from
+    // the file's start, not from 0.
     let seek_ms = format.start_ms - video.file_start_ms;
     if seek_ms > 0 {
         args.extend(["-ss".into(), format!("{:.3}", seek_ms as f64 / 1000.)]);

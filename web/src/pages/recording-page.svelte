@@ -298,7 +298,7 @@
               >Try again</button
             >
           {:else if unplayable}
-            This browser cannot play the video{e.audio_available ? ', so you hear the audio.' : '.'}
+            The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
           {/if}
         </p>
         {#if playable}

@@ -39,11 +39,17 @@ class Uploads {
       const start = this.sent;
       let current = files[0].name;
       try {
-        const id = await upload(files, (sent, i) => {
+        const { id, failed } = await upload(files, (sent, i) => {
           this.sent = start + sent;
           this.index = first + i + 1;
           this.name = current = files[i].name;
         });
+        if (failed) {
+          const names = files.slice(failed.index).map((f) => f.name);
+          const were = names.length > 1 ? 'were' : 'was';
+          this.problems.push(`${names.join(', ')} ${were} not uploaded: ${failed.error.message}`);
+        }
+        if (!id) return;
         this.sent = start + size;
         this.checking = true;
         const result = await verified(id);
