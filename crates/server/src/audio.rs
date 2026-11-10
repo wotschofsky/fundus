@@ -97,6 +97,8 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
         .await
         .context("FFmpeg is required on the server")?;
     if !output.status.success() {
+        // ponytail: all of stderr is held, as `output()` has always buffered it; read it into a
+        // bounded buffer if a file can make FFmpeg print megabytes even at `-v error`.
         return Err(Failed(String::from_utf8_lossy(&output.stderr).into_owned()).into());
     }
     Ok(())
