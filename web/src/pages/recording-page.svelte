@@ -294,7 +294,12 @@
             Preparing the video.{e.audio_available ? ' You can listen in the meantime.' : ''}
           {:else if e.video?.state === 'failed'}
             The video could not be prepared: {e.video.failure}
-            <button class="text-button" disabled={busy} onclick={post('video/retry')}>Retry</button>
+            <button
+              class="text-button"
+              aria-label="Retry video"
+              disabled={busy}
+              onclick={post('video/retry')}>Retry</button
+            >
           {:else if unplayable}
             The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
           {/if}
