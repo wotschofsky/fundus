@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import type { Segment } from './api';
 import { SnippetPlayback } from './snippet-playback';
 
@@ -25,13 +26,10 @@ export class Playback {
   playing = $state(false);
   follow = $state(false);
   #revealed = 0;
-  /** Where a player that replaces another (the video once it is ready) goes on, and whether
-   * it plays: the old one was playing when it went. */
+  /** Where a player that replaces another (the video once it is ready, the audio after a video
+   * that failed) goes on, and whether it plays: the one before was playing when it went. */
   #position: number | null = null;
   #resume = false;
-  /** `playing`, kept outside `$state` for the teardown below: a teardown reads state as it was
-   * when its effect last ran, before this player started. */
-  #sounding = false;
   #rows: () => Segment[];
   #startMs: () => number;
   #snippet = new SnippetPlayback();
@@ -42,8 +40,10 @@ export class Playback {
     $effect(() => {
       if (!this.media) return;
       return () => {
-        this.#resume = this.#sounding;
-        this.playing = this.#sounding = false;
+        // Kept across a player that went again before it loaded (a video this browser cannot
+        // play): the one after it goes on as the first one would have.
+        this.#resume ||= untrack(() => this.playing);
+        this.playing = false;
         this.#snippet.stop();
       };
     });
@@ -92,7 +92,7 @@ export class Playback {
 
   /** Only the current player's events count: a removed one still sends its last timeupdate and
    * its pause a moment after it goes, and those must not move the one that replaced it. */
-  #current = (event: Event) => !!this.media && event.currentTarget === this.media;
+  #current = (event: Event) => event.currentTarget === this.media;
 
   timeUpdate = (event: Event) => {
     if (!this.#current(event) || !this.media) return;
@@ -101,11 +101,11 @@ export class Playback {
   };
 
   played = (event: Event) => {
-    if (this.#current(event)) this.playing = this.#sounding = true;
+    if (this.#current(event)) this.playing = true;
   };
 
   paused = (event: Event) => {
-    if (this.#current(event)) this.playing = this.#sounding = false;
+    if (this.#current(event)) this.playing = false;
   };
 
   /** Starts where the previous player was, or at the linked passage. */

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import { compileModule } from 'svelte/compiler';
+// Svelte's client runtime, as the compiled module uses it: under Node, `svelte` itself is the
+// server build, and an effect outside a component needs a root (Svelte is pinned exactly).
 import { effect_root, flush } from 'svelte/internal/client';
 
 // A `.svelte.ts` module uses runes, so it is compiled as Vite would before it is imported, and
@@ -23,6 +25,7 @@ registerHooks({
     return { format: 'module', source: js.code, shortCircuit: true };
   },
 });
+// The Space shortcut listens on the window, which Node does not have.
 globalThis.addEventListener ??= () => {};
 globalThis.removeEventListener ??= () => {};
 const { Playback } = await import('../src/playback.svelte.ts');
@@ -37,7 +40,8 @@ class Media extends EventTarget {
 }
 const from = (media) => ({ currentTarget: media });
 
-test('a player that replaces a playing one goes on from its place, whatever the old one still sends', () => {
+/** A page with its audio at 42 s, playing or not. Each step flushes, as a browser's events do. */
+function playbackAt42(playing) {
   let playback;
   const stop = effect_root(() => {
     playback = new Playback(
@@ -46,24 +50,52 @@ test('a player that replaces a playing one goes on from its place, whatever the 
     );
   });
   const audio = new Media();
-  playback.media = audio;
-  flush();
+  const show = (media) => {
+    playback.media = media;
+    flush();
+  };
+  show(audio);
   audio.currentTime = 42;
-  playback.played(from(audio));
+  if (playing) playback.played(from(audio));
   playback.timeUpdate(from(audio));
-
-  // The video becomes ready and replaces the audio while it plays.
-  const video = new Media();
-  playback.media = video;
   flush();
+  return { playback, audio, show, stop };
+}
+
+test('a player that replaces a playing one goes on from its place, whatever the old one still sends', () => {
+  const { playback, audio, show, stop } = playbackAt42(true);
+  // The video becomes ready and replaces the audio.
+  const video = new Media();
+  show(video);
   // The removed audio's last timeupdate and its pause arrive a moment later.
   playback.timeUpdate(from(audio));
   playback.paused(from(audio));
   playback.loaded(from(video));
-
   assert.equal(video.currentTime, 42);
   assert.equal(video.playing, true);
-  playback.played(from(video));
-  assert.equal(playback.playing, true);
+  stop();
+});
+
+test('after a video that could not load, the audio goes on from its place and keeps playing', () => {
+  const { playback, audio, show, stop } = playbackAt42(true);
+  // Try again: the video replaces the audio, fails before it loads, and the audio comes back.
+  const video = new Media();
+  show(video);
+  playback.paused(from(audio));
+  const again = new Media();
+  show(again);
+  playback.loaded(from(again));
+  assert.equal(again.currentTime, 42);
+  assert.equal(again.playing, true);
+  stop();
+});
+
+test('a paused player that is replaced stays paused at its place', () => {
+  const { playback, show, stop } = playbackAt42(false);
+  const video = new Media();
+  show(video);
+  playback.loaded(from(video));
+  assert.equal(video.currentTime, 42);
+  assert.equal(video.playing, false);
   stop();
 });
