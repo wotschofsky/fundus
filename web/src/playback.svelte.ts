@@ -41,7 +41,7 @@ export class Playback {
       if (!this.media) return;
       return () => {
         // Only ever set here, so a player that went again before it loaded (a video this browser
-        // cannot play) leaves it as the players before it did; `loaded` and a pause clear it.
+        // cannot play) cannot clear what the players before it set; `loaded` and a pause do.
         this.#resume ||= this.playing;
         this.playing = false;
         this.#snippet.stop();
