@@ -45,9 +45,12 @@ class Uploads {
           this.name = current = files[i].name;
         });
         if (failed) {
-          const names = files.slice(failed.index).map((f) => f.name);
-          const were = names.length > 1 ? 'were' : 'was';
-          this.problems.push(`${names.join(', ')} ${were} not uploaded: ${failed.error.message}`);
+          const [refused, ...unsent] = files.slice(failed.index).map((f) => f.name);
+          this.problems.push(`${refused} was not uploaded: ${failed.error.message}`);
+          if (unsent.length) {
+            const were = unsent.length > 1 ? 'were' : 'was';
+            this.problems.push(`${unsent.join(', ')} ${were} not sent either.`);
+          }
         }
         if (!id) return;
         this.sent = start + size;

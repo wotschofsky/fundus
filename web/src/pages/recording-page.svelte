@@ -289,14 +289,12 @@
         ></svelte:element>
       {/if}
       <div class="player-row">
-        <p class="player-note">
+        <p class={['player-note', e.video?.state === 'failed' && 'error']} role="status">
           {#if e.video?.state === 'preparing'}
             Preparing the video.{e.audio_available ? ' You can listen in the meantime.' : ''}
           {:else if e.video?.state === 'failed'}
             The video could not be prepared: {e.video.failure}
-            <button class="text-button" disabled={busy} onclick={post('video/retry')}
-              >Try again</button
-            >
+            <button class="text-button" disabled={busy} onclick={post('video/retry')}>Retry</button>
           {:else if unplayable}
             The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
           {/if}
