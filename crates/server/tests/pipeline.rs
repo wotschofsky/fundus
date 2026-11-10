@@ -133,11 +133,23 @@ fn media(
 async fn import(app: &App, source: &std::path::Path, batch: &str) -> String {
     add(app, source, batch, &format!("{batch}-upload")).await;
     pipeline::finalize(app, batch).await.unwrap();
-    sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
-        .bind(batch)
-        .fetch_one(&app.db)
-        .await
-        .unwrap()
+    let entry: Option<String> =
+        sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
+            .bind(batch)
+            .fetch_optional(&app.db)
+            .await
+            .unwrap();
+    if let Some(entry) = entry {
+        return entry;
+    }
+    // Say why, for a failure on another machine's FFmpeg.
+    let upload: (String, Option<String>) =
+        sqlx::query_as("SELECT state,failure FROM uploads WHERE import_id=?")
+            .bind(batch)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    panic!("{batch} made no recording; its upload is {upload:?}")
 }
 async fn call(
     router: &axum::Router,
@@ -275,13 +287,13 @@ async fn a_converted_video_holds_its_audio_as_the_transcript_does() {
     // The file's timeline starts at 1 s with the picture, 60 brighter for each of its seconds;
     // the speech starts a second later, as after a cut in an editor, and its timestamps skip a
     // second after its first second. MPEG-TS has no index: a seek in it lands between keyframes.
-    for name in ["late.mkv", "late.ts"] {
-        let late = media(
-            dir.path(),
-            name,
-            "-f lavfi -i nullsrc=s=320x180:r=10:d=4,geq=lum=60*T:cb=128:cr=128,format=yuv420p -itsoffset 1 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v libx264 -g 25 -bf 0 -c:a aac -output_ts_offset 1",
-            None,
+    // Each its own tone: the vault knows a recording by its sound, so the same sound twice would
+    // be a duplicate.
+    for (name, tone) in [("late.mkv", 440), ("late.ts", 550)] {
+        let args = format!(
+            "-f lavfi -i nullsrc=s=320x180:r=10:d=4,geq=lum=60*T:cb=128:cr=128,format=yuv420p -itsoffset 1 -f lavfi -i sine=f={tone}:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v libx264 -g 25 -bf 0 -c:a aac -output_ts_offset 1"
         );
+        let late = media(dir.path(), name, &args, None);
         let entry = import(&app, &late, name).await;
         assert_eq!(
             fundus::video::claim(&app).await.as_deref(),
