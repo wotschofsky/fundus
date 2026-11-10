@@ -116,7 +116,7 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .await?;
     ensure!(
         output.status.success(),
-        "Unreadable or unfinished audio file"
+        "Unreadable or unfinished media file"
     );
     let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     let streams = v["streams"].as_array().cloned().unwrap_or_default();

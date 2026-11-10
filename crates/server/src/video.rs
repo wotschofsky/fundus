@@ -209,7 +209,7 @@ async fn run(app: &App, entry: &str) -> Result<()> {
     commit_artifact(&partial, &dir.join(FILE)).await
 }
 
-/// The one failure a person can act on, in plain words; FFmpeg's own for the rest.
+/// The one FFmpeg failure with a known cause, in plain words; FFmpeg's own for the rest.
 fn plain(error: anyhow::Error) -> anyhow::Error {
     // FFmpeg's words when `-reinit_filter:a 0` stops it, wherever they fall in what it printed.
     let stopped = error

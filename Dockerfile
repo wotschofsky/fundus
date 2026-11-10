@@ -16,12 +16,12 @@ FROM buildpack-deps:bookworm-curl AS model
 COPY scripts/fetch-speaker-model.sh /tmp/fetch-speaker-model.sh
 RUN VAULT_MODEL_DIR=/models sh /tmp/fetch-speaker-model.sh
 
-# Only what crates/server/src/audio.rs, pipeline.rs and video.rs run: common recorder and phone formats in
-# (WAV, AIFF, CAF, FLAC, MP3, M4A with AAC or ALAC, Ogg and WebM with Opus or Vorbis); WAV, FLAC,
-# M4A/AAC and raw PCM out. Video from phones and cameras (MP4, MOV, MKV, WebM with H.264, HEVC,
-# VP8/9, MPEG-4 or MJPEG) becomes an MP4 for the browser, scaled, rotated and HDR tone-mapped,
-# with x264 and zimg. x264 makes this FFmpeg binary GPL; it is a separate program, so the server
-# stays MIT.
+# Only what crates/server/src/audio.rs, pipeline.rs and video.rs run: common recorder and phone
+# formats in (WAV, AIFF, CAF, FLAC, MP3, M4A with AAC or ALAC, Ogg and WebM with Opus or
+# Vorbis); WAV, FLAC, M4A/AAC and raw PCM out. Video from phones and cameras (MP4, MOV, MKV,
+# WebM with H.264, HEVC, VP8/9, MPEG-4 or MJPEG) becomes an MP4 for the browser, scaled, rotated
+# and HDR tone-mapped, with x264 and zimg. x264 makes this FFmpeg binary GPL; it is a separate
+# program, so the server stays MIT.
 # Debian's ffmpeg package would add ~390 MB of codecs, devices and X11/SDL libraries.
 FROM buildpack-deps:bookworm AS ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends nasm libx264-dev libzimg-dev && rm -rf /var/lib/apt/lists/*
