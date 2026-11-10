@@ -204,7 +204,7 @@ def run_image(image, proxy=False):
         for kind, names in (("encoders", ["libx264", "aac"]), ("decoders", ["h264", "hevc", "vp9"]),
                             ("muxers", ["mp4"]),
                             ("filters", ["scale", "setsar", "transpose", "zscale", "tonemap",
-                                         "trim", "setpts", "asetpts"])):
+                                         "format", "hflip", "vflip", "trim", "setpts", "asetpts"])):
             listed = subprocess.run(["docker", "run", "--rm", "--network=none", *restrictions,
                                      "--entrypoint", "ffmpeg", image, "-hide_banner", "-" + kind],
                                     capture_output=True, text=True, timeout=30, check=True).stdout

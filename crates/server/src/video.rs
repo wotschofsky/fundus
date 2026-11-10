@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 /// A converted video, beside `playback.m4a`.
 pub const FILE: &str = "video.mp4";
 const NO_ROOM: &str = "Not enough free disk space to convert this video";
+const SOUND_CHANGES: &str = "Its sound changes format partway through (channels or sample rate), which conversion does not follow";
 const PARTIAL: &str = "video.partial.mp4";
 /// Conversions that may end without recording how before the video is given up.
 const ATTEMPTS: i64 = 2;
@@ -196,7 +197,13 @@ async fn run(app: &App, entry: &str) -> Result<()> {
         }
     };
     tokio::select! {
-        done = audio::ffmpeg(&args) => done?,
+        done = audio::ffmpeg(&args) => match done {
+            // FFmpeg's words when `-reinit_filter:a 0` stops it.
+            Err(error) if error.to_string().contains("Changing audio frame properties") => {
+                anyhow::bail!(SOUND_CHANGES)
+            }
+            done => done?,
+        },
         _ = full => anyhow::bail!(NO_ROOM),
     }
     commit_artifact(&partial, &dir.join(FILE)).await
@@ -216,11 +223,11 @@ fn arguments(
     // place beside the speech up to the first gap in the audio's timestamps. Trimmed after
     // decoding, not sought: a seek in a file without an index lands between keyframes and loses
     // the picture up to the next one. Timestamps here count from the file's start, not from 0.
-    let seek_ms = format.start_ms - video.file_start_ms;
+    let trim_ms = format.start_ms - video.file_start_ms;
     let mut filter = String::new();
-    if seek_ms > 0 {
-        let seek = seek_ms as f64 / 1000.;
-        filter = format!("trim=start={seek:.3},setpts=PTS-{seek:.3}/TB,");
+    if trim_ms > 0 {
+        let start = trim_ms as f64 / 1000.;
+        filter = format!("trim=start={start:.3},setpts=PTS-{start:.3}/TB,");
     }
     filter.push_str(&format!("scale={width}:{height},setsar=1"));
     if video.hdr() {

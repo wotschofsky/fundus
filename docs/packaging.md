@@ -17,7 +17,7 @@ server's MIT license is unaffected; published images do distribute it, built fro
 FFmpeg release and configure line pinned in the `Dockerfile` and Debian's x264 and zimg
 packages. The container smoke test fails if the image's FFmpeg loses the libx264 or AAC
 encoder, the H.264, HEVC or VP9 decoder, the MP4 muxer, or the scale, setsar, transpose,
-zscale, tonemap, trim, setpts or asetpts filter. The image scan cannot see the FFmpeg build: bump both values
+hflip, vflip, zscale, tonemap, format, trim, setpts or asetpts filter. The image scan cannot see the FFmpeg build: bump both values
 when FFmpeg publishes a security release.
 
 ## Container CI

@@ -76,7 +76,8 @@ async fn stage(app: &App, entry: &str) -> String {
     text(app, "SELECT stage FROM entries WHERE id=?", entry).await
 }
 
-/// The first video stream's codec, size and display rotation, as `h264,1280,720,`.
+/// The first video stream's codec and size, then its display rotation if it has one, as
+/// `h264,1280,720` or `h264,320,240,90`.
 fn probe(path: &std::path::Path) -> String {
     let output = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
@@ -381,6 +382,10 @@ async fn a_video_whose_sound_changes_format_midway_is_not_converted() {
     // Its sound would start over at 0 where the format changes and run beside the wrong words.
     let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
     assert_eq!(video["state"], "failed", "{video}");
+    assert_eq!(
+        video["failure"],
+        "Its sound changes format partway through (channels or sample rate), which conversion does not follow"
+    );
     assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
     task.abort();
 }
