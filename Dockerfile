@@ -40,7 +40,7 @@ RUN curl --fail --silent --show-error --location --retry 3 "https://ffmpeg.org/r
         --enable-decoder=pcm_u8,pcm_s8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,flac,mp3float,mp3,aac,alac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg \
         --enable-encoder=pcm_s16le,pcm_s32le,pcm_f32le,pcm_f64le,flac,aac,libx264 \
         --enable-muxer=wav,flac,ipod,mp4,pcm_s32le,pcm_f32le,pcm_f64le \
-        --enable-filter=aformat,anull,aresample,asetpts,asplit,atrim,concat,scale,setsar,format,null,transpose,hflip,vflip,zscale,tonemap \
+        --enable-filter=aformat,anull,aresample,asetpts,asplit,atrim,concat,scale,setsar,setpts,trim,format,null,transpose,hflip,vflip,zscale,tonemap \
         --enable-bsf=aac_adtstoasc \
     && make -j"$(nproc)" \
     && install -D -m 755 -t /opt/ffmpeg ffmpeg ffprobe

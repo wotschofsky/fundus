@@ -47,7 +47,7 @@ pub struct Video {
     /// Where the picture starts on the file's timeline.
     #[serde(default)]
     pub start_ms: i64,
-    /// Where the file's timeline starts: FFmpeg seeks from there, not from 0.
+    /// Where the file's timeline starts: FFmpeg's filters count time from there, not from 0.
     #[serde(default)]
     pub file_start_ms: i64,
 }

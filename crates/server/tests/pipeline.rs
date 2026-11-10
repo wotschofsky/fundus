@@ -271,50 +271,117 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
 #[tokio::test]
 async fn a_converted_video_holds_its_audio_as_the_transcript_does() {
     let (dir, app, _provider, task) = setup(Options::default()).await;
-    // The file's timeline starts at 1 s with the picture; the speech starts a second later, as
-    // after a cut in an editor, and its timestamps skip a second after its first second.
-    let late = media(
-        dir.path(),
-        "late.mkv",
-        "-f lavfi -i testsrc=s=640x360:r=5:d=4 -itsoffset 1 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v mpeg4 -c:a aac -output_ts_offset 1",
-        None,
+    // The file's timeline starts at 1 s with the picture, 60 brighter for each of its seconds;
+    // the speech starts a second later, as after a cut in an editor, and its timestamps skip a
+    // second after its first second. MPEG-TS has no index: a seek in it lands between keyframes.
+    for name in ["late.mkv", "late.ts"] {
+        let late = media(
+            dir.path(),
+            name,
+            "-f lavfi -i nullsrc=s=320x180:r=10:d=4,geq=lum=60*T:cb=128:cr=128,format=yuv420p -itsoffset 1 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v libx264 -g 25 -bf 0 -c:a aac -output_ts_offset 1",
+            None,
+        );
+        let entry = import(&app, &late, name).await;
+        assert_eq!(
+            fundus::video::claim(&app).await.as_deref(),
+            Some(entry.as_str())
+        );
+        fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+        let detail = retrieval::get(&app, &entry).await.unwrap();
+        assert_eq!(
+            detail["video"]["state"], "ready",
+            "{name}: {}",
+            detail["video"]
+        );
+        // Its audio starts at 0 and is every sample the transcript was made from, back to back.
+        let video = app.entry_dir(&entry).join(fundus::video::FILE);
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "a:0", "-show_entries"])
+            .args(["stream=start_time", "-of", "csv=p=0"])
+            .arg(&video)
+            .output()
+            .unwrap();
+        let start: f64 = String::from_utf8(probe.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(start.abs() < 0.05, "{name} starts at {start}");
+        let decoded = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&video)
+            .args([
+                "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s32le", "-",
+            ])
+            .output()
+            .unwrap();
+        let seconds = decoded.stdout.len() as f64 / 4. / 48000.;
+        let recording = detail["duration_ms"].as_f64().unwrap() / 1000.;
+        assert!(
+            (seconds - recording).abs() < 0.05,
+            "{name} keeps {seconds} s of {recording}"
+        );
+        // Its first picture is the one shown as the speech began, a second into the picture.
+        let brightness = |path: &std::path::Path| {
+            let frames = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args([
+                    "-map",
+                    "0:v:0",
+                    "-vf",
+                    "scale=1:1,format=gray",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            frames.stdout
+        };
+        let (first, then) = (brightness(&video)[0], brightness(&late)[10]);
+        assert!(
+            first.abs_diff(then) <= 4,
+            "{name} begins at {first}, not {then}"
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_video_whose_sound_changes_format_midway_is_not_converted() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // Two clips joined without re-encoding, stereo MP3 and then mono, as a cut that copies
+    // streams makes them.
+    let mut list = String::new();
+    for (name, channels) in [("stereo.mkv", 2), ("mono.mkv", 1)] {
+        let args = format!(
+            "-f lavfi -i testsrc=s=320x240:r=5:d=2 -f lavfi -i sine=f=440:d=2 -ac {channels} -c:v mpeg4 -c:a libmp3lame"
+        );
+        list.push_str(&format!(
+            "file '{}'\n",
+            media(dir.path(), name, &args, None).display()
+        ));
+    }
+    std::fs::write(dir.path().join("list.txt"), list).unwrap();
+    let args = format!(
+        "-f concat -safe 0 -i {} -c copy",
+        dir.path().join("list.txt").display()
     );
-    let entry = import(&app, &late, "late").await;
+    let joined = media(dir.path(), "joined.mkv", &args, None);
+    let entry = import(&app, &joined, "joined").await;
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    let recording = detail["duration_ms"].as_i64().unwrap();
+    assert!((recording - 4000).abs() < 100, "transcribed {recording} ms");
     assert_eq!(
         fundus::video::claim(&app).await.as_deref(),
         Some(entry.as_str())
     );
     fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
-    let detail = retrieval::get(&app, &entry).await.unwrap();
-    assert_eq!(detail["video"]["state"], "ready", "{}", detail["video"]);
-    // Its audio starts at 0 and is every sample the transcript was made from, back to back.
-    let video = app.entry_dir(&entry).join(fundus::video::FILE);
-    let probe = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "a:0", "-show_entries"])
-        .args(["stream=start_time", "-of", "csv=p=0"])
-        .arg(&video)
-        .output()
-        .unwrap();
-    let start: f64 = String::from_utf8(probe.stdout)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert!(start.abs() < 0.05, "starts at {start}");
-    let decoded = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(&video)
-        .args([
-            "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s32le", "-",
-        ])
-        .output()
-        .unwrap();
-    let seconds = decoded.stdout.len() as f64 / 4. / 48000.;
-    let recording = detail["duration_ms"].as_f64().unwrap() / 1000.;
-    assert!(
-        (seconds - recording).abs() < 0.05,
-        "keeps {seconds} s of {recording}"
-    );
+    // Its sound would start over at 0 where the format changes and run beside the wrong words.
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "failed", "{video}");
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
     task.abort();
 }
 

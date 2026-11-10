@@ -212,7 +212,17 @@ fn arguments(
     duration_ms: i64,
     to: &Path,
 ) -> Vec<String> {
-    let mut filter = format!("scale={width}:{height},setsar=1");
+    // Speech that starts after the file does: picture before it is dropped, the rest keeps its
+    // place beside the speech up to the first gap in the audio's timestamps. Trimmed after
+    // decoding, not sought: a seek in a file without an index lands between keyframes and loses
+    // the picture up to the next one. Timestamps here count from the file's start, not from 0.
+    let seek_ms = format.start_ms - video.file_start_ms;
+    let mut filter = String::new();
+    if seek_ms > 0 {
+        let seek = seek_ms as f64 / 1000.;
+        filter = format!("trim=start={seek:.3},setpts=PTS-{seek:.3}/TB,");
+    }
+    filter.push_str(&format!("scale={width}:{height},setsar=1"));
     if video.hdr() {
         // Tone-mapped to SDR after scaling, on a fraction of the pixels.
         filter.push_str(",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv");
@@ -223,14 +233,13 @@ fn arguments(
     let mut args: Vec<String> = ["-filter_threads", "1", "-threads", "2"]
         .map(String::from)
         .into();
-    // Speech that starts after the file does: picture before it is dropped, the rest keeps its
-    // place beside the speech up to the first gap in the audio's timestamps. `-ss` counts from
-    // the file's start, not from 0.
-    let seek_ms = format.start_ms - video.file_start_ms;
-    if seek_ms > 0 {
-        args.extend(["-ss".into(), format!("{:.3}", seek_ms as f64 / 1000.)]);
-    }
-    args.extend(["-i".into(), source.display().to_string()]);
+    // Sound that changes format midway (channels, sample rate) would restart the filter that
+    // numbers its samples, and everything after would fall out of step with the transcript, so
+    // FFmpeg stops there instead and the conversion fails.
+    // ponytail: such files play as audio only; decode the sound on its own first, as the
+    // transcript does, if they turn up.
+    args.extend(["-reinit_filter:a", "0", "-i"].map(String::from));
+    args.push(source.display().to_string());
     args.extend(["-map".into(), format!("0:{}", video.stream)]);
     args.extend(["-map", "0:a:0", "-vf"].map(String::from));
     args.push(filter);
@@ -444,25 +453,29 @@ mod tests {
             )
         };
         let has = |args: &[String], pair: [&str; 2]| args.windows(2).any(|w| w == pair);
-        // Seeking before `-i` moves every timestamp, so the picture keeps its place beside the
-        // speech. The seek counts from the file's start: audio at 2 s in a file that starts at
-        // 1 s is 1 s in.
-        assert!(has(&args(2000, 1000), ["-ss", "1.000"]));
-        let seek = args(1000, 0);
-        let at = |arg: &str| seek.iter().position(|a| a == arg).unwrap();
+        let picture =
+            |args: &[String]| args[args.iter().position(|a| a == "-vf").unwrap() + 1].clone();
+        // The picture before the speech is trimmed off after decoding and the rest moved back
+        // as far, counted from the file's start: audio at 2 s in a file that starts at 1 s is
+        // 1 s in. Nothing is sought.
+        let late = args(2000, 1000);
         assert!(
-            has(&seek, ["-ss", "1.000"]) && at("-ss") < at("-i"),
-            "{seek:?}"
+            picture(&late).starts_with("trim=start=1.000,setpts=PTS-1.000/TB,scale="),
+            "{late:?}"
         );
+        assert!(!late.iter().any(|a| a == "-ss"), "{late:?}");
         // The audio's samples back to back from 0, and all of them: as long as the recording.
-        assert!(has(&seek, ["-af", "asetpts=N/SR/TB"]), "{seek:?}");
-        assert!(has(&seek, ["-t", "1.500"]), "{seek:?}");
-        assert!(has(&seek, ["-maxrate", "3M"]) && has(&seek, ["-b:a", "128k"]));
+        // A change of their format stops FFmpeg rather than restarting the count.
+        let at = |arg: &str| late.iter().position(|a| a == arg).unwrap();
+        assert!(has(&late, ["-af", "asetpts=N/SR/TB"]), "{late:?}");
+        assert!(has(&late, ["-reinit_filter:a", "0"]) && at("-reinit_filter:a") < at("-i"));
+        assert!(has(&late, ["-t", "1.500"]), "{late:?}");
+        assert!(has(&late, ["-maxrate", "3M"]) && has(&late, ["-b:a", "128k"]));
         // Audio that starts with the file, or a little before the picture (AAC priming), needs
-        // no seek.
+        // no trim.
         for (audio, file) in [(0, 0), (-21, -21), (1000, 1000)] {
             let args = args(audio, file);
-            assert!(!args.iter().any(|a| a == "-ss"), "{args:?}");
+            assert!(picture(&args).starts_with("scale="), "{args:?}");
         }
     }
 
