@@ -90,6 +90,17 @@ test('after a video that could not load, the audio goes on from its place and ke
   stop();
 });
 
+test('a player that replaces one just sent elsewhere starts there', () => {
+  const { playback, show, stop } = playbackAt42(true);
+  // A transcript time is clicked, and the video replaces the audio before its next timeupdate.
+  playback.seek(30_000);
+  const video = new Media();
+  show(video);
+  playback.loaded(from(video));
+  assert.equal(video.currentTime, 30);
+  stop();
+});
+
 test('a paused player that is replaced stays paused at its place', () => {
   const { playback, show, stop } = playbackAt42(false);
   const video = new Media();

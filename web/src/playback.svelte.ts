@@ -120,7 +120,8 @@ export class Playback {
   seek = (ms: number) => {
     this.#snippet.stop();
     if (!this.media) return;
-    this.media.currentTime = ms / 1000;
+    // Also the place for a player that replaces this one before its next timeupdate.
+    this.#position = this.media.currentTime = ms / 1000;
     this.media.play().catch(() => {});
   };
 
