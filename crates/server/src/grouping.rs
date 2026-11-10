@@ -93,6 +93,7 @@ mod tests {
                 frames: (ms * 48) as u64,
                 codec: "pcm_s24le".into(),
                 start_ms: 0,
+                span_ms: ms,
                 video: None,
             },
             recorded_at: Some(t),

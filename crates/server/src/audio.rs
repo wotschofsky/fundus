@@ -20,6 +20,10 @@ pub struct Format {
     /// that is the transcript's time 0.
     #[serde(default)]
     pub start_ms: i64,
+    /// How long the audio's timestamps run: longer than its samples when they skip, as the
+    /// transcript does not. 0 when the file does not say.
+    #[serde(default)]
+    pub span_ms: i64,
     #[serde(default)]
     pub video: Option<Video>,
 }
@@ -97,7 +101,7 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .args(["-v", "error", "-show_entries"])
         .arg(concat!(
             "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
-            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time",
+            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time,duration",
             ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time:format_tags=major_brand"
         ))
         .args(["-of", "json"])
@@ -153,6 +157,7 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         frames: 0,
         codec: text(&s["codec_name"]),
         start_ms: millis(&s["start_time"]),
+        span_ms: millis(&s["duration"]),
         video: picture(&streams, &v["format"]),
     })
 }

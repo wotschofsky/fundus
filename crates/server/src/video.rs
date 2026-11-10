@@ -67,11 +67,12 @@ pub fn plan(sources: &[&Format], trimmed: bool) -> Option<Plan> {
 
 /// A plain MP4: one H.264 picture, 8-bit 4:2:0, SDR, square pixels, and one AAC track. Nothing
 /// else in the file: the timecode and metadata tracks of iPhone videos are known to stall
-/// players. Speech and picture start within 100 ms of 0, so the player's clock starts on the
-/// transcript's; a gap in the audio's timestamps still shifts it from there.
+/// players. Speech and picture start within 100 ms of 0 and the audio's timestamps run as long
+/// as its samples, so the player's clock is the transcript's.
 fn plays_as_is(format: &Format, video: &Video) -> bool {
     format.start_ms.abs() <= 100
         && video.start_ms.abs() <= 100
+        && (format.span_ms - format.duration_ms()).abs() <= 100
         && MP4_BRANDS.contains(&video.brand.as_str())
         && video.streams == 2
         && video.codec == "h264"
@@ -281,6 +282,7 @@ mod tests {
             frames: 48000,
             codec: codec.into(),
             start_ms: 0,
+            span_ms: 1000,
             video: Some(video),
         }
     }
@@ -380,6 +382,12 @@ mod tests {
                 "{codec} {video:?}"
             );
         }
+        // Nor would audio whose timestamps skip a second that the transcript does not.
+        let gapped = Format {
+            span_ms: 2000,
+            ..format("aac", phone())
+        };
+        assert_eq!(plan(&[&gapped], false), converted);
     }
 
     #[test]

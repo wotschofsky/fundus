@@ -350,6 +350,23 @@ async fn a_converted_video_holds_its_audio_as_the_transcript_does() {
 }
 
 #[tokio::test]
+async fn an_mp4_whose_sound_skips_is_converted_rather_than_played_as_uploaded() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // A phone's MP4 but for its sound, whose timestamps skip a second after its first: played as
+    // uploaded, everything after the skip would sit a second off the transcript.
+    let skipping = media(
+        dir.path(),
+        "skipping.mp4",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=3 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,1)/TB[a] -map 0:v -map [a] -c:v libx264 -pix_fmt yuv420p -c:a aac",
+        None,
+    );
+    let entry = import(&app, &skipping, "skipping").await;
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "preparing", "{video}");
+    task.abort();
+}
+
+#[tokio::test]
 async fn a_video_whose_sound_changes_format_midway_is_not_converted() {
     let (dir, app, _provider, task) = setup(Options::default()).await;
     // Two clips joined without re-encoding, stereo MP3 and then mono, as a cut that copies
