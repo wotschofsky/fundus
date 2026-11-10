@@ -66,29 +66,43 @@ async function transfer(url: string, file: File, sent: (bytes: number) => void) 
 }
 
 /**
- * Sends files as one import over tus, as the native apps do, and asks the server to verify it.
- * `progress` gets the bytes sent across the batch and the index of the file being sent.
+ * Sends files as one import over tus, as the native apps do, and asks the server to verify the
+ * ones that arrived. A file that fails stops the batch: what was sent of it is removed, so a
+ * refusal for disk space does not leave its bytes holding that space, and the files before it
+ * are still checked. Resolves with the import to watch (null when no file arrived) and, on a
+ * failure, the index of the first file not uploaded and why. `progress` gets the bytes sent
+ * across the batch and the index of the file being sent.
  */
 export async function upload(files: File[], progress: (sent: number, index: number) => void) {
   const json = { 'Content-Type': 'application/json' };
   const r = await request(`${BASE}/imports`, { method: 'POST', headers: json, body: '{}' });
   const { id } = (await r.json()) as { id: string };
   let done = 0;
+  let failed: { index: number; error: Error } | null = null;
   for (const [index, file] of files.entries()) {
     progress(done, index);
-    const created = await request(`${BASE}/uploads`, {
-      method: 'POST',
-      headers: {
-        ...TUS,
-        'Upload-Length': String(file.size),
-        'Upload-Metadata': `import_id ${base64(id)},filename ${base64(file.name)}`,
-      },
-    });
-    await transfer(created.headers.get('Location')!, file, (n) => progress(done + n, index));
+    let location: string | null = null;
+    try {
+      const created = await request(`${BASE}/uploads`, {
+        method: 'POST',
+        headers: {
+          ...TUS,
+          'Upload-Length': String(file.size),
+          'Upload-Metadata': `import_id ${base64(id)},filename ${base64(file.name)}`,
+        },
+      });
+      location = created.headers.get('Location')!;
+      await transfer(location, file, (n) => progress(done + n, index));
+    } catch (error) {
+      if (location) await request(location, { method: 'DELETE', headers: TUS }).catch(() => {});
+      failed = { index, error: error instanceof Error ? error : new Error(String(error)) };
+      break;
+    }
     done += file.size;
   }
+  if (failed?.index === 0) return { id: null, failed };
   await request(`${BASE}/imports/${id}/complete`, { method: 'POST' });
-  return id;
+  return { id, failed };
 }
 
 /** Waits until the server has checked the import, then says what became of each file. */

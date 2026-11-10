@@ -5,10 +5,20 @@ speaker model. Node and Python are build dependencies, absent from the final ima
 Upload clients remain separate native applications.
 
 FFmpeg is built from the signed release tarball pinned in the `Dockerfile`
-(`FFMPEG_VERSION`, `FFMPEG_SHA256`) with only what the server runs: WAV, FLAC, MP3
-and M4A (AAC/ALAC) in; WAV, FLAC, M4A and raw PCM out. Other formats fail
-verification. The image scan cannot see this build: bump both values when FFmpeg
-publishes a security release.
+(`FFMPEG_VERSION`, `FFMPEG_SHA256`) with only what the server runs: recorder and
+phone audio (WAV, AIFF, CAF, FLAC, MP3, M4A, Ogg, WebM) and phone and camera video
+(MP4, MOV, MKV, WebM with H.264, HEVC, VP8/9, MPEG-4 or MJPEG) in; WAV, FLAC, M4A,
+raw PCM and H.264 MP4 out. Other audio fails verification; video in another codec
+(AV1, ProRes) is still transcribed, and its conversion fails visibly while the
+recording plays as audio. H.264 comes from Debian's x264 and HDR tone mapping from
+zimg (`libx264-dev`, `libzimg-dev` to build; `libx264-164`, `libzimg2` at runtime).
+x264 makes this FFmpeg binary GPL. It is a separate program the server runs, so the
+server's MIT license is unaffected; published images do distribute it, built from the
+FFmpeg release and configure line pinned in the `Dockerfile` and Debian's x264 and zimg
+packages. The container smoke test fails if the image's FFmpeg loses the libx264 or AAC
+encoder, the H.264, HEVC or VP9 decoder, the MP4 muxer, or the scale, setsar, transpose,
+hflip, vflip, zscale, tonemap, format, trim, setpts or asetpts filter. The image scan
+cannot see the FFmpeg build: bump both values when FFmpeg publishes a security release.
 
 ## Container CI
 

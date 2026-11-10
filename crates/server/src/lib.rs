@@ -17,3 +17,5 @@ pub mod uploads;
 pub mod oauth;
 
 pub mod settings;
+
+pub mod video;

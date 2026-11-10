@@ -76,6 +76,494 @@ async fn stage(app: &App, entry: &str) -> String {
     text(app, "SELECT stage FROM entries WHERE id=?", entry).await
 }
 
+/// The first video stream's codec and size, then its display rotation if it has one, as
+/// `h264,1280,720` or `h264,320,240,90`.
+fn probe(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .args([
+            "stream=codec_name,width,height:stream_side_data=rotation",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .replace('\n', ",")
+}
+/// A media file made by FFmpeg from `args`, then turned by `rotation` degrees in its display
+/// matrix, as phones store portrait video.
+fn media(
+    dir: &std::path::Path,
+    name: &str,
+    args: &str,
+    rotation: Option<i32>,
+) -> std::path::PathBuf {
+    let ffmpeg = |args: Vec<String>| {
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(made.success(), "{name}");
+    };
+    let path = dir.join(name);
+    let made = dir.join(format!("unrotated-{name}"));
+    let mut first: Vec<String> = args.split_whitespace().map(String::from).collect();
+    first.push(made.display().to_string());
+    ffmpeg(first);
+    match rotation {
+        Some(degrees) => ffmpeg(vec![
+            "-display_rotation".into(),
+            degrees.to_string(),
+            "-i".into(),
+            made.display().to_string(),
+            "-c".into(),
+            "copy".into(),
+            path.display().to_string(),
+        ]),
+        None => std::fs::rename(&made, &path).unwrap(),
+    }
+    path
+}
+/// The entry `finalize` made from `source`, uploaded alone.
+async fn import(app: &App, source: &std::path::Path, batch: &str) -> String {
+    add(app, source, batch, &format!("{batch}-upload")).await;
+    pipeline::finalize(app, batch).await.unwrap();
+    let entry: Option<String> =
+        sqlx::query_scalar("SELECT entry_id FROM import_entries WHERE import_id=?")
+            .bind(batch)
+            .fetch_optional(&app.db)
+            .await
+            .unwrap();
+    if let Some(entry) = entry {
+        return entry;
+    }
+    // Say why, for a failure on another machine's FFmpeg.
+    let upload: (String, Option<String>) =
+        sqlx::query_as("SELECT state,failure FROM uploads WHERE import_id=?")
+            .bind(batch)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    panic!("{batch} made no recording; its upload is {upload:?}")
+}
+async fn call(
+    router: &axum::Router,
+    token: &str,
+    method: &str,
+    path: String,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Range", "bytes=0-31")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_holding_up_the_transcript()
+ {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let video = |entry: &serde_json::Value| entry["video"].clone();
+
+    // A phone's MP4 plays in every browser as it is: no conversion, no second file.
+    let phone = media(
+        dir.path(),
+        "phone.mp4",
+        "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v libx264 -pix_fmt yuv420p -c:a aac",
+        None,
+    );
+    let entry = import(&app, &phone, "phone").await;
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(
+        video(&detail),
+        serde_json::json!({"state":"ready","width":1920,"height":1080,"failure":null})
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(bytes[..], std::fs::read(&phone).unwrap()[..32]);
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
+
+    // A portrait video in another codec, stored as landscape frames plus a display matrix.
+    let portrait = media(
+        dir.path(),
+        "portrait.mov",
+        "-f lavfi -i testsrc=s=1920x1080:r=5:d=2 -f lavfi -i sine=f=550:d=2 -c:v mpeg4 -c:a pcm_s16le",
+        Some(90),
+    );
+    let entry = import(&app, &portrait, "portrait").await;
+    // The transcript does not wait for the conversion.
+    pipeline::process(&app, &entry).await.unwrap();
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    assert_eq!(detail["stage"], "complete");
+    assert_eq!(
+        video(&detail),
+        serde_json::json!({"state":"preparing","width":720,"height":1280,"failure":null})
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 404);
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    assert_eq!(
+        video(&retrieval::get(&app, &entry).await.unwrap())["state"],
+        "ready"
+    );
+    // Upright H.264 at 720 pixels, with no rotation left for the browser to apply twice.
+    assert_eq!(
+        probe(&app.entry_dir(&entry).join(fundus::video::FILE)),
+        "h264,720,1280"
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+
+    // Cover art in an audio file is not a video.
+    let cover = media(
+        dir.path(),
+        "cover.m4a",
+        "-f lavfi -i sine=f=660:d=2 -f lavfi -i color=c=red:s=64x64:r=1:d=1 -map 0:a -map 1:v -c:a aac -c:v png -disposition:v attached_pic",
+        None,
+    );
+    let entry = import(&app, &cover, "cover").await;
+    assert_eq!(
+        video(&retrieval::get(&app, &entry).await.unwrap()),
+        serde_json::Value::Null
+    );
+    let response = call(
+        &router,
+        &token,
+        "GET",
+        format!("/api/v1/entries/{entry}/video"),
+    )
+    .await;
+    assert_eq!(response.status(), 404);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_converted_video_holds_its_audio_as_the_transcript_does() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // The file's timeline starts at 1 s with the picture, 60 brighter for each of its seconds;
+    // the speech starts a second later, as after a cut in an editor, and its timestamps skip a
+    // second after its first second. MPEG-TS has no index: a seek in it lands between keyframes.
+    // Each its own tone: the vault knows a recording by its sound, so the same sound twice would
+    // be a duplicate.
+    for (name, tone) in [("late.mkv", 440), ("late.ts", 550)] {
+        let args = format!(
+            "-f lavfi -i nullsrc=s=320x180:r=10:d=4,geq=lum=60*T:cb=128:cr=128,format=yuv420p -itsoffset 1 -f lavfi -i sine=f={tone}:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,2)/TB[a] -map 0:v -map [a] -c:v libx264 -g 25 -bf 0 -c:a aac -output_ts_offset 1"
+        );
+        let late = media(dir.path(), name, &args, None);
+        let entry = import(&app, &late, name).await;
+        assert_eq!(
+            fundus::video::claim(&app).await.as_deref(),
+            Some(entry.as_str())
+        );
+        fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+        let detail = retrieval::get(&app, &entry).await.unwrap();
+        assert_eq!(
+            detail["video"]["state"], "ready",
+            "{name}: {}",
+            detail["video"]
+        );
+        // Its audio starts at 0 and is every sample the transcript was made from, back to back.
+        let video = app.entry_dir(&entry).join(fundus::video::FILE);
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "a:0", "-show_entries"])
+            .args(["stream=start_time", "-of", "csv=p=0"])
+            .arg(&video)
+            .output()
+            .unwrap();
+        let start: f64 = String::from_utf8(probe.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(start.abs() < 0.05, "{name} starts at {start}");
+        let decoded = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&video)
+            .args([
+                "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s32le", "-",
+            ])
+            .output()
+            .unwrap();
+        let seconds = decoded.stdout.len() as f64 / 4. / 48000.;
+        let recording = detail["duration_ms"].as_f64().unwrap() / 1000.;
+        assert!(
+            (seconds - recording).abs() < 0.05,
+            "{name} keeps {seconds} s of {recording}"
+        );
+        // Its first picture is the one shown as the speech began, a second into the picture.
+        let brightness = |path: &std::path::Path| {
+            let frames = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args([
+                    "-map",
+                    "0:v:0",
+                    "-vf",
+                    "scale=1:1,format=gray",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            frames.stdout
+        };
+        let (first, then) = (brightness(&video)[0], brightness(&late)[10]);
+        assert!(
+            first.abs_diff(then) <= 4,
+            "{name} begins at {first}, not {then}"
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn an_mp4_whose_sound_skips_is_converted_rather_than_played_as_uploaded() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // A phone's MP4 but for its sound, whose timestamps skip a second after its first: played as
+    // uploaded, everything after the skip would sit a second off the transcript.
+    let skipping = media(
+        dir.path(),
+        "skipping.mp4",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=3 -f lavfi -i sine=f=440:d=2 -filter_complex [1:a]asetpts=PTS+gte(T\\,1)/TB[a] -map 0:v -map [a] -c:v libx264 -pix_fmt yuv420p -c:a aac",
+        None,
+    );
+    let entry = import(&app, &skipping, "skipping").await;
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "preparing", "{video}");
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_video_whose_sound_changes_format_midway_is_not_converted() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    // Two clips joined without re-encoding, stereo MP3 and then mono, as a cut that copies
+    // streams makes them.
+    let mut list = String::new();
+    for (name, channels) in [("stereo.mkv", 2), ("mono.mkv", 1)] {
+        let args = format!(
+            "-f lavfi -i testsrc=s=320x240:r=5:d=2 -f lavfi -i sine=f=440:d=2 -ac {channels} -c:v mpeg4 -c:a libmp3lame"
+        );
+        list.push_str(&format!(
+            "file '{}'\n",
+            media(dir.path(), name, &args, None).display()
+        ));
+    }
+    std::fs::write(dir.path().join("list.txt"), list).unwrap();
+    let args = format!(
+        "-f concat -safe 0 -i {} -c copy",
+        dir.path().join("list.txt").display()
+    );
+    let joined = media(dir.path(), "joined.mkv", &args, None);
+    let entry = import(&app, &joined, "joined").await;
+    let detail = retrieval::get(&app, &entry).await.unwrap();
+    let recording = detail["duration_ms"].as_i64().unwrap();
+    assert!((recording - 4000).abs() < 100, "transcribed {recording} ms");
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    // Its sound would start over at 0 where the format changes and run beside the wrong words.
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "failed", "{video}");
+    assert_eq!(
+        video["failure"],
+        "Its sound changes format partway through (channels or sample rate), which conversion does not follow"
+    );
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_conversion_stops_short_of_the_disk_reserve() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::from_env().unwrap();
+    config.data = dir.path().join("vault");
+    config.voice_model = None;
+    // More than the disk has free.
+    config.reserve = u64::MAX / 2;
+    let mut app = App::new(config).await.unwrap();
+    let (_provider, task) = common::connect(&mut app, Options::default()).await;
+    let source = media(
+        dir.path(),
+        "clip.mkv",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v mpeg4 -c:a flac",
+        None,
+    );
+    let entry = import(&app, &source, "clip").await;
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    let video = &retrieval::get(&app, &entry).await.unwrap()["video"];
+    assert_eq!(video["state"], "failed", "{video}");
+    assert_eq!(
+        video["failure"],
+        "Not enough free disk space to convert this video"
+    );
+    assert!(!app.entry_dir(&entry).join("video.partial.mp4").exists());
+    task.abort();
+}
+
+#[tokio::test]
+async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
+    let (dir, app, _provider, task) = setup(Options::default()).await;
+    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let source = media(
+        dir.path(),
+        "clip.mkv",
+        "-f lavfi -i testsrc=s=640x360:r=5:d=2 -f lavfi -i sine=f=440:d=2 -c:v mpeg4 -c:a flac",
+        None,
+    );
+    let entry = import(&app, &source, "clip").await;
+    let status = || async {
+        sqlx::query_as::<_, (Option<String>, i64)>(
+            "SELECT video_status,video_attempts FROM entries WHERE id=?",
+        )
+        .bind(&entry)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+    };
+
+    // Claimed, and waiting for a CPU the test holds, as behind a long import.
+    let cpus = app.cpu.clone().acquire_many_owned(2).await.unwrap();
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    let stop = tokio_util::sync::CancellationToken::new();
+    app.conversions
+        .lock()
+        .unwrap()
+        .insert(entry.clone(), stop.clone());
+    let (work_app, work_entry) = (app.clone(), entry.clone());
+    let converting =
+        tokio::spawn(async move { fundus::video::convert(&work_app, &work_entry, stop).await });
+    let path = format!("/api/v1/entries/{entry}");
+    assert_eq!(
+        call(&router, &token, "DELETE", path.clone()).await.status(),
+        409
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/trash"))
+            .await
+            .status(),
+        204
+    );
+    // Trash stopped it at once, though it never got a CPU.
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(10), converting);
+    stopped.await.unwrap().unwrap();
+    drop(cpus);
+    // Back in the queue, without counting as an attempt, and not claimed while in Trash.
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert_eq!(fundus::video::claim(&app).await, None);
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/restore"))
+            .await
+            .status(),
+        200
+    );
+    // Trashed between the claim and the registration that lets Trash stop it.
+    assert_eq!(
+        fundus::video::claim(&app).await.as_deref(),
+        Some(entry.as_str())
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/trash"))
+            .await
+            .status(),
+        204
+    );
+    fundus::video::convert(&app, &entry, tokio_util::sync::CancellationToken::new()).await;
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert!(!app.entry_dir(&entry).join(fundus::video::FILE).exists());
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/restore"))
+            .await
+            .status(),
+        200
+    );
+
+    // A conversion the server dies in twice is given up, and Retry starts it over.
+    for attempts in [1, 2] {
+        assert_eq!(
+            fundus::video::claim(&app).await.as_deref(),
+            Some(entry.as_str())
+        );
+        assert_eq!(status().await, (Some("converting".into()), attempts));
+        fundus::video::recover(&app).await;
+    }
+    assert_eq!(status().await, (Some("failed".into()), 0));
+    let failure = &retrieval::get(&app, &entry).await.unwrap()["video"]["failure"];
+    assert!(
+        failure.as_str().unwrap().contains("cut short twice"),
+        "{failure}"
+    );
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/video/retry"))
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(status().await, (Some("queued".into()), 0));
+    assert_eq!(
+        call(&router, &token, "POST", format!("{path}/video/retry"))
+            .await
+            .status(),
+        409
+    );
+    assert_eq!(call(&router, &token, "DELETE", path).await.status(), 204);
+    task.abort();
+}
+
 #[tokio::test]
 async fn audio_to_search_checkpoints_and_pcm_deduplication() {
     let (dir, app, provider, task) = setup(Options {

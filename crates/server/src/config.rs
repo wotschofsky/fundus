@@ -1,7 +1,24 @@
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, Notify, Semaphore};
+use tokio_util::sync::CancellationToken;
+
+/// Disk space uploads and video conversions leave free: the database may share the disk, and a
+/// full disk breaks more than them. Each writer measures the disk just before it writes
+/// (`App::has_room`), so the reserve holds give or take what is already in flight: one 8 MiB
+/// chunk per upload sending at once, and two seconds of a conversion's output.
+// ponytail: sampled, not reserved. A strict reserve needs a reservation ledger and a hard cap on
+// FFmpeg's output; worth it only if the disk runs this close for real.
+pub const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
+/// Bytes an unprivileged writer may still use at `path`. An error rather than a guess.
+pub fn free_space(path: &Path) -> std::io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -27,6 +44,8 @@ pub struct Config {
     pub recorder_timezone: String,
     pub secure_cookie: bool,
     pub proxy_auth: bool,
+    /// Disk space uploads and video conversions leave free: `RESERVE`.
+    pub reserve: u64,
 }
 impl Config {
     pub fn validate_for_serve(&self) -> Result<()> {
@@ -91,6 +110,7 @@ impl Config {
             voice_model: std::env::var_os("VAULT_VOICE_MODEL").map(PathBuf::from),
             web: PathBuf::from(std::env::var("VAULT_WEB_DIR").unwrap_or("web/dist".into())),
             recorder_timezone,
+            reserve: RESERVE,
         })
     }
 }
@@ -125,6 +145,8 @@ pub struct App {
     pub mutations: Arc<Mutex<()>>,
     pub background: tokio_util::task::TaskTracker,
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
+    /// The running video conversion, by entry, so Trash can stop it (`video::convert`).
+    pub conversions: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
 }
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
@@ -159,7 +181,18 @@ impl App {
             mutations: Default::default(),
             background: Default::default(),
             login_attempts: Default::default(),
+            conversions: Default::default(),
         })
+    }
+    /// Whether `bytes` more still leave the reserve free on the disk that holds `dir`.
+    pub fn has_room(&self, dir: &Path, bytes: u64) -> std::io::Result<bool> {
+        Ok(free_space(dir)? >= self.config.reserve.saturating_add(bytes))
+    }
+    /// Stops `entry`'s video conversion if it is running; the video goes back to the queue.
+    pub fn stop_conversion(&self, entry: &str) {
+        if let Some(stop) = self.conversions.lock().unwrap().get(entry) {
+            stop.cancel();
+        }
     }
     pub fn upload_path(&self, id: &str) -> PathBuf {
         self.config.data.join("uploads").join(id)

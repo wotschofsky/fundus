@@ -37,11 +37,16 @@
   let correctionNotice = $state<'saved' | 'undone' | null>(null);
   let correctionReceipt: CorrectionReceipt | null = $state(null);
   let notThisSpeaker = $state(false);
+  /** The video failed to load (a format this browser lacks, or a dropped connection), so the
+   * page plays the audio if it has it. */
+  let unplayable = $state(false);
 
   const entry = createQuery(() => ({
     queryKey: ['entry', id],
     queryFn: () => api<Entry>(`/v1/entries/${id}`),
-    refetchInterval: (q) => (q.state.data && isProcessing(q.state.data) ? 3000 : false),
+    // Also while the video is being prepared, which goes on after the transcript is done.
+    refetchInterval: ({ state: { data } }) =>
+      data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
   }));
   const stage = $derived(entry.data?.stage);
   // Segments only change when processing moves on, so the stage is part of the key.
@@ -261,22 +266,58 @@
       {#each e.warnings as w (w)}<p>{w}</p>{/each}
     </details>
   {/if}
-  {#if e.audio_available}
+  {#if e.audio_available || e.video}
+    {@const picture = e.video?.state === 'ready' && !unplayable ? e.video : null}
+    {@const playable = picture || e.audio_available}
     <div class="player">
-      <audio
-        bind:this={playback.audio}
-        ontimeupdate={playback.timeUpdate}
-        onplay={() => (playback.playing = true)}
-        onpause={() => (playback.playing = false)}
-        onloadedmetadata={playback.loaded}
-        controls
-        preload="metadata"
-        src={`/api/v1/entries/${id}/audio`}
-      ></audio>
-      <label>
-        <input type="checkbox" bind:checked={playback.follow} />
-        Follow transcript
-      </label>
+      <!-- The transcript comes from the audio either way; a video recording also shows its picture,
+           sized before it loads and never taller than 40% of the screen. -->
+      {#if playable}
+        <svelte:element
+          this={picture ? 'video' : 'audio'}
+          bind:this={playback.media}
+          ontimeupdate={playback.timeUpdate}
+          onplay={playback.played}
+          onpause={playback.paused}
+          onloadedmetadata={playback.loaded}
+          onerror={() => picture && (unplayable = true)}
+          controls
+          playsinline
+          preload="metadata"
+          style:aspect-ratio={picture && `${picture.width} / ${picture.height}`}
+          style:width={picture && `min(100%, calc(40vh * ${picture.width} / ${picture.height}))`}
+          src={`/api/v1/entries/${id}/${picture ? 'video' : 'audio'}`}
+        ></svelte:element>
+      {/if}
+      <div class="player-row">
+        <p class={['player-note', e.video?.state === 'failed' && 'error']} role="status">
+          {#if e.video?.state === 'preparing'}
+            Preparing the video.{e.audio_available ? ' You can listen in the meantime.' : ''}
+          {:else if e.video?.state === 'failed'}
+            The video could not be prepared: {e.video.failure}
+            <button
+              class="text-button"
+              aria-label="Retry video"
+              disabled={busy}
+              onclick={post('video/retry')}>Retry</button
+            >
+          {:else if unplayable}
+            The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
+            <!-- A dropped connection fails the same way as a format this browser lacks. -->
+            <button
+              class="text-button"
+              aria-label="Try again to play the video"
+              onclick={() => (unplayable = false)}>Try again</button
+            >
+          {/if}
+        </p>
+        {#if playable}
+          <label>
+            <input type="checkbox" bind:checked={playback.follow} />
+            Follow transcript
+          </label>
+        {/if}
+      </div>
     </div>
   {/if}
   <div class="detail-grid">

@@ -2,6 +2,9 @@ import { upload, verified } from './upload';
 
 const isAudio = (file: File) =>
   file.type.startsWith('audio/') || /\.(wav|flac|mp3|m4a|aac|ogg|opus)$/i.test(file.name);
+const isVideo = (file: File) =>
+  file.type.startsWith('video/') || /\.(mp4|m4v|mov|mkv|webm)$/i.test(file.name);
+const isMedia = (file: File) => isAudio(file) || isVideo(file);
 
 /** Uploads started in the browser, sent one batch after another, for the bar at the top. */
 class Uploads {
@@ -17,14 +20,14 @@ class Uploads {
   #queue = Promise.resolve();
   #batches = 0;
 
-  /** Queues the audio among `files`. Resolves, never rejects, once the server has checked them. */
+  /** Queues the audio and video among `files`. Resolves, never rejects, once the server has checked them. */
   add(files: File[]) {
     if (!this.#batches) this.problems = [];
     for (const file of files) {
-      if (!isAudio(file)) this.problems.push(`${file.name} is not an audio file.`);
+      if (!isMedia(file)) this.problems.push(`${file.name} is not an audio or video file.`);
       else if (!file.size) this.problems.push(`${file.name} is empty.`);
     }
-    files = files.filter((file) => isAudio(file) && file.size);
+    files = files.filter((file) => isMedia(file) && file.size);
     if (!files.length) return Promise.resolve();
     const size = files.reduce((sum, file) => sum + file.size, 0);
     const first = this.count;
@@ -36,17 +39,29 @@ class Uploads {
       const start = this.sent;
       let current = files[0].name;
       try {
-        const id = await upload(files, (sent, i) => {
+        const { id, failed } = await upload(files, (sent, i) => {
           this.sent = start + sent;
           this.index = first + i + 1;
           this.name = current = files[i].name;
         });
+        if (failed) {
+          const [refused, ...unsent] = files.slice(failed.index).map((f) => f.name);
+          this.problems.push(`${refused} was not uploaded: ${failed.error.message}`);
+          if (unsent.length) {
+            const were = unsent.length > 1 ? 'were' : 'was';
+            this.problems.push(`${unsent.join(', ')} ${were} not sent either.`);
+          }
+        }
+        if (!id) return;
         this.sent = start + size;
         this.checking = true;
         const result = await verified(id);
         if (result.state === 'failed') {
           this.problems.push(
-            `Your vault could not process ${files.map((f) => f.name).join(', ')}.`,
+            `Your vault could not process ${files
+              .slice(0, failed?.index ?? files.length)
+              .map((f) => f.name)
+              .join(', ')}.`,
           );
         }
         for (const file of result.files) {

@@ -1,13 +1,13 @@
 /** A temporary playback boundary on the shared player; ordinary playback owns no listeners. */
 export class SnippetPlayback {
-  #audio: HTMLAudioElement | undefined;
+  #audio: HTMLMediaElement | undefined;
   #end = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #run = 0;
   readonly #updates = ['playing', 'timeupdate', 'seeked', 'ratechange'];
   readonly #pauses = ['pause', 'waiting', 'stalled'];
 
-  play(audio: HTMLAudioElement, startMs: number, endMs: number) {
+  play(audio: HTMLMediaElement, startMs: number, endMs: number) {
     this.stop();
     if (endMs <= startMs) return;
     this.#audio = audio;

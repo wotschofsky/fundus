@@ -16,6 +16,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const MAX_FILE: i64 = 32 * 1024 * 1024 * 1024;
+/// The most one PATCH may carry.
+const CHUNK: i64 = 8 * 1024 * 1024;
+fn no_room() -> Error {
+    Error(
+        StatusCode::INSUFFICIENT_STORAGE,
+        "Your vault does not have enough free disk space for this file".into(),
+    )
+}
 #[derive(Deserialize)]
 pub struct NewImport {
     pub recorder_timezone: Option<String>,
@@ -202,6 +210,10 @@ pub async fn create(
             ));
         }
     }
+    // A full disk breaks more than uploads: the database may share it. Each chunk asks again.
+    if !app.has_room(&app.config.data.join("uploads"), length as u64)? {
+        return Err(no_room());
+    }
     let id = id();
     let file = tokio::fs::OpenOptions::new()
         .write(true)
@@ -280,14 +292,22 @@ pub async fn patch(
         .write(true)
         .open(app.upload_path(&id))
         .await?;
+    // What an interrupted chunk left past the offset goes first: its space is this upload's own.
     file.set_len(saved as u64).await?;
+    // Measured now, not at create: other uploads and a video conversion write to the same disk.
+    if !app.has_room(
+        &app.config.data.join("uploads"),
+        (length - saved).min(CHUNK) as u64,
+    )? {
+        return Err(no_room());
+    }
     file.seek(std::io::SeekFrom::Start(saved as u64)).await?;
     let mut stream = request.into_body().into_data_stream();
     let mut count = 0i64;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| Error::bad("Upload body interrupted; resume using HEAD"))?;
         count += chunk.len() as i64;
-        if saved + count > length || count > 8 * 1024 * 1024 {
+        if saved + count > length || count > CHUNK {
             file.set_len(saved as u64).await?;
             return Err(Error::bad(
                 "Chunk exceeds upload length or 8 MiB chunk limit",

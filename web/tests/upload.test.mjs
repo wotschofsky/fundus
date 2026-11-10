@@ -6,7 +6,7 @@ import { upload, verified } from '../src/upload.ts';
 // kept half of it, so the client has to ask HEAD where to continue.
 function vault() {
   const uploads = new Map();
-  const state = { completed: false, polls: 0, dropped: false, names: [] };
+  const state = { completed: false, polls: 0, dropped: false, names: [], deleted: [] };
   const reply = (status, headers = {}, body = null) =>
     new Response(body && JSON.stringify(body), { status, headers });
   globalThis.fetch = async (url, init = {}) => {
@@ -29,6 +29,11 @@ function vault() {
       return reply(201, { Location: location });
     }
     if (method === 'HEAD') return reply(200, { 'Upload-Offset': String(uploads.get(url).offset) });
+    if (method === 'DELETE') {
+      state.deleted.push(url);
+      uploads.delete(url);
+      return reply(204);
+    }
     if (method === 'POST' && url === '/api/web/v1/imports/import/complete') {
       state.completed = true;
       return reply(200, {}, { state: 'verifying' });
@@ -86,9 +91,10 @@ test('uploads in chunks, resumes where the server stopped, and reports the check
   const files = [new File([large], 'long.wav'), new File(['hello'], 'memo ü.m4a')];
   const total = large.length + 5;
   const seen = [];
-  const id = await upload(files, (sent, index) => seen.push([sent, index]));
+  const { id, failed } = await upload(files, (sent, index) => seen.push([sent, index]));
 
   assert.equal(id, 'import');
+  assert.equal(failed, null);
   assert.deepEqual(state.names, ['long.wav', 'memo ü.m4a']);
   assert.ok(state.dropped, 'the dropped chunk was exercised');
   assert.deepEqual(uploads.get('/api/web/v1/uploads/0').bytes, large);
@@ -104,14 +110,42 @@ test('uploads in chunks, resumes where the server stopped, and reports the check
 });
 
 test('a refused upload surfaces the server message without retrying', async () => {
-  vault();
+  const { state } = vault();
   const fetch = globalThis.fetch;
   globalThis.fetch = async (url, init) =>
     url === '/api/web/v1/uploads'
       ? new Response(JSON.stringify({ error: 'Invalid filename' }), { status: 400 })
       : fetch(url, init);
-  await assert.rejects(
-    upload([new File(['x'], 'x.wav')], () => {}),
-    /Invalid filename/,
-  );
+  const { id, failed } = await upload([new File(['x'], 'x.wav')], () => {});
+  // Nothing arrived, so there is nothing to check.
+  assert.equal(id, null);
+  assert.equal(failed.index, 0);
+  assert.match(failed.error.message, /Invalid filename/);
+  assert.equal(state.completed, false);
+});
+
+test('a file refused midway is removed, and the files sent before it are still checked', async () => {
+  const { uploads, state } = vault();
+  const XHR = globalThis.XMLHttpRequest;
+  // The disk runs short while the second file is being sent.
+  globalThis.XMLHttpRequest = class extends XHR {
+    async send(chunk) {
+      if (this.url !== '/api/web/v1/uploads/1') return super.send(chunk);
+      this.status = 507;
+      this.responseText = JSON.stringify({
+        error: 'Your vault does not have enough free disk space for this file',
+      });
+      this.onload();
+    }
+  };
+  const files = [new File(['hello'], 'memo.m4a'), new File(['x'.repeat(10)], 'film.mov')];
+  const { id, failed } = await upload(files, () => {});
+
+  assert.equal(id, 'import');
+  assert.equal(failed.index, 1);
+  assert.match(failed.error.message, /enough free disk space/);
+  // What it sent of the refused file no longer holds the space that ran short.
+  assert.deepEqual(state.deleted, ['/api/web/v1/uploads/1']);
+  assert.equal(new TextDecoder().decode(uploads.get('/api/web/v1/uploads/0').bytes), 'hello');
+  assert.ok(state.completed);
 });

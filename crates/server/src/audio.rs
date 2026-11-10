@@ -1,9 +1,11 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio};
 use tokio::{io::AsyncReadExt, process::Command};
 
+/// What verification found in an upload: its first audio stream, and its picture if it has one.
+/// Stored as `uploads.format_json`; rows from before a field existed read it as its default.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Format {
     pub sample_rate: u32,
@@ -11,12 +13,81 @@ pub struct Format {
     pub bit_depth: u16,
     pub is_float: bool,
     pub frames: u64,
+    /// The audio codec, as FFmpeg names it ("aac", "flac", "pcm_s24le").
+    #[serde(default)]
+    pub codec: String,
+    /// Where the audio starts on the file's timeline. Decoding starts at its first sample, so
+    /// that is the transcript's time 0.
+    #[serde(default)]
+    pub start_ms: i64,
+    /// How long the audio's timestamps run. Where they skip, this is longer than the samples,
+    /// which the transcript plays back to back. 0 when the file does not say.
+    #[serde(default)]
+    pub span_ms: i64,
+    #[serde(default)]
+    pub video: Option<Video>,
+}
+/// The first video stream that is not cover art. Facts only: what to do with them is
+/// `video::plan`'s decision, so it can change without probing the uploads again.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Video {
+    /// Its index in the file.
+    pub stream: u64,
+    pub codec: String,
+    pub pix_fmt: String,
+    /// Coded size; `display` applies the pixel shape and rotation.
+    pub width: u32,
+    pub height: u32,
+    /// Sample (pixel) aspect ratio; [1, 1] is square.
+    pub sar: [u32; 2],
+    /// Degrees, from the display matrix.
+    pub rotation: i32,
+    /// `color_transfer`: "smpte2084" (PQ) and "arib-std-b67" (HLG) are HDR.
+    pub transfer: String,
+    /// The file's MP4 major brand ("isom", "mp42", "qt  " for QuickTime); empty in other containers.
+    pub brand: String,
+    /// Streams in the file, cover art and data tracks included.
+    pub streams: usize,
+    /// Where the picture starts on the file's timeline.
+    #[serde(default)]
+    pub start_ms: i64,
+    /// Where the file's timeline starts: FFmpeg's filters count time from there, not from 0.
+    #[serde(default)]
+    pub file_start_ms: i64,
+}
+impl Video {
+    /// The size a player shows: square pixels, upright.
+    pub fn display(&self) -> (u32, u32) {
+        let [num, den] = self.sar;
+        let width = (u64::from(self.width) * u64::from(num) + u64::from(den) / 2) / u64::from(den);
+        // At least a pixel, whatever pixel shape a file claims.
+        let width = width.clamp(1, u64::from(u32::MAX)) as u32;
+        if self.rotation.rem_euclid(180) == 90 {
+            (self.height, width)
+        } else {
+            (width, self.height)
+        }
+    }
+    pub fn hdr(&self) -> bool {
+        matches!(self.transfer.as_str(), "smpte2084" | "arib-std-b67")
+    }
 }
 impl Format {
     pub fn duration_ms(&self) -> i64 {
         (self.frames as f64 / self.sample_rate as f64 * 1000.).round() as i64
     }
 }
+/// FFmpeg stopped with an error. Everything it printed is kept for callers that look for a
+/// cause; the message shows the first 500 characters.
+#[derive(Debug)]
+pub struct Failed(pub String);
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let shown: String = self.0.chars().take(500).collect();
+        write!(f, "Media processing failed: {shown}")
+    }
+}
+impl std::error::Error for Failed {}
 pub async fn ffmpeg(args: &[String]) -> Result<()> {
     let output = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-v", "error", "-y"])
@@ -26,24 +97,36 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
         .await
         .context("FFmpeg is required on the server")?;
     if !output.status.success() {
-        bail!(
-            "Audio processing failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .take(500)
-                .collect::<String>()
-        );
+        // ponytail: all of stderr is held, as `output()` has always buffered it; read it into a
+        // bounded buffer if a file can make FFmpeg print megabytes even at `-v error`.
+        return Err(Failed(String::from_utf8_lossy(&output.stderr).into_owned()).into());
     }
     Ok(())
 }
 pub async fn inspect(path: &Path) -> Result<Format> {
-    let output=Command::new("ffprobe").args(["-v","error","-select_streams","a:0","-show_entries","stream=sample_rate,channels,bits_per_raw_sample,bits_per_sample,sample_fmt,duration,duration_ts,time_base","-of","json"]).arg(path).kill_on_drop(true).output().await?;
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries"])
+        .arg(concat!(
+            "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
+            "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time,duration",
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time:format_tags=major_brand"
+        ))
+        .args(["-of", "json"])
+        .arg(path)
+        .kill_on_drop(true)
+        .output()
+        .await?;
     ensure!(
         output.status.success(),
-        "Unreadable or unfinished audio file"
+        "Unreadable or unfinished media file"
     );
     let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let s = &v["streams"][0];
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    // The stream `-map 0:a:0` decodes: the first audio stream.
+    let s = streams
+        .iter()
+        .find(|s| s["codec_type"] == "audio")
+        .context("The file has no audio to transcribe")?;
     let rate = s["sample_rate"]
         .as_str()
         .unwrap_or("")
@@ -79,8 +162,52 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         bit_depth,
         is_float,
         frames: 0,
+        codec: text(&s["codec_name"]),
+        start_ms: millis(&s["start_time"]),
+        span_ms: millis(&s["duration"]),
+        video: picture(&streams, &v["format"]),
     })
 }
+fn text(value: &serde_json::Value) -> String {
+    value.as_str().unwrap_or_default().to_string()
+}
+/// FFprobe's seconds, as "1.000000"; 0 when it has none.
+fn millis(value: &serde_json::Value) -> i64 {
+    let seconds = value.as_str().and_then(|s| s.parse::<f64>().ok());
+    seconds.map_or(0, |s| (s * 1000.).round() as i64)
+}
+/// Cover art (`attached_pic`, common in m4a and mp3) is not a picture.
+fn picture(streams: &[serde_json::Value], file: &serde_json::Value) -> Option<Video> {
+    let s = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)?;
+    let size = |key: &str| s[key].as_u64().filter(|n| *n > 0).map(|n| n as u32);
+    let sar = text(&s["sample_aspect_ratio"])
+        .split_once(':')
+        .and_then(|(num, den)| Some([num.parse().ok()?, den.parse().ok()?]))
+        .filter(|[num, den]: &[u32; 2]| *num > 0 && *den > 0)
+        .unwrap_or([1, 1]);
+    let rotation = s["side_data_list"]
+        .as_array()
+        .and_then(|list| list.iter().find_map(|d| d["rotation"].as_f64()))
+        .unwrap_or(0.)
+        .round() as i32;
+    Some(Video {
+        stream: s["index"].as_u64()?,
+        codec: text(&s["codec_name"]),
+        pix_fmt: text(&s["pix_fmt"]),
+        width: size("width")?,
+        height: size("height")?,
+        sar,
+        rotation,
+        transfer: text(&s["color_transfer"]),
+        brand: text(&file["tags"]["major_brand"]),
+        streams: streams.len(),
+        start_ms: millis(&s["start_time"]),
+        file_start_ms: millis(&file["start_time"]),
+    })
+}
+
 // Canonical integer samples are signed 32-bit LE, left aligned (FFmpeg s32le).
 // Float samples retain their source width. Format fields domain-separate the hash.
 pub async fn verify(path: &Path) -> Result<(Format, String)> {

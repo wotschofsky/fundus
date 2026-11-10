@@ -655,12 +655,32 @@ mark {
   width: 100%;
   height: 40px;
 }
+/* Width and shape come from the recording (recording-page.svelte), never above 40vh. */
+.player video {
+  display: block;
+  max-width: 100%;
+  margin-inline: auto;
+  background: #000;
+}
+.player-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.player-note {
+  margin: 0;
+  color: var(--muted);
+}
+.player-note.error {
+  color: var(--danger);
+}
 .player label {
   flex-direction: row;
-  justify-content: flex-end;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
   font-weight: 400;
   color: var(--muted);
 }

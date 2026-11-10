@@ -200,6 +200,15 @@ def run_image(image, proxy=False):
                                   "--network=none", *restrictions, image, "serve"],
                                  capture_output=True, text=True, timeout=30)
         assert missing.returncode and "ASSEMBLYAI_API_KEY" in missing.stderr, missing.stderr
+        # What video.rs needs from the packaged FFmpeg.
+        for kind, names in (("encoders", ["libx264", "aac"]), ("decoders", ["h264", "hevc", "vp9"]),
+                            ("muxers", ["mp4"]),
+                            ("filters", ["scale", "setsar", "transpose", "zscale", "tonemap",
+                                         "format", "hflip", "vflip", "trim", "setpts", "asetpts"])):
+            listed = subprocess.run(["docker", "run", "--rm", "--network=none", *restrictions,
+                                     "--entrypoint", "ffmpeg", image, "-hide_banner", "-" + kind],
+                                    capture_output=True, text=True, timeout=30, check=True).stdout
+            assert all(name in listed.split() for name in names), (kind, names)
         if not proxy:
             docker("run", "--rm", "-i", "--name", name + "-init", "--network=none",
                    *restrictions, "-v", volume + ":/data", image, "init",

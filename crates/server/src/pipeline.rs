@@ -4,6 +4,7 @@ use crate::{
     grouping::{self, Source},
     identity,
     provider::{self, Job, ProviderError, Utterance},
+    video,
     voice::{self, Analysis},
 };
 use anyhow::{Result, bail, ensure};
@@ -23,7 +24,11 @@ const MAX_DURATION_MS: i64 = 10 * 60 * 60 * 1000;
 
 pub async fn worker(app: App, shutdown: CancellationToken) {
     recover(&app).await;
+    video::recover(&app).await;
     let mut jobs = tokio::task::JoinSet::new();
+    // One video conversion at a time, beside the transcripts, which never wait for it to finish.
+    // It holds one of the two `app.cpu` permits for as long as the video runs.
+    let mut conversions = tokio::task::JoinSet::new();
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -50,15 +55,41 @@ pub async fn worker(app: App, shutdown: CancellationToken) {
             jobs.spawn(async move { run(&app, &entry, work.as_deref(), revision, &stop).await });
             continue;
         }
+        if conversions.is_empty()
+            && let Some(entry) = video::claim(&app).await
+        {
+            let stop = shutdown.child_token();
+            app.conversions
+                .lock()
+                .unwrap()
+                .insert(entry.clone(), stop.clone());
+            let app = app.clone();
+            conversions.spawn(async move {
+                video::convert(&app, &entry, stop).await;
+                app.conversions.lock().unwrap().remove(&entry);
+            });
+            continue;
+        }
         tokio::select! {
             _ = app.wake.notified() => {}
             _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
             Some(Err(error)) = jobs.join_next(), if !jobs.is_empty() => tracing::error!(%error, "processing task panicked"),
+            Some(ended) = conversions.join_next(), if !conversions.is_empty() => {
+                if let Err(error) = ended {
+                    tracing::error!(%error, "video conversion panicked");
+                }
+                // The only conversion has ended. If a panic or a failed write left it marked as
+                // converting, settle it now, as a restart would.
+                app.conversions.lock().unwrap().clear();
+                video::recover(&app).await;
+            }
             _ = shutdown.cancelled() => break,
         }
     }
-    // Drain: every in-flight job finishes its current provider request and saves it before exit.
+    // Drain: every in-flight job finishes its current provider request and saves it before exit;
+    // a conversion stops and goes back to the queue.
     while jobs.join_next().await.is_some() {}
+    while conversions.join_next().await.is_some() {}
 }
 
 /// After a crash, work that cannot bill twice resumes on its own, including a request whose job
@@ -244,7 +275,13 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
         let trim_end = group.is_trimmed().then_some(group.end_frame as i64);
         let created_at = now();
         let updated_at = now();
-        let inserted = sqlx::query!("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame)VALUES(?,?,?,?,?,?,'queued',?,?,?,?)", eid, fingerprint, title, recorded, duration, zone, created_at, updated_at, trim_start, trim_end).execute(&mut *tx).await?;
+        // Decided with the entry, in the same statement: a crash cannot leave it without one.
+        let formats: Vec<_> = group.sources.iter().map(|source| &source.format).collect();
+        let plan = video::plan(&formats, group.is_trimmed()).map(|plan| plan.columns());
+        let video_status = plan.map(|(status, _, _)| status);
+        let video_width = plan.map(|(_, width, _)| width);
+        let video_height = plan.map(|(_, _, height)| height);
+        let inserted = sqlx::query!("INSERT OR IGNORE INTO entries(id,fingerprint,title,recorded_at,duration_ms,timezone,stage,created_at,updated_at,trim_start_frame,trim_end_frame,video_status,video_width,video_height)VALUES(?,?,?,?,?,?,'queued',?,?,?,?,?,?,?)", eid, fingerprint, title, recorded, duration, zone, created_at, updated_at, trim_start, trim_end, video_status, video_width, video_height).execute(&mut *tx).await?;
         let entry_id = if inserted.rows_affected() > 0 {
             let mut offset = 0;
             for (position, source) in group.sources.iter().enumerate() {
@@ -1212,7 +1249,7 @@ pub async fn refresh_summary_passage(app: &App, entry: &str) -> Result<()> {
     Ok(())
 }
 
-async fn commit_artifact(pending: &Path, final_path: &Path) -> Result<()> {
+pub(crate) async fn commit_artifact(pending: &Path, final_path: &Path) -> Result<()> {
     tokio::fs::OpenOptions::new()
         .write(true)
         .open(pending)

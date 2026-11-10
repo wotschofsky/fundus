@@ -4,7 +4,7 @@ use crate::{
     corrections,
     error::{Error, Result},
     mcp::VaultMcp,
-    oauth, pipeline, retrieval, settings, uploads,
+    oauth, pipeline, retrieval, settings, uploads, video,
 };
 use axum::{
     Extension, Json, Router,
@@ -110,6 +110,8 @@ fn library_routes(prefix: &str) -> Router<App> {
         )
         .route(&at("/entries/{id}/transcript"), get(read))
         .route(&at("/entries/{id}/audio"), get(audio_file).head(audio_file))
+        .route(&at("/entries/{id}/video"), get(video_file).head(video_file))
+        .route(&at("/entries/{id}/video/retry"), post(retry_video))
         .route(&at("/entries/{id}/trash"), post(trash_entry))
         .route(&at("/entries/{id}/restore"), post(restore_entry))
         .route(&at("/entries/{id}/retry"), post(retry))
@@ -355,22 +357,43 @@ async fn audio_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
+    media_file(&app, &a, &id, r, false).await
+}
+async fn video_file(
+    State(app): State<App>,
+    Extension(a): Extension<Access>,
+    Path(id): Path<String>,
+    r: Request,
+) -> Result<Response> {
+    media_file(&app, &a, &id, r, true).await
+}
+/// A recording's playback file, with range requests for seeking. A video plays from the upload
+/// itself (`original`) or from its conversion (`ready`); see `video.rs`.
+async fn media_file(app: &App, a: &Access, id: &str, r: Request, video: bool) -> Result<Response> {
     a.read()?;
-    let exists: Option<String> = sqlx::query_scalar!(
-        "SELECT audio_path FROM entries WHERE id=? AND trashed_at IS NULL",
+    let row = sqlx::query!(
+        "SELECT audio_path,video_status,(SELECT upload_id FROM entry_sources WHERE entry_id=entries.id) AS \"upload?\" FROM entries WHERE id=? AND trashed_at IS NULL",
         id
     )
     .fetch_optional(&app.db)
     .await?
-    .flatten();
-    if exists.is_none() {
-        return Err(Error::not_found());
-    }
-    let response = ServeFile::new(app.entry_dir(&id).join("playback.m4a"))
-        .oneshot(r)
-        .await
-        .unwrap();
-    Ok(response.into_response())
+    .ok_or_else(Error::not_found)?;
+    let file = match (video, row.video_status.as_deref(), row.upload) {
+        (false, ..) => row
+            .audio_path
+            .map(|_| app.entry_dir(id).join("playback.m4a")),
+        (true, Some("original"), Some(upload)) => Some(app.upload_path(&upload)),
+        (true, Some("ready"), _) => Some(app.entry_dir(id).join(video::FILE)),
+        _ => None,
+    };
+    let file = file.ok_or_else(Error::not_found)?;
+    // An upload has no extension to guess its type from, and responses are nosniff.
+    let service = if video {
+        ServeFile::new_with_mime(file, &"video/mp4".parse().unwrap())
+    } else {
+        ServeFile::new(file)
+    };
+    Ok(service.oneshot(r).await.unwrap().into_response())
 }
 #[derive(Deserialize)]
 struct EditEntry {
@@ -493,6 +516,26 @@ async fn retry(
     tx.commit().await?;
     app.wake.notify_one();
     Ok(Json(json!({"stage":"queued"})))
+}
+/// Converts a video again after its conversion failed. The transcript is left alone.
+async fn retry_video(
+    State(app): State<App>,
+    Extension(a): Extension<Access>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>> {
+    a.admin()?;
+    let timestamp = now();
+    let queued = sqlx::query!("UPDATE entries SET video_status='queued',video_failure=NULL,video_attempts=0,updated_at=? WHERE id=? AND video_status='failed' AND trashed_at IS NULL", timestamp, id)
+        .execute(&app.db)
+        .await?;
+    if queued.rows_affected() == 0 {
+        retrieval::get(&app, &id).await?;
+        return Err(Error::conflict(
+            "This video is not waiting to be converted again",
+        ));
+    }
+    app.wake.notify_one();
+    Ok(Json(retrieval::get(&app, &id).await?))
 }
 async fn pause(
     State(app): State<App>,
@@ -636,6 +679,8 @@ async fn trash_entry(
     if updated.rows_affected() == 0 {
         return Err(Error::not_found());
     }
+    // A video conversion stops at once and waits in the queue until a restore.
+    app.stop_conversion(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 async fn restore_entry(
@@ -669,9 +714,10 @@ async fn delete_entry(
         sqlx::query_scalar!("SELECT upload_id FROM entry_sources WHERE entry_id=?", id)
             .fetch_all(&app.db)
             .await?;
-    // One statement, so the worker cannot claim the entry between the check and the delete.
+    // One statement, so the worker cannot claim the entry or its video between the check and
+    // the delete. Trash stops a conversion first.
     let deleted = sqlx::query!(
-        "DELETE FROM entries WHERE id=? AND stage IN ('complete','failed','queued','paused')",
+        "DELETE FROM entries WHERE id=? AND stage IN ('complete','failed','queued','paused') AND video_status IS NOT 'converting'",
         id
     )
     .execute(&app.db)
@@ -679,7 +725,7 @@ async fn delete_entry(
     if deleted.rows_affected() == 0 {
         retrieval::get_including_trash(&app, &id).await?;
         return Err(Error::conflict(
-            "Wait for processing to finish before deleting",
+            "Wait for processing and any video conversion to finish before deleting",
         ));
     }
     let _ = tokio::fs::remove_dir_all(app.entry_dir(&id)).await;

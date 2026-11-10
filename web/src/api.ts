@@ -55,6 +55,13 @@ export type Entry = {
   trashed_at: string | null;
   labels: string[];
   audio_available: boolean;
+  /** A recording made from a video file; its size is the upright picture's, known before it is ready. */
+  video: {
+    state: 'preparing' | 'ready' | 'failed';
+    width: number;
+    height: number;
+    failure: string | null;
+  } | null;
   speakers?: Speaker[];
   sources?: { offset_ms: number; recorded_at: string | null; filename: string }[];
 };

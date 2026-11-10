@@ -478,3 +478,85 @@ async fn the_web_library_uploads_with_its_proxy_session_and_same_origin_only() {
     let response = send("POST", &path, own, Body::empty()).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn uploads_stop_short_of_the_disk_reserve() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let config = |reserve: u64| {
+        let mut config = Config::from_env().unwrap();
+        config.data = dir.path().into();
+        config.reserve = reserve;
+        config
+    };
+    let roomy = App::new(config(0)).await.unwrap();
+    let token = auth::issue(&roomy, "uploader", "upload").await.unwrap();
+    // The same vault once its disk is full: the reserve is more than the free space.
+    let full = App::new(config(u64::MAX / 2)).await.unwrap();
+    let router =
+        |app: &App| fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let (status, import) = call(
+        &router(&roomy),
+        "POST",
+        "/api/v1/imports",
+        Some(&token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let import = import["id"].as_str().unwrap().to_string();
+    let encode = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let send =
+        |app: &App, method: &str, uri: &str, headers: &[(&str, String)], body: &'static str| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Tus-Resumable", "1.0.0");
+            for (key, value) in headers {
+                request = request.header(*key, value);
+            }
+            let router = router(app);
+            let request = request.body(Body::from(body)).unwrap();
+            async move { router.oneshot(request).await.unwrap() }
+        };
+    let create = [
+        ("Upload-Length", "3".to_string()),
+        (
+            "Upload-Metadata",
+            format!(
+                "import_id {},filename {}",
+                encode(&import),
+                encode("memo.m4a")
+            ),
+        ),
+    ];
+    // Created while there was room, then the disk filled: no chunk is written below the reserve.
+    let created = send(&roomy, "POST", "/api/v1/uploads", &create, "").await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let location = created.headers()["location"].to_str().unwrap().to_string();
+    let chunk = [
+        ("Upload-Offset", "0".to_string()),
+        (
+            "Content-Type",
+            "application/offset+octet-stream".to_string(),
+        ),
+    ];
+    let patched = send(&full, "PATCH", &location, &chunk, "abc").await;
+    assert_eq!(patched.status(), StatusCode::INSUFFICIENT_STORAGE);
+    let head = send(&roomy, "HEAD", &location, &[], "").await;
+    assert_eq!(head.headers()["upload-offset"], "0");
+    // And no new upload starts.
+    let refused = send(&full, "POST", "/api/v1/uploads", &create, "").await;
+    assert_eq!(refused.status(), StatusCode::INSUFFICIENT_STORAGE);
+    // An interrupted chunk leaves bytes past the offset. They are the upload's own, so the next
+    // chunk gets their space back instead of being refused for it.
+    let id = location.rsplit('/').next().unwrap();
+    let mut file = std::fs::File::create(roomy.upload_path(id)).unwrap();
+    std::io::Write::write_all(&mut file, &vec![1u8; 64 * 1024 * 1024]).unwrap();
+    file.sync_all().unwrap();
+    let free = fundus::config::free_space(dir.path()).unwrap();
+    let tight = App::new(config(free + 32 * 1024 * 1024)).await.unwrap();
+    let patched = send(&tight, "PATCH", &location, &chunk, "abc").await;
+    assert_eq!(patched.status(), StatusCode::NO_CONTENT);
+}

@@ -204,7 +204,7 @@ Confirmations use the native modal `<dialog>`: title, one explanatory sentence, 
 
 ### Timestamp-linked transcript
 
-Turns place a (12px) tabular timestamp beside the passage in a (52px) column with a (14px) gap ((44px) and (10px) narrow). The speaker name appears only when the speaker changes; continued turns tighten their top padding. Clicking a timestamp seeks and plays. The turn being spoken (or opened from a search result) receives the subtle fill and dark timestamp. Unidentified speakers are numbered in speaker-list order ("Speaker 1"). Optional following scrolls the playing turn into view. Playback keeps the browser-native audio control.
+Turns place a (12px) tabular timestamp beside the passage in a (52px) column with a (14px) gap ((44px) and (10px) narrow). The speaker name appears only when the speaker changes; continued turns tighten their top padding. Clicking a timestamp seeks and plays. The turn being spoken (or opened from a search result) receives the subtle fill and dark timestamp. Unidentified speakers are numbered in speaker-list order ("Speaker 1"). Optional following scrolls the playing turn into view. Playback keeps the browser-native control: the audio player, or for a video recording the video player, shaped like the recording before it loads, never taller than 40% of the screen, on black. A note row under it says when the video is still being prepared (the audio plays meanwhile), when its conversion failed (in `danger`, with the reason and Retry) and when this browser could not play it (with Try again, which loads the video once more); Follow transcript sits at its end.
 
 Speakers are assigned with a native select that also offers "New person…", which turns into an inline name field. Voice matches can be confirmed in one step, and quoted self-introductions offer "This is …".
 
@@ -214,7 +214,7 @@ Loading uses a status label with a rotating indicator (1s linear). There is no d
 
 ### Performance notes
 
-The library polls only while a visible recording is processing; a recording polls its status only while processing and refetches its transcript only when the stage changes. The full transcript loads page by page in the background. Turns are memoized and use `content-visibility: auto`, and playback updates state only when the spoken segment changes, so playback cost does not grow with transcript length.
+The library polls only while a visible recording is processing; a recording polls its status only while processing or preparing its video, and refetches its transcript only when the stage changes. The full transcript loads page by page in the background. Turns are memoized and use `content-visibility: auto`, and playback updates state only when the spoken segment changes, so playback cost does not grow with transcript length.
 
 ## Do's and Don'ts
 
