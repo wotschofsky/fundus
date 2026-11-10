@@ -37,7 +37,8 @@
   let correctionNotice = $state<'saved' | 'undone' | null>(null);
   let correctionReceipt: CorrectionReceipt | null = $state(null);
   let notThisSpeaker = $state(false);
-  /** This browser could not play the video, so the player went back to the audio. */
+  /** The video failed to load (a format this browser lacks, or a dropped connection), so the
+   * page plays the audio if it has it. */
   let unplayable = $state(false);
 
   const entry = createQuery(() => ({
@@ -276,8 +277,8 @@
           this={picture ? 'video' : 'audio'}
           bind:this={playback.media}
           ontimeupdate={playback.timeUpdate}
-          onplay={() => (playback.playing = true)}
-          onpause={() => (playback.playing = false)}
+          onplay={playback.played}
+          onpause={playback.paused}
           onloadedmetadata={playback.loaded}
           onerror={() => picture && (unplayable = true)}
           controls

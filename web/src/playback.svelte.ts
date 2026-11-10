@@ -1,4 +1,3 @@
-import { untrack } from 'svelte';
 import type { Segment } from './api';
 import { SnippetPlayback } from './snippet-playback';
 
@@ -30,6 +29,9 @@ export class Playback {
    * it plays: the old one was playing when it went. */
   #position: number | null = null;
   #resume = false;
+  /** `playing`, kept outside `$state` for the teardown below: a teardown reads state as it was
+   * when its effect last ran, before this player started. */
+  #sounding = false;
   #rows: () => Segment[];
   #startMs: () => number;
   #snippet = new SnippetPlayback();
@@ -40,8 +42,8 @@ export class Playback {
     $effect(() => {
       if (!this.media) return;
       return () => {
-        // Before the removed player's pause event arrives.
-        this.#resume = untrack(() => this.playing);
+        this.#resume = this.#sounding;
+        this.playing = this.#sounding = false;
         this.#snippet.stop();
       };
     });
@@ -88,15 +90,27 @@ export class Playback {
     });
   }
 
-  timeUpdate = () => {
-    if (!this.media) return;
+  /** Only the current player's events count: a removed one still sends its last timeupdate and
+   * its pause a moment after it goes, and those must not move the one that replaced it. */
+  #current = (event: Event) => !!this.media && event.currentTarget === this.media;
+
+  timeUpdate = (event: Event) => {
+    if (!this.#current(event) || !this.media) return;
     this.#position = this.media.currentTime;
     this.active = activeIndex(this.#rows(), this.#position * 1000);
   };
 
+  played = (event: Event) => {
+    if (this.#current(event)) this.playing = this.#sounding = true;
+  };
+
+  paused = (event: Event) => {
+    if (this.#current(event)) this.playing = this.#sounding = false;
+  };
+
   /** Starts where the previous player was, or at the linked passage. */
-  loaded = () => {
-    if (!this.media) return;
+  loaded = (event: Event) => {
+    if (!this.#current(event) || !this.media) return;
     const start = this.#position ?? this.#startMs() / 1000;
     if (start > 0) this.media.currentTime = start;
     if (this.#resume) this.media.play().catch(() => {});
