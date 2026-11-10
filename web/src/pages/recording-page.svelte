@@ -302,6 +302,12 @@
             >
           {:else if unplayable}
             The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
+            <!-- A dropped connection fails the same way as a format this browser lacks. -->
+            <button
+              class="text-button"
+              aria-label="Try again to play the video"
+              onclick={() => (unplayable = false)}>Try again</button
+            >
           {/if}
         </p>
         {#if playable}
