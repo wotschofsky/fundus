@@ -55,7 +55,10 @@ class Uploads {
         const result = await verified(id);
         if (result.state === 'failed') {
           this.problems.push(
-            `Your vault could not process ${files.map((f) => f.name).join(', ')}.`,
+            `Your vault could not process ${files
+              .slice(0, failed?.index ?? files.length)
+              .map((f) => f.name)
+              .join(', ')}.`,
           );
         }
         for (const file of result.files) {
