@@ -191,8 +191,10 @@ async fn run(app: &App, entry: &str) -> Result<()> {
     let full = async {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if !app.has_room(&dir, 0).unwrap_or(false) {
-                break;
+            match app.has_room(&dir, 0) {
+                Ok(true) => {}
+                // Stopped either way: short of space, or unable to tell.
+                checked => break checked,
             }
         }
     };
@@ -204,7 +206,10 @@ async fn run(app: &App, entry: &str) -> Result<()> {
             }
             done => done?,
         },
-        _ = full => anyhow::bail!(NO_ROOM),
+        checked = full => {
+            checked?;
+            anyhow::bail!(NO_ROOM)
+        }
     }
     commit_artifact(&partial, &dir.join(FILE)).await
 }
