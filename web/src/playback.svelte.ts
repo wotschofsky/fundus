@@ -1,4 +1,3 @@
-import { untrack } from 'svelte';
 import type { Segment } from './api';
 import { SnippetPlayback } from './snippet-playback';
 
@@ -27,7 +26,8 @@ export class Playback {
   follow = $state(false);
   #revealed = 0;
   /** Where a player that replaces another (the video once it is ready, the audio after a video
-   * that failed) goes on, and whether it plays: the one before was playing when it went. */
+   * that failed) goes on, and whether it plays: the last one that loaded was playing when it
+   * went, and nobody paused since. */
   #position: number | null = null;
   #resume = false;
   #rows: () => Segment[];
@@ -42,7 +42,7 @@ export class Playback {
       return () => {
         // Kept across a player that went again before it loaded (a video this browser cannot
         // play): the one after it goes on as the first one would have.
-        this.#resume ||= untrack(() => this.playing);
+        this.#resume ||= this.playing;
         this.playing = false;
         this.#snippet.stop();
       };
@@ -95,7 +95,8 @@ export class Playback {
   #current = (event: Event) => event.currentTarget === this.media;
 
   timeUpdate = (event: Event) => {
-    if (!this.#current(event) || !this.media) return;
+    // A player that has not loaded yet is at 0, which is not the place.
+    if (!this.#current(event) || !this.media?.readyState) return;
     this.#position = this.media.currentTime;
     this.active = activeIndex(this.#rows(), this.#position * 1000);
   };
@@ -105,7 +106,9 @@ export class Playback {
   };
 
   paused = (event: Event) => {
-    if (this.#current(event)) this.playing = false;
+    if (!this.#current(event)) return;
+    this.playing = false;
+    this.#resume = false;
   };
 
   /** Starts where the previous player was, or at the linked passage. */

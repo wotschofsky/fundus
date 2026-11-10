@@ -32,6 +32,7 @@ const { Playback } = await import('../src/playback.svelte.ts');
 
 class Media extends EventTarget {
   currentTime = 0;
+  readyState = 4;
   playing = false;
   play() {
     this.playing = true;
@@ -40,7 +41,8 @@ class Media extends EventTarget {
 }
 const from = (media) => ({ currentTarget: media });
 
-/** A page with its audio at 42 s, playing or not. Each step flushes, as a browser's events do. */
+/** A page with its audio at 42 s, playing or not. Each swap flushes, as Svelte does between a
+ * browser's events. */
 function playbackAt42(playing) {
   let playback;
   const stop = effect_root(() => {
@@ -69,10 +71,13 @@ test('a player that replaces a playing one goes on from its place, whatever the 
   show(video);
   // The removed audio's last timeupdate and its pause arrive a moment later.
   playback.timeUpdate(from(audio));
-  playback.paused(from(audio));
   playback.loaded(from(video));
   assert.equal(video.currentTime, 42);
   assert.equal(video.playing, true);
+  // Its pause, should it come later still, does not stop the one playing now.
+  playback.played(from(video));
+  playback.paused(from(audio));
+  assert.equal(playback.playing, true);
   stop();
 });
 
@@ -98,6 +103,22 @@ test('a player that replaces one just sent elsewhere starts there', () => {
   show(video);
   playback.loaded(from(video));
   assert.equal(video.currentTime, 30);
+  stop();
+});
+
+test('a replacing player paused before it loaded stays paused at the place', () => {
+  const { playback, show, stop } = playbackAt42(true);
+  // Play and pause on the video while it is still loading: it is at 0 and sends that.
+  const video = new Media();
+  video.readyState = 0;
+  show(video);
+  playback.played(from(video));
+  playback.timeUpdate(from(video));
+  playback.paused(from(video));
+  video.readyState = 1;
+  playback.loaded(from(video));
+  assert.equal(video.currentTime, 42);
+  assert.equal(video.playing, false);
   stop();
 });
 
