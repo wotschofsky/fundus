@@ -26,8 +26,8 @@ export class Playback {
   follow = $state(false);
   #revealed = 0;
   /** Where a player that replaces another (the video once it is ready, the audio after a video
-   * that failed) goes on, and whether it plays: the last one that loaded was playing when it
-   * went, and nobody paused since. */
+   * that failed) goes on, and whether it plays: a player went while playing since the last one
+   * loaded, and nobody paused since. */
   #position: number | null = null;
   #resume = false;
   #rows: () => Segment[];
@@ -40,8 +40,8 @@ export class Playback {
     $effect(() => {
       if (!this.media) return;
       return () => {
-        // Kept across a player that went again before it loaded (a video this browser cannot
-        // play): the one after it goes on as the first one would have.
+        // Only ever set here, so a player that went again before it loaded (a video this browser
+        // cannot play) leaves it as the players before it did; `loaded` and a pause clear it.
         this.#resume ||= this.playing;
         this.playing = false;
         this.#snippet.stop();

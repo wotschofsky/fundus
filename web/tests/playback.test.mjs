@@ -69,12 +69,13 @@ test('a player that replaces a playing one goes on from its place, whatever the 
   // The video becomes ready and replaces the audio.
   const video = new Media();
   show(video);
-  // The removed audio's last timeupdate and its pause arrive a moment later.
+  // The removed audio's last timeupdate arrives a moment later.
   playback.timeUpdate(from(audio));
   playback.loaded(from(video));
   assert.equal(video.currentTime, 42);
   assert.equal(video.playing, true);
-  // Its pause, should it come later still, does not stop the one playing now.
+  // Its pause, should it come later still, does not stop the one playing now. (The video's
+  // play event, which the fake's play() does not send.)
   playback.played(from(video));
   playback.paused(from(audio));
   assert.equal(playback.playing, true);
