@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio};
@@ -20,8 +20,8 @@ pub struct Format {
     /// that is the transcript's time 0.
     #[serde(default)]
     pub start_ms: i64,
-    /// How long the audio's timestamps run: longer than its samples when they skip, as the
-    /// transcript does not. 0 when the file does not say.
+    /// How long the audio's timestamps run. Where they skip, this is longer than the samples,
+    /// which the transcript plays back to back. 0 when the file does not say.
     #[serde(default)]
     pub span_ms: i64,
     #[serde(default)]
@@ -77,6 +77,17 @@ impl Format {
         (self.frames as f64 / self.sample_rate as f64 * 1000.).round() as i64
     }
 }
+/// FFmpeg stopped with an error. Everything it printed is kept for callers that look for a
+/// cause; the message shows the first 500 characters.
+#[derive(Debug)]
+pub struct Failed(pub String);
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let shown: String = self.0.chars().take(500).collect();
+        write!(f, "Media processing failed: {shown}")
+    }
+}
+impl std::error::Error for Failed {}
 pub async fn ffmpeg(args: &[String]) -> Result<()> {
     let output = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-v", "error", "-y"])
@@ -86,13 +97,7 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
         .await
         .context("FFmpeg is required on the server")?;
     if !output.status.success() {
-        bail!(
-            "Media processing failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .take(500)
-                .collect::<String>()
-        );
+        return Err(Failed(String::from_utf8_lossy(&output.stderr).into_owned()).into());
     }
     Ok(())
 }

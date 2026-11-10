@@ -189,7 +189,7 @@ async fn run(app: &App, entry: &str) -> Result<()> {
     let args = arguments(&source, &format, video, size, row.duration_ms, &partial);
     // An encoder's output has no exact ceiling, so the disk is watched while it writes. Dropping
     // FFmpeg kills it, and `convert` removes what it wrote.
-    let full = async {
+    let watch = async {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             match app.has_room(&dir, 0) {
@@ -200,19 +200,26 @@ async fn run(app: &App, entry: &str) -> Result<()> {
         }
     };
     tokio::select! {
-        done = audio::ffmpeg(&args) => match done {
-            // FFmpeg's words when `-reinit_filter:a 0` stops it.
-            Err(error) if error.to_string().contains("Changing audio frame properties") => {
-                anyhow::bail!(SOUND_CHANGES)
-            }
-            done => done?,
-        },
-        checked = full => {
+        done = audio::ffmpeg(&args) => done.map_err(plain)?,
+        checked = watch => {
             checked?;
             anyhow::bail!(NO_ROOM)
         }
     }
     commit_artifact(&partial, &dir.join(FILE)).await
+}
+
+/// The one failure a person can act on, in plain words; FFmpeg's own for the rest.
+fn plain(error: anyhow::Error) -> anyhow::Error {
+    // FFmpeg's words when `-reinit_filter:a 0` stops it, wherever they fall in what it printed.
+    let stopped = error
+        .downcast_ref::<audio::Failed>()
+        .is_some_and(|failed| failed.0.contains("Changing audio frame properties"));
+    if stopped {
+        anyhow::anyhow!(SOUND_CHANGES)
+    } else {
+        error
+    }
 }
 
 /// Server-owned paths and numbers only: no user input reaches FFmpeg's syntax. FFmpeg turns
@@ -382,7 +389,8 @@ mod tests {
                 "{codec} {video:?}"
             );
         }
-        // Nor would audio whose timestamps skip a second that the transcript does not.
+        // So would sound whose timestamps skip a second: the transcript plays its samples back
+        // to back.
         let gapped = Format {
             span_ms: 2000,
             ..format("aac", phone())
@@ -497,6 +505,20 @@ mod tests {
             let args = args(audio, file);
             assert!(picture(&args).starts_with("scale="), "{args:?}");
         }
+    }
+
+    #[test]
+    fn a_sound_change_is_named_however_much_ffmpeg_printed_before_it() {
+        let noise = "[h264 @ 0x1] non-existing PPS 0 referenced\n".repeat(150);
+        let stopped = format!(
+            "{noise}[graph_-1_in_0:1 @ 0x2] Changing audio frame properties on the fly is not supported.\n"
+        );
+        assert_eq!(
+            plain(audio::Failed(stopped).into()).to_string(),
+            SOUND_CHANGES
+        );
+        let other = plain(audio::Failed(noise).into()).to_string();
+        assert!(other.starts_with("Media processing failed: [h264") && other.len() < 600);
     }
 
     #[test]
