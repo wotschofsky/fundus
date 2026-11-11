@@ -16,7 +16,7 @@ static STAMP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)(?:^|[^0-9])(20[0-9]{2})[-_.]?([0-9]{2})[-_.]?([0-9]{2})(?: at |[ _T-])?",
         r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})(?:[.,][0-9]{1,9}|-?[0-9]{3})?",
-        r"(?:(\s*[AP]M|Z|[+-][0-9]{2}:?[0-9]{2})(?:[^a-z0-9]|$)|[^0-9]|$)"
+        r"(?:(\s*[AP]M|Z|[+-][0-9]{2}:?[0-9]{2})(?:[^\p{L}\p{N}]|$)|[^0-9]|$)"
     ))
     .unwrap()
 });
@@ -202,6 +202,10 @@ mod tests {
         assert_eq!(read("2026-11-03T08-22-32.123456+05:30.wav"), None);
         // A word after the time is not a UTC "Z"; two stamps side by side are still two.
         assert_eq!(read("20261103_082232Zoom.mov"), at("2026-11-03T07:22:32Z"));
+        assert_eq!(
+            read("20261103_082232Züberblick.mov"),
+            at("2026-11-03T07:22:32Z")
+        );
         assert_eq!(read("20261103_082232_20261104_092232.mov"), None);
         assert_eq!(read("Screen Recording 2026-11-03 at 10.22.32 PM.mov"), None);
         assert_eq!(
