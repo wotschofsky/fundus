@@ -10,13 +10,13 @@ static DJI: LazyLock<Regex> = LazyLock::new(|| {
 /// A date and time in a camera's or app's filename, separators optional: "2026-11-03 at
 /// 08.22.32" (macOS), "VID_20261103_082232" (Android), "2026-11-03 08-22-32" (OBS),
 /// "PXL_20261103_082232123" (Pixel), "GMT20261103-082232" (Zoom), "2026-11-03T08:22:32.000Z".
-/// Group 7 is what follows the time: "Z", another offset, or AM/PM. A date alone is not a time,
-/// so "VID-20261103-WA0001" is left.
+/// Group 7 is what follows the time: "Z", another offset, or AM/PM, each ending a word, so the
+/// "Z" of "Zoom" is not one. A date alone is not a time, so "VID-20261103-WA0001" is left.
 static STAMP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)(?:^|[^0-9])(20[0-9]{2})[-_.]?([0-9]{2})[-_.]?([0-9]{2})(?: at |[ _T-])?",
-        r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})(?:[-.,]?[0-9]{1,3})?",
-        r"(\s*[AP]M\b|Z|[+-][0-9]{2}:?[0-9]{2})?(?:[^0-9]|$)"
+        r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})(?:[.,][0-9]{1,9}|-?[0-9]{3})?",
+        r"(?:(\s*[AP]M|Z|[+-][0-9]{2}:?[0-9]{2})(?:[^a-z0-9]|$)|[^0-9]|$)"
     ))
     .unwrap()
 });
@@ -49,9 +49,9 @@ pub fn parse_dji(name: &str, zone: chrono_tz::Tz) -> Option<(DateTime<Utc>, Stri
 /// to the file's tags rather than misread.
 pub fn parse_name(name: &str, zone: chrono_tz::Tz) -> Option<DateTime<Utc>> {
     // Two times in one name (a forwarded or re-exported file) do not say which is the recording.
-    let mut stamps = STAMP.captures_iter(name);
-    let c = stamps.next()?;
-    if stamps.next().is_some() {
+    // The next one is looked for from the end of the time, as a match takes the character after it.
+    let c = STAMP.captures(name)?;
+    if STAMP.captures_at(name, c.get(6)?.end()).is_some() {
         return None;
     }
     let digits: String = (1..=6).map(|i| &c[i]).collect();
@@ -197,6 +197,12 @@ mod tests {
         assert_eq!(read("2026-11-03T08:22:32.000Z.webm"), utc);
         // Another offset, or a 12-hour clock, is left to the tags rather than misread.
         assert_eq!(read("2026-11-03T08:22:32+05:30.webm"), None);
+        assert_eq!(read("2026-11-03T08:22:32-05:00.mov"), None);
+        assert_eq!(read("2026-11-03T08:22:32.123456Z.wav"), utc);
+        assert_eq!(read("2026-11-03T08-22-32.123456+05:30.wav"), None);
+        // A word after the time is not a UTC "Z"; two stamps side by side are still two.
+        assert_eq!(read("20261103_082232Zoom.mov"), at("2026-11-03T07:22:32Z"));
+        assert_eq!(read("20261103_082232_20261104_092232.mov"), None);
         assert_eq!(read("Screen Recording 2026-11-03 at 10.22.32 PM.mov"), None);
         assert_eq!(
             read("Screen Recording 2026-11-03 at 12.05.10\u{202f}AM.mov"),

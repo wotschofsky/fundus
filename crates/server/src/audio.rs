@@ -27,8 +27,8 @@ pub struct Format {
     pub span_ms: i64,
     #[serde(default)]
     pub video: Option<Video>,
-    /// The start the file's own tags give, stated (Apple's `creationdate`) or worked out from
-    /// when the file was finished (`made_at` below); None when they give none.
+    /// When the sound began, by the file's own tags: Apple's `creationdate`, or when the file
+    /// was finished less its length, moved to where the sound starts; None when they give none.
     #[serde(default)]
     pub made_at: Option<DateTime<Utc>>,
 }
@@ -180,8 +180,8 @@ pub async fn inspect(path: &Path) -> Result<Format> {
 /// start its name gave), so the start is that less the file's length.
 /// ponytail: some cameras write the start into `creation_time`, or local time marked UTC; a
 /// per-maker exception goes here if one shows up.
-/// Both give when the file began; the transcript begins with its sound, `audio_ms` into the
-/// file's timeline, so that is added.
+/// Both give when the file began; the transcript begins with its sound, at `audio_ms` on the
+/// file's timeline, so its distance from the file's own start is added.
 fn made_at(file: &serde_json::Value, audio_ms: i64) -> Option<DateTime<Utc>> {
     let tags = &file["tags"];
     // Tools that do not know the time write 1904 or 1970.
@@ -201,7 +201,9 @@ fn made_at(file: &serde_json::Value, audio_ms: i64) -> Option<DateTime<Utc>> {
         Some(at - chrono::Duration::milliseconds((length * 1000.).round() as i64)).filter(known)
     };
     let leader = chrono::Duration::milliseconds(audio_ms - millis(&file["start_time"]));
-    Some((apple.or_else(finished)? + leader).with_timezone(&Utc))
+    Some(apple.or_else(finished)? + leader)
+        .filter(known)
+        .map(|at| at.with_timezone(&Utc))
 }
 fn text(value: &serde_json::Value) -> String {
     value.as_str().unwrap_or_default().to_string()
@@ -341,6 +343,10 @@ mod tests {
             "creation_time": "2026-11-03T08:08:38Z",
             "com.apple.quicktime.creationdate": "2026-11-03T07:22:32.000Z"}});
         assert_eq!(made_at(&zulu, 0), Some(at("2026-11-03T07:22:32Z")));
+        // A time pushed before 2000 by the sound's offset is no time.
+        let early = json!({"start_time": "120.0", "duration": "60.0",
+            "tags": {"creation_time": "2000-01-01T00:01:00Z"}});
+        assert_eq!(made_at(&early, 0), None);
         // A file that began 5 minutes before its sound: the transcript starts with the sound.
         let leader = json!({"start_time": "0.000000", "duration": "1200.0",
             "tags": {"creation_time": "2026-11-03T10:20:00Z"}});
