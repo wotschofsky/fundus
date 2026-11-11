@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio};
@@ -26,6 +27,10 @@ pub struct Format {
     pub span_ms: i64,
     #[serde(default)]
     pub video: Option<Video>,
+    /// When the sound began, by the file's own tags: Apple's `creationdate`, or when the file
+    /// was finished less its length, moved to where the sound starts; None when they give none.
+    #[serde(default)]
+    pub made_at: Option<DateTime<Utc>>,
 }
 /// The first video stream that is not cover art. Facts only: what to do with them is
 /// `video::plan`'s decision, so it can change without probing the uploads again.
@@ -109,7 +114,8 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .arg(concat!(
             "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
             "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time,duration",
-            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time:format_tags=major_brand"
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time,duration",
+            ":format_tags=major_brand,creation_time,com.apple.quicktime.creationdate"
         ))
         .args(["-of", "json"])
         .arg(path)
@@ -166,7 +172,38 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         start_ms: millis(&s["start_time"]),
         span_ms: millis(&s["duration"]),
         video: picture(&streams, &v["format"]),
+        made_at: made_at(&v["format"], millis(&s["start_time"])),
     })
+}
+/// Apple's `creationdate` is the start, with its offset. `creation_time` is UTC and written as
+/// the file is finished (an Apple export of a 44-minute recording put it 44 minutes after the
+/// start its name gave), so the start is that less the file's length.
+/// ponytail: some cameras write the start into `creation_time`, or local time marked UTC; a
+/// per-maker exception goes here if one shows up.
+/// Both give when the file began; the transcript begins with its sound, at `audio_ms` on the
+/// file's timeline, so its distance from the file's own start is added.
+fn made_at(file: &serde_json::Value, audio_ms: i64) -> Option<DateTime<Utc>> {
+    let tags = &file["tags"];
+    // Tools that do not know the time write 1904 or 1970.
+    let known = |at: &DateTime<chrono::FixedOffset>| at.year() >= 2000;
+    let apple = tags["com.apple.quicktime.creationdate"]
+        .as_str()
+        .and_then(|s| {
+            DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z")
+                .or_else(|_| DateTime::parse_from_rfc3339(s))
+                .ok()
+        })
+        .filter(known);
+    let finished = || {
+        let at = DateTime::parse_from_rfc3339(tags["creation_time"].as_str()?).ok()?;
+        // Without the file's length, its end says nothing about its start.
+        let length: f64 = file["duration"].as_str()?.parse().ok()?;
+        Some(at - chrono::Duration::milliseconds((length * 1000.).round() as i64)).filter(known)
+    };
+    let leader = chrono::Duration::milliseconds(audio_ms - millis(&file["start_time"]));
+    Some(apple.or_else(finished)? + leader)
+        .filter(known)
+        .map(|at| at.with_timezone(&Utc))
 }
 fn text(value: &serde_json::Value) -> String {
     value.as_str().unwrap_or_default().to_string()
@@ -275,4 +312,44 @@ pub async fn excerpt(path: &Path, start_ms: i64, duration_ms: i64, to: &Path) ->
         to.display().to_string(),
     ])
     .await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn made_at_reads_the_start_from_the_files_tags() {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        // The uploaded Apple export: finished at 08:07:38 UTC after 43:58.98.
+        let export = json!({"duration": "2638.981667",
+            "tags": {"creation_time": "2026-11-03T08:07:38.000000Z"}});
+        assert_eq!(made_at(&export, 0), Some(at("2026-11-03T07:23:39.018Z")));
+        let iphone = json!({"duration": "60.0", "tags": {
+            "creation_time": "2026-11-03T08:08:38Z",
+            "com.apple.quicktime.creationdate": "2026-11-03T08:22:32+0100"}});
+        assert_eq!(made_at(&iphone, 0), Some(at("2026-11-03T07:22:32Z")));
+        let unset = json!({"duration": "1.0", "tags": {"creation_time": "1970-01-01T00:00:00Z"}});
+        assert_eq!(made_at(&unset, 0), None);
+        assert_eq!(made_at(&json!({"duration": "1.0"}), 0), None);
+        // Without the file's length the end is not a start.
+        let unknown = json!({"tags": {"creation_time": "2026-11-03T08:07:38Z"}});
+        assert_eq!(made_at(&unknown, 0), None);
+        // An Apple tag that does not know the time leaves creation_time to answer.
+        let blank = json!({"duration": "60.0", "tags": {
+            "creation_time": "2026-11-03T08:08:38Z",
+            "com.apple.quicktime.creationdate": "1904-01-01T00:00:00+0000"}});
+        assert_eq!(made_at(&blank, 0), Some(at("2026-11-03T08:07:38Z")));
+        let zulu = json!({"duration": "60.0", "tags": {
+            "creation_time": "2026-11-03T08:08:38Z",
+            "com.apple.quicktime.creationdate": "2026-11-03T07:22:32.000Z"}});
+        assert_eq!(made_at(&zulu, 0), Some(at("2026-11-03T07:22:32Z")));
+        // A time pushed before 2000 by the sound's offset is no time.
+        let early = json!({"start_time": "120.0", "duration": "60.0",
+            "tags": {"creation_time": "2000-01-01T00:01:00Z"}});
+        assert_eq!(made_at(&early, 0), None);
+        // A file that began 5 minutes before its sound: the transcript starts with the sound.
+        let leader = json!({"start_time": "0.000000", "duration": "1200.0",
+            "tags": {"creation_time": "2026-11-03T10:20:00Z"}});
+        assert_eq!(made_at(&leader, 300_000), Some(at("2026-11-03T10:05:00Z")));
+    }
 }

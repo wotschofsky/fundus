@@ -213,17 +213,22 @@ pub async fn finalize(app: &App, batch: &str) -> Result<()> {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(&original);
-        let parsed = grouping::parse_dji(name, tz);
+        // A DJI name, else a time in any other name, else the file's own tags.
+        let dji = grouping::parse_dji(name, tz);
+        let recorded_at = match &dji {
+            Some((time, _)) => Some(*time),
+            None => grouping::parse_name(name, tz).or(format.made_at),
+        };
         let source_id = row.source_id.clone().unwrap_or_else(|| uid.clone());
         sources.push((
             source_id,
             Source {
                 id: uid,
-                filename: original.clone(),
+                filename: original,
                 hash,
                 format,
-                recorded_at: parsed.as_ref().map(|(time, _)| *time),
-                stream: parsed.map(|(_, stream)| stream).unwrap_or(original),
+                recorded_at,
+                stream: dji.map(|(_, stream)| stream).unwrap_or_default(),
             },
         ));
     }
