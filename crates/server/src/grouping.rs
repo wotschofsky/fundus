@@ -9,11 +9,14 @@ static DJI: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// A date and time in a camera's or app's filename, separators optional: "2026-11-03 at
 /// 08.22.32" (macOS), "VID_20261103_082232" (Android), "2026-11-03 08-22-32" (OBS),
-/// "PXL_20261103_082232123" (Pixel). A date alone is not a time, so "VID-20261103-WA0001" is left.
+/// "PXL_20261103_082232123" (Pixel), "GMT20261103-082232" (Zoom), "2026-11-03T08:22:32.000Z".
+/// Group 7 is what follows the time: "Z", another offset, or AM/PM. A date alone is not a time,
+/// so "VID-20261103-WA0001" is left.
 static STAMP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)(?:^|[^0-9])(20[0-9]{2})[-_.]?([0-9]{2})[-_.]?([0-9]{2})(?: at |[ _T-])?",
-        r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})[0-9]{0,3}(?:[^0-9]|$)"
+        r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})(?:[-.,]?[0-9]{1,3})?",
+        r"(\s*[AP]M\b|Z|[+-][0-9]{2}:?[0-9]{2})?(?:[^0-9]|$)"
     ))
     .unwrap()
 });
@@ -41,15 +44,30 @@ pub fn parse_dji(name: &str, zone: chrono_tz::Tz) -> Option<(DateTime<Utc>, Stri
         format!("{}|{}", c[1].to_uppercase(), c[5].to_lowercase()),
     ))
 }
-/// The time in a filename, read in the recorder's zone; Pixel names are UTC.
+/// The one time in a filename: UTC where the name says so (a "Z", or "GMT", "UTC" or Pixel's
+/// "PXL_" just before it), else the recorder's zone. A 12-hour clock or another offset is left
+/// to the file's tags rather than misread.
 pub fn parse_name(name: &str, zone: chrono_tz::Tz) -> Option<DateTime<Utc>> {
-    let c = STAMP.captures(name)?;
+    // Two times in one name (a forwarded or re-exported file) do not say which is the recording.
+    let mut stamps = STAMP.captures_iter(name);
+    let c = stamps.next()?;
+    if stamps.next().is_some() {
+        return None;
+    }
     let digits: String = (1..=6).map(|i| &c[i]).collect();
     let local = NaiveDateTime::parse_from_str(&digits, "%Y%m%d%H%M%S").ok()?;
-    let zone = if name.to_ascii_uppercase().starts_with("PXL_") {
-        chrono_tz::UTC
-    } else {
-        zone
+    let upper = name.to_ascii_uppercase();
+    let before = &upper[..c.get(1)?.start()];
+    let zone = match c.get(7).map(|m| m.as_str()) {
+        Some(mark) if mark.eq_ignore_ascii_case("z") => chrono_tz::UTC,
+        Some(_) => return None,
+        None if ["GMT", "UTC", "PXL_"]
+            .iter()
+            .any(|mark| before.ends_with(mark)) =>
+        {
+            chrono_tz::UTC
+        }
+        None => zone,
     };
     Some(
         zone.from_local_datetime(&local)
@@ -163,6 +181,27 @@ mod tests {
             at("2026-11-03T08:22:32Z")
         );
         assert_eq!(read("VID-20261103-WA0001.mp4"), None);
+        // A renamed Pixel file is still UTC; two different times in one name are neither.
+        assert_eq!(
+            read("backup_PXL_20261103_082232123.mp4"),
+            at("2026-11-03T08:22:32Z")
+        );
+        assert_eq!(
+            read("Fwd_20260101_120000_meeting_20261103_082232.m4a"),
+            None
+        );
+        // Names that say UTC are read as UTC: Zoom, and JavaScript's toISOString().
+        let utc = at("2026-11-03T08:22:32Z");
+        assert_eq!(read("GMT20261103-082232_Recording.m4a"), utc);
+        assert_eq!(read("recording-2026-11-03T08-22-32-123Z.webm"), utc);
+        assert_eq!(read("2026-11-03T08:22:32.000Z.webm"), utc);
+        // Another offset, or a 12-hour clock, is left to the tags rather than misread.
+        assert_eq!(read("2026-11-03T08:22:32+05:30.webm"), None);
+        assert_eq!(read("Screen Recording 2026-11-03 at 10.22.32 PM.mov"), None);
+        assert_eq!(
+            read("Screen Recording 2026-11-03 at 12.05.10\u{202f}AM.mov"),
+            None
+        );
         assert_eq!(read("IMG_1234.MOV"), None);
         assert_eq!(read("20261399_082232.mp4"), None);
     }
