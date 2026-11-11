@@ -28,6 +28,9 @@ const PARTIAL: &str = "video.partial.mp4";
 /// Conversions that may end without recording how before the video is given up.
 const ATTEMPTS: i64 = 2;
 /// Brands browsers read as MP4. QuickTime (`qt  `) is not one.
+/// Above this a plain MP4 is converted all the same: a screen recording at 25 Mbit/s plays, but
+/// every seek pulls megabytes over a home connection.
+const MAX_BIT_RATE: u64 = 8_000_000;
 const MP4_BRANDS: [&str; 9] = [
     "isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "M4V ",
 ];
@@ -68,7 +71,7 @@ pub fn plan(sources: &[&Format], trimmed: bool) -> Option<Plan> {
 /// A plain MP4: one H.264 picture, 8-bit 4:2:0, SDR, square pixels, and one AAC track. Nothing
 /// else in the file: the timecode and metadata tracks of iPhone videos are known to stall
 /// players. Speech and picture start within 100 ms of 0 and the audio's timestamps run as long
-/// as its samples, so the player's clock is the transcript's.
+/// as its samples, so the player's clock is the transcript's. And small enough to stream.
 fn plays_as_is(format: &Format, video: &Video) -> bool {
     format.start_ms.abs() <= 100
         && video.start_ms.abs() <= 100
@@ -80,6 +83,7 @@ fn plays_as_is(format: &Format, video: &Video) -> bool {
         && video.sar[0] == video.sar[1]
         && !video.hdr()
         && format.codec == "aac"
+        && video.bit_rate <= MAX_BIT_RATE
 }
 
 /// The shorter side at most 720 pixels, the shape kept, both sides even for H.264.
@@ -309,6 +313,7 @@ mod tests {
             streams: 2,
             start_ms: 0,
             file_start_ms: 0,
+            bit_rate: 6_000_000,
         }
     }
 
@@ -330,6 +335,12 @@ mod tests {
             ..phone()
         };
         assert_eq!(plan_of("aac", full_range), original);
+        // A file that does not say how big it runs is not held to it.
+        let unknown = Video {
+            bit_rate: 0,
+            ..phone()
+        };
+        assert_eq!(plan_of("aac", unknown), original);
         for (codec, video) in [
             (
                 "aac",
@@ -380,6 +391,14 @@ mod tests {
                 "aac",
                 Video {
                     start_ms: 500,
+                    ..phone()
+                },
+            ),
+            // A plain MP4 too big to stream, like a 25 Mbit/s screen recording of a call.
+            (
+                "aac",
+                Video {
+                    bit_rate: 25_000_000,
                     ..phone()
                 },
             ),
