@@ -7,6 +7,16 @@ static DJI: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^([a-z]+[0-9]+)_MIC([0-9]+)_([0-9]{8})_([0-9]{6})((?:_[a-z0-9]+)*)\.wav$")
         .unwrap()
 });
+/// A date and time in a camera's or app's filename, separators optional: "2026-11-03 at
+/// 08.22.32" (macOS), "VID_20261103_082232" (Android), "2026-11-03 08-22-32" (OBS),
+/// "PXL_20261103_082232123" (Pixel). A date alone is not a time, so "VID-20261103-WA0001" is left.
+static STAMP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)(?:^|[^0-9])(20[0-9]{2})[-_.]?([0-9]{2})[-_.]?([0-9]{2})(?: at |[ _T-])?",
+        r"([0-9]{2})[-_.:]?([0-9]{2})[-_.:]?([0-9]{2})[0-9]{0,3}(?:[^0-9]|$)"
+    ))
+    .unwrap()
+});
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Source {
     pub id: String,
@@ -14,6 +24,7 @@ pub struct Source {
     pub hash: String,
     pub format: Format,
     pub recorded_at: Option<DateTime<Utc>>,
+    /// A DJI transmitter and rendition, whose chunks join; empty for any other file.
     pub stream: String,
 }
 pub fn parse_dji(name: &str, zone: chrono_tz::Tz) -> Option<(DateTime<Utc>, String)> {
@@ -30,11 +41,27 @@ pub fn parse_dji(name: &str, zone: chrono_tz::Tz) -> Option<(DateTime<Utc>, Stri
         format!("{}|{}", c[1].to_uppercase(), c[5].to_lowercase()),
     ))
 }
+/// The time in a filename, read in the recorder's zone; Pixel names are UTC.
+pub fn parse_name(name: &str, zone: chrono_tz::Tz) -> Option<DateTime<Utc>> {
+    let c = STAMP.captures(name)?;
+    let digits: String = (1..=6).map(|i| &c[i]).collect();
+    let local = NaiveDateTime::parse_from_str(&digits, "%Y%m%d%H%M%S").ok()?;
+    let zone = if name.to_ascii_uppercase().starts_with("PXL_") {
+        chrono_tz::UTC
+    } else {
+        zone
+    };
+    Some(
+        zone.from_local_datetime(&local)
+            .single()?
+            .with_timezone(&Utc),
+    )
+}
 pub fn group(sources: Vec<Source>) -> Vec<Vec<Source>> {
     let mut streams: BTreeMap<String, Vec<Source>> = BTreeMap::new();
     for s in sources {
         streams
-            .entry(if s.recorded_at.is_some() {
+            .entry(if !s.stream.is_empty() {
                 s.stream.clone()
             } else {
                 s.id.clone()
@@ -95,6 +122,7 @@ mod tests {
                 start_ms: 0,
                 span_ms: ms,
                 video: None,
+                made_at: None,
             },
             recorded_at: Some(t),
             stream,
@@ -114,6 +142,29 @@ mod tests {
         let a = source("TX01_MIC001_20261001_120000_orig.wav", 1800000);
         let b = source("TX01_MIC002_20261001_123000_edit.wav", 1800000);
         assert_eq!(group(vec![a, b]).len(), 2);
+    }
+    #[test]
+    fn times_in_other_filenames() {
+        let berlin = chrono_tz::Europe::Berlin;
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+        let read = |name| parse_name(name, berlin);
+        assert_eq!(
+            read("2026-11-03 at 08.22.32.mp4"),
+            at("2026-11-03T07:22:32Z")
+        );
+        assert_eq!(
+            read("Screen Recording 2026-11-03 at 08.22.32.mov"),
+            at("2026-11-03T07:22:32Z")
+        );
+        assert_eq!(read("VID_20260703_082232.mp4"), at("2026-07-03T06:22:32Z"));
+        assert_eq!(read("2026-11-03 08-22-32.mkv"), at("2026-11-03T07:22:32Z"));
+        assert_eq!(
+            read("PXL_20261103_082232123.mp4"),
+            at("2026-11-03T08:22:32Z")
+        );
+        assert_eq!(read("VID-20261103-WA0001.mp4"), None);
+        assert_eq!(read("IMG_1234.MOV"), None);
+        assert_eq!(read("20261399_082232.mp4"), None);
     }
     #[test]
     fn invalid_dates_and_ambiguous_times_are_not_guessed() {
@@ -250,7 +301,7 @@ pub fn planned_sessions(
                     && source.format.is_float == first.format.is_float,
                 "A session's source audio formats must match"
             );
-            if source.recorded_at.is_some() && first.recorded_at.is_some() {
+            if !source.stream.is_empty() && !first.stream.is_empty() {
                 ensure!(
                     source.stream == first.stream,
                     "A session cannot merge different microphones or renditions"

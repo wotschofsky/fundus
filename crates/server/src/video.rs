@@ -291,6 +291,7 @@ mod tests {
             start_ms: 0,
             span_ms: 1000,
             video: Some(video),
+            made_at: None,
         }
     }
     /// A phone's MP4: H.264 1080p, AAC, nothing else.

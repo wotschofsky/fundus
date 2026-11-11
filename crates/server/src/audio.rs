@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, process::Stdio};
@@ -26,6 +27,9 @@ pub struct Format {
     pub span_ms: i64,
     #[serde(default)]
     pub video: Option<Video>,
+    /// When the file's own tags say it started; None when they do not.
+    #[serde(default)]
+    pub made_at: Option<DateTime<Utc>>,
 }
 /// The first video stream that is not cover art. Facts only: what to do with them is
 /// `video::plan`'s decision, so it can change without probing the uploads again.
@@ -109,7 +113,8 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .arg(concat!(
             "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
             "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time,duration",
-            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time:format_tags=major_brand"
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time,duration",
+            ":format_tags=major_brand,creation_time,com.apple.quicktime.creationdate"
         ))
         .args(["-of", "json"])
         .arg(path)
@@ -166,7 +171,26 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         start_ms: millis(&s["start_time"]),
         span_ms: millis(&s["duration"]),
         video: picture(&streams, &v["format"]),
+        made_at: made_at(&v["format"]),
     })
+}
+/// Apple's `creationdate` is the start, with its offset. `creation_time` is UTC and written as
+/// the file is finished (an Apple export of a 44-minute recording put it 44 minutes after the
+/// start its name gave), so the start is that less the file's length.
+/// ponytail: some cameras write the start into `creation_time`, or local time marked UTC; a
+/// per-maker exception goes here if one shows up.
+fn made_at(file: &serde_json::Value) -> Option<DateTime<Utc>> {
+    let tags = &file["tags"];
+    let apple = tags["com.apple.quicktime.creationdate"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z").ok());
+    let finished = || {
+        let at = DateTime::parse_from_rfc3339(tags["creation_time"].as_str()?).ok()?;
+        Some(at - chrono::Duration::milliseconds(millis(&file["duration"])))
+    };
+    // Tools that do not know the time write 1904 or 1970.
+    let at = apple.or_else(finished)?.with_timezone(&Utc);
+    (at.year() >= 2000).then_some(at)
 }
 fn text(value: &serde_json::Value) -> String {
     value.as_str().unwrap_or_default().to_string()
@@ -275,4 +299,24 @@ pub async fn excerpt(path: &Path, start_ms: i64, duration_ms: i64, to: &Path) ->
         to.display().to_string(),
     ])
     .await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn made_at_reads_the_start_from_the_files_tags() {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        // The uploaded Apple export: finished at 08:07:38 UTC after 43:58.98.
+        let export = json!({"duration": "2638.981667",
+            "tags": {"creation_time": "2026-11-03T08:07:38.000000Z"}});
+        assert_eq!(made_at(&export), Some(at("2026-11-03T07:23:39.018Z")));
+        let iphone = json!({"duration": "60.0", "tags": {
+            "creation_time": "2026-11-03T08:08:38Z",
+            "com.apple.quicktime.creationdate": "2026-11-03T08:22:32+0100"}});
+        assert_eq!(made_at(&iphone), Some(at("2026-11-03T07:22:32Z")));
+        let unset = json!({"duration": "1.0", "tags": {"creation_time": "1970-01-01T00:00:00Z"}});
+        assert_eq!(made_at(&unset), None);
+        assert_eq!(made_at(&json!({"duration": "1.0"})), None);
+    }
 }
