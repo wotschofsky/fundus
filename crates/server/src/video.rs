@@ -27,10 +27,10 @@ const SOUND_CHANGES: &str = "Its sound changes format partway through (channels 
 const PARTIAL: &str = "video.partial.mp4";
 /// Conversions that may end without recording how before the video is given up.
 const ATTEMPTS: i64 = 2;
-/// Brands browsers read as MP4. QuickTime (`qt  `) is not one.
 /// Above this a plain MP4 is converted all the same: a screen recording at 25 Mbit/s plays, but
 /// every seek pulls megabytes over a home connection.
 const MAX_BIT_RATE: u64 = 8_000_000;
+/// Brands browsers read as MP4. QuickTime (`qt  `) is not one.
 const MP4_BRANDS: [&str; 9] = [
     "isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "M4V ",
 ];
