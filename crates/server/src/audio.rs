@@ -59,6 +59,9 @@ pub struct Video {
     /// Where the file's timeline starts: FFmpeg's filters count time from there, not from 0.
     #[serde(default)]
     pub file_start_ms: i64,
+    /// The whole file's bits per second, picture and sound; 0 when the file does not say.
+    #[serde(default)]
+    pub bit_rate: u64,
 }
 impl Video {
     /// The size a player shows: square pixels, upright.
@@ -114,7 +117,7 @@ pub async fn inspect(path: &Path) -> Result<Format> {
         .arg(concat!(
             "stream=index,codec_type,codec_name,sample_rate,channels,bits_per_raw_sample,",
             "bits_per_sample,sample_fmt,pix_fmt,width,height,sample_aspect_ratio,color_transfer,start_time,duration",
-            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time,duration",
+            ":stream_disposition=attached_pic:stream_side_data=rotation:format=start_time,duration,bit_rate",
             ":format_tags=major_brand,creation_time,com.apple.quicktime.creationdate"
         ))
         .args(["-of", "json"])
@@ -242,6 +245,7 @@ fn picture(streams: &[serde_json::Value], file: &serde_json::Value) -> Option<Vi
         streams: streams.len(),
         start_ms: millis(&s["start_time"]),
         file_start_ms: millis(&file["start_time"]),
+        bit_rate: text(&file["bit_rate"]).parse().unwrap_or(0),
     })
 }
 
