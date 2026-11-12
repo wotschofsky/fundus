@@ -33,6 +33,7 @@ private actor TransferServer {
     func releaseUpload() { delayUpload = false }
     func copy(_ source: URL, _ destination: URL) async throws {
         copying += 1; metrics.maximumCopies = max(metrics.maximumCopies, copying)
+        metrics.copyOverlappedUpload = metrics.copyOverlappedUpload || uploading > 0
         defer { copying -= 1 }
         let initial = source.lastPathComponent == "clip-0.wav" || source.lastPathComponent == "clip-1.wav"
         try await Task.sleep(for: .milliseconds(initial ? 10 : 80))
@@ -41,6 +42,9 @@ private actor TransferServer {
     func prepare(_ source: URL, _ folder: URL) async throws -> URL {
         preparing += 1; metrics.preparations += 1
         metrics.maximumPreparations = max(metrics.maximumPreparations, preparing)
+        // Two spans overlap when either starts while the other runs, so both ends check. Checking
+        // only when an upload starts raced: each upload starts as a preparation ends.
+        metrics.preparationOverlappedUpload = metrics.preparationOverlappedUpload || uploading > 0
         defer { preparing -= 1 }
         try await Task.sleep(for: .milliseconds(25))
         return source // A deterministic passthrough seam; codec verification has separate real tests.
