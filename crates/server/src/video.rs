@@ -2,9 +2,9 @@
 //! the web library; its transcript comes from the audio like any other (`pipeline`).
 //!
 //! What verification found in the upload (`audio::Video`) decides the plan once, when the entry
-//! is created. A plain MP4 every browser plays is served as it was uploaded. Anything else is
-//! converted to `video.mp4` by a job of its own, so a long conversion never holds up the
-//! transcript.
+//! is created. A plain MP4 every browser plays, at most `MAX_BIT_RATE`, is served as it was
+//! uploaded. Anything else is converted to `video.mp4` by a job of its own, so a long conversion
+//! never holds up the transcript.
 //!
 //! `entries.video_status`: NULL without video, `original`, or `queued` → `converting` →
 //! `ready` or `failed`. `video_width` and `video_height` are the size the browser shows, set
