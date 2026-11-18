@@ -8,6 +8,8 @@ import SwiftUI
 final class RecorderPrompt {
     private var panel: NSPanel?
 
+    func close() { panel?.close() }
+
     func show(_ app: AppModel) {
         let panel = self.panel ?? NSPanel(contentRect: .zero, styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: true)
         self.panel = panel
@@ -42,6 +44,14 @@ private struct RecorderPromptView: View {
     }
     private var proposed: [RecordingSession] { app.sources.showsRecorders ? app.sessions.proposed(server: app.uploadServer) : [] }
     private func length(_ session: RecordingSession) -> TimeInterval { app.sessions.trim(for: session)?.duration ?? session.duration }
+
+    /// What the window has to show; anything that ends a wait for the mic changes it.
+    private enum Shown: Equatable { case mic, folder, scanning, nothing }
+    private var shown: Shown {
+        app.sources.prefersChosenFolder ? .folder
+            : app.sources.showsRecorders ? .mic
+            : app.sources.isScanning ? .scanning : .nothing
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -82,13 +92,19 @@ private struct RecorderPromptView: View {
             .accessibilityLabel("Close")
         }
         .onChange(of: app.sources.shownFiles) { _, files in app.sessions.update(files, server: app.uploadServer) }
-        // Unplugged: nothing left to show. Taking one mic out of the case can make the others drop
-        // out for a moment too, so they get time to mount again; a scan or a returning mic cancels it.
+        // A folder chosen in the main window instead of the mic closes it. With no mic shown it waits:
+        // taking one mic out of the case can make the others drop out for a moment too, so they get
+        // time to mount again. A scan or a returning mic ends the wait.
         // ponytail: fixed grace; a mic that takes longer to come back reopens the window on arrival.
-        .task(id: app.sources.showsRecorders || app.sources.isScanning) {
-            guard !app.sources.showsRecorders, !app.sources.isScanning else { return }
-            try? await Task.sleep(for: .seconds(10))
-            if !Task.isCancelled { close() }
+        .task(id: shown) {
+            switch shown {
+            case .folder: close()
+            case .nothing:
+                try? await Task.sleep(for: .seconds(10))
+                // Asked again: a mic can start mounting after the wait ends but before SwiftUI cancels it.
+                if !Task.isCancelled, shown == .nothing { close() }
+            case .mic, .scanning: break
+            }
         }
     }
 
@@ -102,9 +118,11 @@ private struct RecorderPromptView: View {
                 .padding(-6)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("DJI Mic connected")
+                Text(app.sources.showsRecorders ? "DJI Mic connected" : "DJI Mic")
                     .font(.title3.weight(.semibold))
-                Text(proposed.isEmpty ? "Everything is imported"
+                // With no mic shown, nothing is known about its recordings.
+                Text(!app.sources.showsRecorders ? "Looking for the mic…"
+                     : proposed.isEmpty ? "Everything is imported"
                      : "\(proposed.count == 1 ? "1 new recording" : "\(proposed.count) new recordings") · \(Format.duration(proposed.map(length).reduce(0, +)))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -118,7 +136,8 @@ private struct RecorderPromptView: View {
         return ScrollView {
             VStack(spacing: 0) {
                 if listed.isEmpty {
-                    Text(app.sources.isReading ? "Reading recordings…" : "No recordings on the mic.")
+                    Text(!app.sources.showsRecorders ? "No mic with recordings found yet."
+                         : app.sources.isReading ? "Reading recordings…" : "No recordings on the mic.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)

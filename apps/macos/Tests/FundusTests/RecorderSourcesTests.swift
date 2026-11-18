@@ -131,6 +131,35 @@ final class RecorderSourcesTests: XCTestCase {
         try await eventually { source.devices == [second] && !source.isScanning }
     }
 
+    func testRescanAndClockChangeKeepShowingTheMic() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let inventory = Inventory([])
+        let source = RecorderSources(discover: { _ in await inventory.read() }, eject: { _ in })
+        defer { source.stop() }
+        // A folder chosen once, then a mic plugged in: the mic is shown.
+        source.chooseFolder(folder)
+        await inventory.replace([first])
+        source.refresh()
+        try await eventually { source.devices == [first] && !source.isScanning }
+        XCTAssertTrue(source.showsRecorders)
+
+        try await eventually { !source.isReadingFolder }
+        XCTAssertTrue(source.folderFiles.isEmpty)
+        try Data([0]).write(to: folder.appendingPathComponent("added.wav"))
+        source.rescanFolder()
+        try await eventually { !source.isReadingFolder && source.folderFiles.map(\.name) == ["added.wav"] }
+        source.setTimezone("UTC")
+        try await eventually { !source.isScanning && !source.isReadingFolder }
+        XCTAssertEqual(source.folderFiles.map(\.name), ["added.wav"], "read again")
+        XCTAssertTrue(source.showsRecorders, "reading the folder again does not switch to it")
+        XCTAssertFalse(source.prefersChosenFolder)
+        source.chooseFolder(folder)
+        XCTAssertFalse(source.showsRecorders, "choosing it does")
+        XCTAssertTrue(source.prefersChosenFolder)
+    }
+
     func testManuallyChosenFolderIsNeverAnEjectTarget() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

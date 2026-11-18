@@ -119,7 +119,7 @@ private struct AppCommands: Commands {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
         }
         CommandMenu("Recorder") {
-            Button("Rescan") { app.sources.refresh(); if let folder = app.sources.folder { app.sources.chooseFolder(folder) } }
+            Button("Rescan") { app.sources.refresh(); app.sources.rescanFolder() }
                 .keyboardShortcut("r")
             Button("Eject All Mics") { Task { await app.ejectRecorders() } }
                 .keyboardShortcut("e")
