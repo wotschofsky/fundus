@@ -300,6 +300,9 @@ final class AppModel {
         guard canEject else { return }
         preview.stop()
         let failures = await sources.ejectAll(isCopying: isReadingSource)
+        // Ejected on purpose: no mic is coming back to wait for. A scan asked for while ejecting (a drive
+        // mounting, Rescan, the app becoming active) runs now and keeps it open until it finds nothing.
+        if sources.devices.isEmpty, !sources.isScanning { recorderPrompt.close() }
         if !failures.isEmpty {
             problem = Problem(title: "Could not eject all microphones",
                               message: failures.joined(separator: "\n\n") + "\n\nClose other apps using the microphones and try again.")

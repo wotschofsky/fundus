@@ -166,7 +166,9 @@ final class RecorderSources {
 
     var files: [RecorderFile] { devices.flatMap(\.files).sorted { ($0.recorded ?? .distantPast) > ($1.recorded ?? .distantPast) } }
 
-    var showsRecorders: Bool { !devices.isEmpty && !(prefersFolder && folder != nil) }
+    var showsRecorders: Bool { !devices.isEmpty && !prefersChosenFolder }
+    /// The chosen folder is shown instead of any recorder.
+    var prefersChosenFolder: Bool { prefersFolder && folder != nil }
     var hasSource: Bool { showsRecorders || folder != nil }
     /// Files of whatever is shown: the recorders, or the chosen folder.
     var shownFiles: [RecorderFile] { showsRecorders ? files : folderFiles }
@@ -215,7 +217,7 @@ final class RecorderSources {
     func setTimezone(_ identifier: String) {
         timezone = TimeZone(identifier: identifier) ?? .current
         refresh()
-        if let folder { chooseFolder(folder) }
+        rescanFolder()
     }
 
     func refresh() {
@@ -237,12 +239,22 @@ final class RecorderSources {
         }
     }
 
+    /// Shows the folder instead of the recorders.
     func chooseFolder(_ url: URL) {
         guard !isEjecting else { return }
-        if folder != url { folderFiles = [] }
-        folder = url
         prefersFolder = true
         UserDefaults.standard.set(url.path, forKey: "recorder-source-folder")
+        read(url)
+    }
+
+    /// Reads the chosen folder again, whichever source is shown.
+    func rescanFolder() {
+        if let folder, !isEjecting { read(folder) }
+    }
+
+    private func read(_ url: URL) {
+        if folder != url { folderFiles = [] }
+        folder = url
         isReadingFolder = true
         folderTask?.cancel()
         let timezone = timezone
