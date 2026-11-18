@@ -230,9 +230,12 @@ final class AppModel {
 
     private func importWaiting() {
         guard !waitingSessions.isEmpty, canImport, pendingSessions.isEmpty else { return }
-        // Imported meanwhile, or the mic was unplugged.
-        let next = waitingSessions.filter { waiting in
-            sessions.record(for: waiting, server: uploadServer) == nil && sessions.sessions.contains { $0.id == waiting.id }
+        // Imported meanwhile, even in part (from elsewhere, while it waited), or the mic was unplugged.
+        // Taken as listed now, not as asked for: a mic mounted again elsewhere has new file paths.
+        let waiting = Set(waitingSessions.map(\.id))
+        let next = sessions.sessions.filter { session in
+            waiting.contains(session.id) && sessions.record(for: session, server: uploadServer) == nil
+                && !sessions.partlyImported(session, server: uploadServer)
         }
         waitingSessions = []
         if !next.isEmpty { importSessions(next) }

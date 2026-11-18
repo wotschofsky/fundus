@@ -31,6 +31,9 @@ struct SessionMember: Hashable, Sendable {
 /// One real-world recording session: the unit the user sees, selects and imports.
 struct RecordingSession: Identifiable, Hashable, Sendable {
     var members: [SessionMember]
+    /// The recording right before this session on its timeline, as grouped: Merge with Previous joins
+    /// the session that ends with it.
+    var follows: SourceRecording? = nil
 
     var recordings: [SourceRecording] { members.map(\.recording) }
     var transmitter: String { members[0].recording.transmitter }
@@ -70,8 +73,11 @@ struct SessionGrouper {
         var sessions: [RecordingSession] = []
 
         for stream in streams.values {
+            // `sorted` is stable: recordings that tie (two kits whose mics share a name) keep the order they
+            // were scanned in, alike in every grouping, so `follows` stays the one a merge joins.
             let ordered = stream.sorted { ($0.start, $0.sequence, $0.filename) < ($1.start, $1.sequence, $1.filename) }
             var current: [SessionMember] = []
+            var follows: SourceRecording?
             for (index, recording) in ordered.enumerated() {
                 var decision: BoundaryDecision = index == 0 ? .first : self.decision(previous: ordered[index - 1], next: recording)
                 if index > 0 {
@@ -82,12 +88,13 @@ struct SessionGrouper {
                     }
                 }
                 if !decision.joinsPrevious, !current.isEmpty {
-                    sessions.append(RecordingSession(members: current))
+                    sessions.append(RecordingSession(members: current, follows: follows))
                     current = []
+                    follows = ordered[index - 1]
                 }
                 current.append(SessionMember(recording: recording, decision: decision))
             }
-            if !current.isEmpty { sessions.append(RecordingSession(members: current)) }
+            if !current.isEmpty { sessions.append(RecordingSession(members: current, follows: follows)) }
         }
         return sessions.sorted { ($0.start, $0.transmitter) < ($1.start, $1.transmitter) }
     }

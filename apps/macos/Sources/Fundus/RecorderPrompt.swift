@@ -123,7 +123,7 @@ private struct RecorderPromptView: View {
                     .font(.title3.weight(.semibold))
                 // With no mic shown, nothing is known about its recordings.
                 Text(!app.sources.showsRecorders ? "Looking for the mic…"
-                     : proposed.isEmpty ? "Everything is imported"
+                     : proposed.isEmpty ? "Nothing new to import"
                      : "\(proposed.count == 1 ? "1 new recording" : "\(proposed.count) new recordings") · \(Format.duration(proposed.map(length).reduce(0, +)))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -171,14 +171,16 @@ private struct RecorderPromptView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            status(session, record: record)
+            status(session, record: record, partly: partly)
         }
         .monospacedDigit()
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .contextMenu { SessionBoundaryMenu(session: session) }
     }
 
-    @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?) -> some View {
+    @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?, partly: Bool) -> some View {
         if let record, record.stage == "complete" {
             Label("Imported", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -198,8 +200,12 @@ private struct RecorderPromptView: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.circle)
-                .disabled(app.uploadServer.isEmpty)
-                .help("Import into \(app.uploadVaultName)")
+                // A partly imported row goes up again only from the Import screen, as a deliberate choice.
+                .disabled(app.uploadServer.isEmpty || partly)
+                .help(!partly ? "Import into \(app.uploadVaultName)"
+                      : "Some or all of this is already in \(app.uploadVaultName), or on its way there. "
+                        + (session.recordings.count > 1 && !app.sessions.boundaryLocks(session, server: app.uploadServer, isQueued: app.isQueued).split
+                           ? "Split it, or use the Import screen to import it anyway." : "Use the Import screen to import it anyway."))
         }
     }
 

@@ -141,8 +141,7 @@ private struct SessionRow: View {
     private var source: SourceSessions { app.sessions }
     private var record: SessionImportRecord? { source.record(for: session, server: app.uploadServer) }
     private var trim: Trim? { source.trim(for: session) }
-    /// Imported or on its way: grouping and trims are settled.
-    private var isLocked: Bool { record.map { !["failed", "paused"].contains($0.stage) } ?? false }
+    private var locks: (merge: Bool, split: Bool) { source.boundaryLocks(session, server: app.uploadServer, isQueued: app.isQueued) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -199,20 +198,7 @@ private struct SessionRow: View {
             }
         }
         .padding(.vertical, 4)
-        .contextMenu {
-            Button("Merge with Previous") { source.mergeWithPrevious(session) }
-                .disabled(source.previous(of: session) == nil || isLocked)
-            if session.recordings.count > 1 {
-                Menu("Split Before") {
-                    ForEach(session.recordings.dropFirst()) { recording in
-                        Button("\(recording.filename) (\(SessionTimeline.clock(recording.start, in: .current, seconds: false)))") {
-                            source.split(session, before: recording)
-                        }
-                    }
-                }
-                .disabled(isLocked)
-            }
-        }
+        .contextMenu { SessionBoundaryMenu(session: session) }
     }
 
     @ViewBuilder private var status: some View {
@@ -255,6 +241,7 @@ private struct SessionRow: View {
                 .foregroundStyle(.secondary)
             Button("Merge") { source.mergeWithPrevious(session) }
                 .buttonStyle(.link)
+                .disabled(locks.merge)
         }
     }
 
@@ -281,11 +268,11 @@ private struct SessionRow: View {
                     if index == 0 {
                         if source.previous(of: session) != nil {
                             Button("Merge with Previous") { source.mergeWithPrevious(session) }
-                                .disabled(isLocked)
+                                .disabled(locks.merge)
                         }
                     } else {
                         Button("Split Here") { source.split(session, before: recording) }
-                            .disabled(isLocked)
+                            .disabled(locks.split)
                     }
                 }
                 .font(.callout)
@@ -298,6 +285,30 @@ private struct SessionRow: View {
         }
         .padding(.top, 4)
         .padding(.leading, 14)
+    }
+}
+
+/// A session's right-click menu, here and in the mic window: join it to the session before it from the
+/// same transmitter (by name, rendition and format), so they import as one, or split it.
+struct SessionBoundaryMenu: View {
+    let session: RecordingSession
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let source = app.sessions
+        let locks = source.boundaryLocks(session, server: app.uploadServer, isQueued: app.isQueued)
+        Button("Merge with Previous") { source.mergeWithPrevious(session) }
+            .disabled(source.previous(of: session) == nil || locks.merge)
+        if session.recordings.count > 1 {
+            Menu("Split Before") {
+                ForEach(session.recordings.dropFirst()) { recording in
+                    Button("\(recording.filename) (\(SessionTimeline.clock(recording.start, in: .current, seconds: false)))") {
+                        source.split(session, before: recording)
+                    }
+                }
+            }
+            .disabled(locks.split)
+        }
     }
 }
 
