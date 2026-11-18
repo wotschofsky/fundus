@@ -32,8 +32,14 @@
     () => [share.data?.expires_at],
     () => share.refetch(),
   );
+  /** A link the server answered 404 for. Its token never works again, so it is not offered even
+   * while the page asks what is there instead. */
+  let dropped = $state<string | null>(null);
   /** The saved link while it works by this page's clock: never offered once it has expired. */
-  const link = $derived(clock.offered(share.data));
+  const link = $derived.by(() => {
+    const current = clock.offered(share.data);
+    return current && current.url !== dropped ? current : null;
+  });
   const saved = async (value: Share | null) => {
     // A read still under way would land after this and bring back what was just changed.
     await qc.cancelQueries({ queryKey: ['share', id] });
@@ -45,9 +51,11 @@
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
     onSuccess: saved,
   }));
-  /** The named link is no longer there (stopped, expired or replaced elsewhere): ask again. */
-  const reread = (error: Error) => {
+  /** The named link is no longer there (stopped, expired or replaced elsewhere): drop it and ask
+   * again. */
+  const reread = (error: Error, url: string) => {
     if (!gone(error)) return;
+    dropped = url;
     qc.invalidateQueries({ queryKey: ['shares'] });
     return qc.invalidateQueries({ queryKey: ['share', id] });
   };
@@ -56,7 +64,7 @@
     mutationFn: ({ link, expires }: { link: Share; expires: Expiry }) =>
       api<Share>(`/v1/entries/${id}/share`, send('PATCH', { expires, token: linkToken(link) })),
     onSuccess: saved,
-    onError: reread,
+    onError: (error, { link }) => reread(error, link.url),
   }));
   const stop = createMutation(() => ({
     mutationFn: (url: string) =>
@@ -68,9 +76,9 @@
       stopping = null;
       return saved(null);
     },
-    onError: (error) => {
+    onError: (error, url) => {
       stopping = null;
-      return reread(error);
+      return reread(error, url);
     },
   }));
   /** Stop sharing is being confirmed, for the link still offered. */

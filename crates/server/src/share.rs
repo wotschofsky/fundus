@@ -254,6 +254,8 @@ async fn entry(State(app): State<App>, Path(token): Path<String>) -> Result<Json
 
 /// The whole transcript in one read, so a correction the owner makes meanwhile cannot fall
 /// between two pages of it (paging parameters are ignored).
+// ponytail: one response holds the whole transcript (a few MB for a very long recording); read
+// pages in one snapshot transaction instead if that ever matters.
 async fn transcript(State(app): State<App>, Path(token): Path<String>) -> Result<Json<Value>> {
     let entry_id = shared(&app, &token).await?;
     let read = retrieval::Read {
