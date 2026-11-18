@@ -150,9 +150,10 @@ final class RecorderSourcesTests: XCTestCase {
         try Data([0]).write(to: folder.appendingPathComponent("added.wav"))
         source.rescanFolder()
         try await eventually { !source.isReadingFolder && source.folderFiles.map(\.name) == ["added.wav"] }
+        try Data([0]).write(to: folder.appendingPathComponent("later.wav"))
         source.setTimezone("UTC")
-        try await eventually { !source.isScanning && !source.isReadingFolder }
-        XCTAssertEqual(source.folderFiles.map(\.name), ["added.wav"], "read again")
+        try await eventually { !source.isScanning && !source.isReadingFolder && source.folderFiles.count == 2 }
+        XCTAssertEqual(Set(source.folderFiles.map(\.name)), ["added.wav", "later.wav"], "read again")
         XCTAssertTrue(source.showsRecorders, "reading the folder again does not switch to it")
         XCTAssertFalse(source.prefersChosenFolder)
         source.chooseFolder(folder)
