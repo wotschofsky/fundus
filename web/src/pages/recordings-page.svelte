@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { Trash2, Upload } from '@lucide/svelte';
+  import { Plug, Trash2, Upload } from '@lucide/svelte';
   import { labelsQuery, type Entry } from '../api';
   import { createEntries } from '../entries';
   import { day, dayKey, duration, outcome, time } from '../format';
@@ -78,7 +78,10 @@
       <Trash2 size={15} aria-hidden="true" />
       Trash
     </a>
-    <a class="text-link" href="/settings#connect">Connect apps</a>
+    <a class="text-link" href="/settings#connect">
+      <Plug size={15} aria-hidden="true" />
+      Connect apps
+    </a>
     <button class="primary" onclick={() => picker.click()}>
       <Upload size={15} aria-hidden="true" />
       Upload
