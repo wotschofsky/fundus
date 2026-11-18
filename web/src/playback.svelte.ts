@@ -66,6 +66,8 @@ export class Playback {
 
     $effect(() => {
       if (!this.follow || !this.playing || this.active < 0) return;
+      // Not while a dialog is open: the page behind it stays put.
+      if (document.querySelector('dialog:modal')) return;
       const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
       document
         .getElementById(rows()[this.active]?.id)

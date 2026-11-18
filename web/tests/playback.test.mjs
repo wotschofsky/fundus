@@ -132,3 +132,44 @@ test('a paused player that is replaced stays paused at its place', () => {
   assert.equal(video.playing, false);
   stop();
 });
+
+test('following the transcript leaves the page still while a dialog is open', () => {
+  const rows = [
+    { id: 'a', start_ms: 0, end_ms: 1000 },
+    { id: 'b', start_ms: 1000, end_ms: 2000 },
+    { id: 'c', start_ms: 2000, end_ms: 3000 },
+  ];
+  const scrolled = [];
+  let dialog = null;
+  globalThis.document = {
+    getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
+    querySelector: (selector) => (selector === 'dialog:modal' ? dialog : null),
+  };
+  globalThis.matchMedia = () => ({ matches: false });
+  let playback;
+  const stop = effect_root(() => {
+    playback = new Playback(
+      () => rows,
+      () => 0,
+    );
+  });
+  try {
+    playback.follow = true;
+    playback.playing = true;
+    playback.active = 0;
+    flush();
+    assert.deepEqual(scrolled, ['a']);
+    dialog = {};
+    playback.active = 1;
+    flush();
+    assert.deepEqual(scrolled, ['a']);
+    dialog = null;
+    playback.active = 2;
+    flush();
+    assert.deepEqual(scrolled, ['a', 'c']);
+  } finally {
+    stop();
+    delete globalThis.document;
+    delete globalThis.matchMedia;
+  }
+});
