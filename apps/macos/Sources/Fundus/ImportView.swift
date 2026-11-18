@@ -199,20 +199,7 @@ private struct SessionRow: View {
             }
         }
         .padding(.vertical, 4)
-        .contextMenu {
-            Button("Merge with Previous") { source.mergeWithPrevious(session) }
-                .disabled(source.previous(of: session) == nil || isLocked)
-            if session.recordings.count > 1 {
-                Menu("Split Before") {
-                    ForEach(session.recordings.dropFirst()) { recording in
-                        Button("\(recording.filename) (\(SessionTimeline.clock(recording.start, in: .current, seconds: false)))") {
-                            source.split(session, before: recording)
-                        }
-                    }
-                }
-                .disabled(isLocked)
-            }
-        }
+        .contextMenu { SessionBoundaryMenu(session: session, isLocked: isLocked) }
     }
 
     @ViewBuilder private var status: some View {
@@ -298,6 +285,30 @@ private struct SessionRow: View {
         }
         .padding(.top, 4)
         .padding(.leading, 14)
+    }
+}
+
+/// A session's right-click menu, here and in the mic window: join it to the recording before it on the
+/// same mic, so they import as one, or split it again.
+struct SessionBoundaryMenu: View {
+    let session: RecordingSession
+    let isLocked: Bool
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let source = app.sessions
+        Button("Merge with Previous") { source.mergeWithPrevious(session) }
+            .disabled(source.previous(of: session) == nil || isLocked)
+        if session.recordings.count > 1 {
+            Menu("Split Before") {
+                ForEach(session.recordings.dropFirst()) { recording in
+                    Button("\(recording.filename) (\(SessionTimeline.clock(recording.start, in: .current, seconds: false)))") {
+                        source.split(session, before: recording)
+                    }
+                }
+            }
+            .disabled(isLocked)
+        }
     }
 }
 

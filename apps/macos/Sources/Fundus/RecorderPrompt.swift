@@ -149,6 +149,14 @@ private struct RecorderPromptView: View {
         .monospacedDigit()
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        // Neither side of a merge may be imported or queued: it would drop out of the queue, or its audio be imported twice.
+        .contextMenu { SessionBoundaryMenu(session: session, isLocked: isSettled(session) || app.sessions.previous(of: session).map(isSettled) == true) }
+    }
+
+    /// Imported, on its way, or waiting its turn: its files stay grouped as they are.
+    private func isSettled(_ session: RecordingSession) -> Bool {
+        app.isQueued(session) || app.sessions.record(for: session, server: app.uploadServer).map { !["failed", "paused"].contains($0.stage) } == true
     }
 
     @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?) -> some View {
