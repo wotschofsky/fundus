@@ -15,7 +15,9 @@ export const stageName = (e: Pick<Entry, 'stage' | 'pause_requested'>) =>
   e.pause_requested ? 'Pausing after this step' : (STAGES[e.stage] ?? e.stage);
 
 /** Display names follow the speaker list order: "Speaker 1", "Speaker 2", unless identified. */
-export function speakerNames(speakers: Speaker[] = []): Map<string, string> {
+export function speakerNames(
+  speakers: Pick<Speaker, 'label' | 'name'>[] = [],
+): Map<string, string> {
   return new Map(speakers.map((s, i) => [s.label, s.name ?? `Speaker ${i + 1}`]));
 }
 
@@ -70,15 +72,29 @@ export function outcome(summary: string): string {
 }
 
 const escapeMarkdown = (value: string) => value.replace(/[\\*[\]]/g, (c) => `\\${c}`);
+/** What the export reads: an owner's recording, or a shared one (which has no labels). */
+type Exported = Pick<Entry, 'title' | 'recorded_at' | 'duration_ms' | 'summary'> & {
+  labels?: string[];
+};
+/** Saves the recording as a Markdown file (`transcriptMarkdown`). */
+export function downloadTranscript(e: Exported, rows: Segment[], names: Map<string, string>) {
+  const blob = new Blob([transcriptMarkdown(e, rows, names)], { type: 'text/markdown' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `${e.title.replaceAll('/', '-')}.md`;
+  link.click();
+  // Revoked a moment later: some browsers cancel a download whose URL is gone before it starts.
+  setTimeout(() => URL.revokeObjectURL(link.href));
+}
 /** The recording as a Markdown file, in the same layout as the Mac app's export. */
-export function transcriptMarkdown(e: Entry, rows: Segment[], names: Map<string, string>) {
+export function transcriptMarkdown(e: Exported, rows: Segment[], names: Map<string, string>) {
   const lines = [
     `# ${e.title}`,
     '',
     `- Recorded: ${dateTime(e.recorded_at)}`,
     `- Duration: ${duration(e.duration_ms)}`,
   ];
-  if (e.labels.length > 0) lines.push(`- Labels: ${e.labels.join(', ')}`);
+  if (e.labels?.length) lines.push(`- Labels: ${e.labels.join(', ')}`);
   if (e.summary) lines.push('', '## Summary', '', e.summary);
   lines.push('', '## Transcript', '');
   for (const r of rows) {

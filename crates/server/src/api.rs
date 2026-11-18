@@ -4,7 +4,7 @@ use crate::{
     corrections,
     error::{Error, Result},
     mcp::VaultMcp,
-    oauth, pipeline, retrieval, settings, uploads, video,
+    oauth, pipeline, retrieval, settings, share, uploads, video,
 };
 use axum::{
     Extension, Json, Router,
@@ -76,6 +76,15 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         ));
     let root = app.config.web.clone();
     let web = std::sync::Arc::new(web_files(&root));
+    let serve_web = move |request: Request| {
+        // Debug builds pick up a fresh `pnpm build` without a restart.
+        let web = if cfg!(debug_assertions) {
+            std::sync::Arc::new(web_files(&root))
+        } else {
+            web.clone()
+        };
+        static_file(web, request)
+    };
     Router::new()
         .route("/healthz", get(|| async { Json(json!({"ok":true})) }))
         .route("/api/login", post(auth::login))
@@ -84,15 +93,9 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         .merge(transfers)
         .merge(mcp)
         .nest("/api/native", native)
-        .fallback(move |request: Request| {
-            // Debug builds pick up a fresh `pnpm build` without a restart.
-            let web = if cfg!(debug_assertions) {
-                std::sync::Arc::new(web_files(&root))
-            } else {
-                web.clone()
-            };
-            static_file(web, request)
-        })
+        // Share links: public, and nothing under `/s` reaches the owner's routes.
+        .nest("/s", share::public(get(serve_web.clone())))
+        .fallback(serve_web)
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
         .with_state(app)
@@ -118,6 +121,11 @@ fn library_routes(prefix: &str) -> Router<App> {
         .route(&at("/entries/{id}/pause"), post(pause))
         .route(&at("/entries/{id}/reanalyze"), post(reanalyze))
         .route(&at("/entries/{id}/summarize"), post(summarize))
+        .route(
+            &at("/entries/{id}/share"),
+            get(share::show).put(share::save).delete(share::stop),
+        )
+        .route(&at("/shares"), get(share::list))
         .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))
         .route(
             &at("/entries/{id}/speaker-splits"),
@@ -357,7 +365,8 @@ async fn audio_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
-    media_file(&app, &a, &id, r, false).await
+    a.read()?;
+    serve_media(&app, &id, r, false).await
 }
 async fn video_file(
     State(app): State<App>,
@@ -365,12 +374,13 @@ async fn video_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
-    media_file(&app, &a, &id, r, true).await
+    a.read()?;
+    serve_media(&app, &id, r, true).await
 }
 /// A recording's playback file, with range requests for seeking. A video plays from the upload
-/// itself (`original`) or from its conversion (`ready`); see `video.rs`.
-async fn media_file(app: &App, a: &Access, id: &str, r: Request, video: bool) -> Result<Response> {
-    a.read()?;
+/// itself (`original`) or from its conversion (`ready`); see `video.rs`. Callers check access:
+/// the owner's routes by scope, a share link by its token (`share.rs`).
+pub(crate) async fn serve_media(app: &App, id: &str, r: Request, video: bool) -> Result<Response> {
     let row = sqlx::query!(
         "SELECT audio_path,video_status,(SELECT upload_id FROM entry_sources WHERE entry_id=entries.id) AS \"upload?\" FROM entries WHERE id=? AND trashed_at IS NULL",
         id
@@ -675,10 +685,17 @@ async fn trash_entry(
     // and pauses at the worker's next checkpoint, which stops at a trashed entry.
     let trashed_at = now();
     let updated_at = now();
-    let updated=sqlx::query!("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=?", trashed_at, updated_at, id).execute(&app.db).await?;
+    let mut tx = app.db.begin().await?;
+    let updated=sqlx::query!("UPDATE entries SET trashed_at=COALESCE(trashed_at,?),pause_requested=CASE WHEN stage='queued' THEN 1 ELSE pause_requested END,stage=CASE WHEN stage='queued' THEN 'paused' ELSE stage END,updated_at=? WHERE id=?", trashed_at, updated_at, id).execute(&mut *tx).await?;
     if updated.rows_affected() == 0 {
         return Err(Error::not_found());
     }
+    // Trash stops sharing, so neither Restore nor importing the same files again (which takes a
+    // recording out of Trash) brings a link back.
+    sqlx::query!("DELETE FROM shares WHERE entry_id=?", id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     // A video conversion stops at once and waits in the queue until a restore.
     app.stop_conversion(&id);
     Ok(StatusCode::NO_CONTENT)
@@ -901,13 +918,15 @@ fn web_files(root: &std::path::Path) -> WebFiles {
 }
 async fn static_file(web: std::sync::Arc<WebFiles>, request: Request) -> Response {
     let path = request.uri().path().trim_start_matches('/');
-    if path.starts_with("api/") {
+    // Share links answer under /s themselves (`share::public`); only a bare "/s/" gets here.
+    if path.starts_with("api/") || path.starts_with("s/") {
         return Error::not_found().into_response();
     }
     let resource = web
         .get(if path.is_empty() { "index.html" } else { path })
         .or_else(|| {
-            if !path.contains('.') {
+            // A missing asset is a 404, never the page with a year-long cache.
+            if !path.contains('.') && !path.starts_with("assets/") {
                 web.get("index.html")
             } else {
                 None
@@ -955,7 +974,9 @@ mod tests {
             ("/library/entry", 200, "page", "text/html", "no-cache"),
             ("/assets/a.js", 200, "code", "text/javascript", immutable),
             ("/assets/missing.js", 404, "", "", ""),
+            ("/assets/missing", 404, "", "", ""),
             ("/api/missing", 404, "", "application/json", ""),
+            ("/s/", 404, "", "application/json", ""),
         ] {
             let request = super::Request::get(path)
                 .body(axum::body::Body::empty())

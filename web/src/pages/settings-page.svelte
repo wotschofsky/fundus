@@ -5,6 +5,7 @@
   import ConnectAppsSection from '../components/connect-apps-section.svelte';
   import ErrorNotice from '../components/error-notice.svelte';
   import ProcessingSection from '../components/processing-section.svelte';
+  import SharedLinksSection from '../components/shared-links-section.svelte';
 
   let { me }: { me: Me } = $props();
   const qc = useQueryClient();
@@ -28,4 +29,5 @@
 </header>
 <ErrorNotice error={signOut.error} />
 <ConnectAppsSection {me} />
+<SharedLinksSection />
 <ProcessingSection />

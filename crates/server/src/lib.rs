@@ -18,4 +18,6 @@ pub mod oauth;
 
 pub mod settings;
 
+pub mod share;
+
 pub mod video;

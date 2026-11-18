@@ -142,20 +142,55 @@ export type Authorization = {
   redirect_uri: string;
 };
 
+/** A share link: whoever holds `url` can open the recording until `expires_at` (null: never). */
+export type Share = { url: string; created_at: string; expires_at: string | null };
+export type SharedLink = Share & { entry_id: string; title: string };
+export type Expiry = '1d' | '7d' | '30d' | 'never';
+/** A recording's link while it works, or null; the Share button and dialog read the same. */
+export const shareQuery = (id: string) =>
+  queryOptions({
+    queryKey: ['share', id],
+    queryFn: () => api<Share | null>(`/v1/entries/${id}/share`),
+  });
+/** A recording as its share link shows it: no labels, sources or speaker evidence. */
+export type SharedEntry = Pick<
+  Entry,
+  | 'title'
+  | 'recorded_at'
+  | 'duration_ms'
+  | 'stage'
+  | 'summary'
+  | 'summary_manual'
+  | 'audio_available'
+> & {
+  video: Omit<NonNullable<Entry['video']>, 'failure'> | null;
+  speakers: Pick<Speaker, 'label' | 'name'>[];
+};
+
+/** A share link's own data (`/s/{token}/…`), read with the link alone, never a session. */
+export async function shared<T>(token: string, path: string, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(`/s/${encodeURIComponent(token)}/${path}`, { credentials: 'omit', signal });
+  if (!r.ok) throw new ApiError(r.status, `Request failed (${r.status})`);
+  return await r.json();
+}
+
 /** Every transcript page, in order. The server caps page size; follow next_cursor until done. */
-export async function transcript(id: string, signal?: AbortSignal): Promise<Segment[]> {
+export async function allSegments(
+  page: (cursor: number) => Promise<Page<'segments', Segment>>,
+): Promise<Segment[]> {
   const rows: Segment[] = [];
   let cursor: number | null = 0;
   while (cursor !== null) {
-    const page: Page<'segments', Segment> = await api(
-      `/v1/entries/${id}/transcript?limit=2000&cursor=${cursor}`,
-      { signal },
-    );
-    rows.push(...page.segments);
-    cursor = page.next_cursor !== null && page.next_cursor > cursor ? page.next_cursor : null;
+    const next: Page<'segments', Segment> = await page(cursor);
+    rows.push(...next.segments);
+    cursor = next.next_cursor !== null && next.next_cursor > cursor ? next.next_cursor : null;
   }
   return rows;
 }
+export const transcript = (id: string, signal?: AbortSignal) =>
+  allSegments((cursor) =>
+    api(`/v1/entries/${id}/transcript?limit=2000&cursor=${cursor}`, { signal }),
+  );
 
 export const isProcessing = (e: Pick<Entry, 'stage'>) =>
   !['complete', 'failed', 'paused'].includes(e.stage);

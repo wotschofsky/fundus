@@ -1,18 +1,28 @@
 <script lang="ts">
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
-  import { Download, FileAudio, Pencil, RefreshCw, Sparkles, Trash2 } from '@lucide/svelte';
+  import {
+    Download,
+    FileAudio,
+    Globe,
+    Link,
+    Pencil,
+    RefreshCw,
+    Sparkles,
+    Trash2,
+  } from '@lucide/svelte';
   import {
     ApiError,
     api,
     isProcessing,
     peopleQuery,
     send,
+    shareQuery,
     transcript,
     type Entry,
     type Person,
     type Segment,
   } from '../api';
-  import { dateTime, duration, speakerNames, transcriptMarkdown } from '../format';
+  import { dateTime, downloadTranscript, duration, speakerNames } from '../format';
   import { Playback } from '../playback.svelte';
   import { router } from '../router.svelte';
   import BackLink from '../components/back-link.svelte';
@@ -20,7 +30,9 @@
   import EditDetailsForm, { type EntryEdit } from '../components/edit-details-form.svelte';
   import ErrorNotice from '../components/error-notice.svelte';
   import LoadingState from '../components/loading-state.svelte';
+  import Player from '../components/player.svelte';
   import ProcessingNotice from '../components/processing-notice.svelte';
+  import ShareDialog from '../components/share-dialog.svelte';
   import SpeakerControl from '../components/speaker-control.svelte';
   import SpeakerCorrection, {
     type CorrectionReceipt,
@@ -31,15 +43,13 @@
   const qc = useQueryClient();
   let confirming: ConfirmRequest | null = $state(null);
   let editing = $state(false);
+  let sharing = $state(false);
   let actionError: unknown = $state(null);
   let busy = $state(false);
   let correcting: Segment | null = $state(null);
   let correctionNotice = $state<'saved' | 'undone' | null>(null);
   let correctionReceipt: CorrectionReceipt | null = $state(null);
   let notThisSpeaker = $state(false);
-  /** The video failed to load (a format this browser lacks, or a dropped connection), so the
-   * page plays the audio if it has it. */
-  let unplayable = $state(false);
 
   const entry = createQuery(() => ({
     queryKey: ['entry', id],
@@ -63,6 +73,7 @@
     staleTime: 0,
   }));
   const people = createQuery(() => peopleQuery);
+  const share = createQuery(() => shareQuery(id));
   const rows = $derived(segments.data ?? []);
   const firstAppearances = $derived.by(() => {
     const first = new Map<string, Segment>();
@@ -128,23 +139,16 @@
       ),
     );
   };
-  function download(e: Entry) {
-    const blob = new Blob([transcriptMarkdown(e, rows, names)], { type: 'text/markdown' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `${e.title.replaceAll('/', '-')}.md`;
-    link.click();
-    // Revoked a moment later: some browsers cancel a download whose URL is gone before it starts.
-    setTimeout(() => URL.revokeObjectURL(link.href));
-  }
   const moveToTrash = () =>
     (confirming = {
       title: 'Move this recording to Trash?',
-      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps. You can restore it from Trash.`,
+      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps, and its share link stops working. You can restore it from Trash.`,
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
         await refresh();
+        qc.removeQueries({ queryKey: ['share', id] });
+        await qc.invalidateQueries({ queryKey: ['shares'] });
         router.navigate('/');
       },
     });
@@ -208,11 +212,29 @@
         Edit details
       </button>
       {#if rows.length > 0}
-        <button onclick={() => download(e)} title="Save the transcript as a Markdown file">
+        <button
+          onclick={() => downloadTranscript(e, rows, names)}
+          title="Save the transcript as a Markdown file"
+        >
           <Download size={14} aria-hidden="true" />
           Download
         </button>
       {/if}
+      <button
+        aria-haspopup="dialog"
+        title={share.data
+          ? 'Anyone with the link can open this recording'
+          : 'Only you can open this recording'}
+        onclick={() => (sharing = true)}
+      >
+        {#if share.data}
+          <Globe size={14} aria-hidden="true" />
+          Shared
+        {:else}
+          <Link size={14} aria-hidden="true" />
+          Share
+        {/if}
+      </button>
       {#if !processing && rows.length > 0}
         <button
           disabled={busy}
@@ -240,6 +262,7 @@
   {#if editing}
     <EditDetailsForm entry={e} onsave={save} oncancel={() => (editing = false)} />
   {/if}
+  <ShareDialog {id} title={e.title} bind:open={sharing} />
   <ErrorNotice error={actionError} />
   {#if correctionNotice || undo.data?.available}
     <div class="notice correction-notice" role="status">
@@ -266,60 +289,14 @@
       {#each e.warnings as w (w)}<p>{w}</p>{/each}
     </details>
   {/if}
-  {#if e.audio_available || e.video}
-    {@const picture = e.video?.state === 'ready' && !unplayable ? e.video : null}
-    {@const playable = picture || e.audio_available}
-    <div class="player">
-      <!-- The transcript comes from the audio either way; a video recording also shows its picture,
-           sized before it loads and never taller than 40% of the screen. -->
-      {#if playable}
-        <svelte:element
-          this={picture ? 'video' : 'audio'}
-          bind:this={playback.media}
-          ontimeupdate={playback.timeUpdate}
-          onplay={playback.played}
-          onpause={playback.paused}
-          onloadedmetadata={playback.loaded}
-          onerror={() => picture && (unplayable = true)}
-          controls
-          playsinline
-          preload="metadata"
-          style:aspect-ratio={picture && `${picture.width} / ${picture.height}`}
-          style:width={picture && `min(100%, calc(40vh * ${picture.width} / ${picture.height}))`}
-          src={`/api/v1/entries/${id}/${picture ? 'video' : 'audio'}`}
-        ></svelte:element>
-      {/if}
-      <div class="player-row">
-        <p class={['player-note', e.video?.state === 'failed' && 'error']} role="status">
-          {#if e.video?.state === 'preparing'}
-            Preparing the video.{e.audio_available ? ' You can listen in the meantime.' : ''}
-          {:else if e.video?.state === 'failed'}
-            The video could not be prepared: {e.video.failure}
-            <button
-              class="text-button"
-              aria-label="Retry video"
-              disabled={busy}
-              onclick={post('video/retry')}>Retry</button
-            >
-          {:else if unplayable}
-            The video could not be played{e.audio_available ? ', so you hear the audio.' : '.'}
-            <!-- A dropped connection fails the same way as a format this browser lacks. -->
-            <button
-              class="text-button"
-              aria-label="Try again to play the video"
-              onclick={() => (unplayable = false)}>Try again</button
-            >
-          {/if}
-        </p>
-        {#if playable}
-          <label>
-            <input type="checkbox" bind:checked={playback.follow} />
-            Follow transcript
-          </label>
-        {/if}
-      </div>
-    </div>
-  {/if}
+  <Player
+    {playback}
+    base={`/api/v1/entries/${id}`}
+    audio={e.audio_available}
+    video={e.video}
+    {busy}
+    onretry={post('video/retry')}
+  />
   <div class="detail-grid">
     <div class="detail-main">
       {#if e.summary}
