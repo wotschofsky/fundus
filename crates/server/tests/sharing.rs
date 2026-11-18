@@ -226,8 +226,8 @@ async fn a_link_opens_one_recording_without_signing_in() {
         .await
         .unwrap();
 
-    // Nothing else under /s answers, and every miss carries the same headers. (The page itself
-    // loads for any token; it says so when its link does not work.)
+    // Nothing else under a link answers, and every miss there carries the same headers. (The page
+    // itself loads for any token; it says so when its link does not work.)
     for path in [
         format!("{link}/"),
         format!("{link}/typo"),
@@ -423,11 +423,11 @@ async fn expired_and_trashed_links_stay_closed() {
     );
 }
 
-/// Whether a link still works is decided when a change to it is written. An expiry change that
-/// had to wait for the database while the link expired makes a new link, as sharing an expired
-/// recording again does, rather than bringing the old one back.
+/// Whether a link still works is decided when sharing is written. Sharing that had to wait for
+/// the database while the link expired makes a new link, as sharing an expired recording again
+/// does, rather than bringing the old one back.
 #[tokio::test]
-async fn an_expiry_change_that_waits_past_expiry_makes_a_new_link() {
+async fn sharing_that_waits_past_expiry_makes_a_new_link() {
     let v = vault(true).await;
     let link = share(&v, "1d").await;
     let mut writer = v.app.db.acquire().await.unwrap();

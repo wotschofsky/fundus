@@ -200,7 +200,9 @@ Archive, trash, people, token, connection, and search rows are plain rows separa
 
 ### Dialog
 
-Confirmations use the native modal `<dialog>`: title, one explanatory sentence, Cancel, and an explicit action verb. Escape and Cancel close it unless the action is running; failures show inside the dialog.
+Confirmations use the native modal `<dialog>`: title, one explanatory sentence, Cancel, and an explicit action verb. Escape and Cancel close it unless the action is running; failures show inside the dialog. While any dialog is open, the page behind it does not scroll.
+
+Sharing uses the same dialog surface, laid out like a document's share dialog: General access is a quiet menu (no border, a chevron) choosing Only you or Anyone with the link, beside a round outlined icon that shows which (a lock or a globe); the link's expiry is a second quiet menu; Copy link and Done close the dialog. Going back to Only you asks inline, with Keep sharing and Stop sharing, rather than in a second dialog.
 
 ### Timestamp-linked transcript
 

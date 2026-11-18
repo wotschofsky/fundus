@@ -43,7 +43,7 @@ function page(share) {
   return { offer, asked, stop };
 }
 
-test('a link stops being offered when it expires, without asking the server', async () => {
+test('a link stops being offered when it expires, without waiting for the server', async () => {
   const share = expiring(200);
   const { offer, stop } = page(share);
   try {

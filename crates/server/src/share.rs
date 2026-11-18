@@ -122,8 +122,8 @@ pub struct Change {
 
 /// Sets how long the named link keeps working, from now, keeping its URL. It never makes a link,
 /// and touches no other: a link that expired, or that Stop sharing removed (perhaps from another
-/// tab while this was on its way), stays gone, as does any link that replaced it, and the owner
-/// hears 404.
+/// tab while this was on its way), stays gone, a link that replaced it stays as it is, and the
+/// owner hears 404.
 pub async fn extend(
     State(app): State<App>,
     Extension(a): Extension<Access>,
@@ -193,7 +193,8 @@ pub async fn list(State(app): State<App>, Extension(a): Extension<Access>) -> Re
 }
 
 /// The recipient's routes, nested at `/s` with `page` (the web app) at `/s/{token}`. Anything
-/// else under `/s` is a 404 here rather than the web app, with the same headers.
+/// else under a link is a 404 here rather than the web app, with the same headers; a bare `/s/`
+/// is the app's own 404.
 pub fn public(page: MethodRouter<App>) -> Router<App> {
     Router::new()
         .route("/{token}", page)

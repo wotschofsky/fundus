@@ -148,7 +148,7 @@
   const moveToTrash = () =>
     (confirming = {
       title: 'Move this recording to Trash?',
-      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps, and its share link stops working. You can restore it from Trash.`,
+      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps${offered.link ? ', and its share link stops working' : ''}. You can restore it from Trash.`,
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
