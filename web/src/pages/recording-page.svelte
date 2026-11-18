@@ -38,7 +38,7 @@
     type CorrectionReceipt,
   } from '../components/speaker-correction.svelte';
   import TranscriptTurn from '../components/transcript-turn.svelte';
-  import { LinkClock } from '../share-link.svelte';
+  import { LinkClock } from '../link-clock.svelte';
 
   let { id }: { id: string } = $props();
   const qc = useQueryClient();

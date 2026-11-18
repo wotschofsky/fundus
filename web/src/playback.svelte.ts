@@ -56,12 +56,14 @@ export class Playback {
       this.#revealed = start;
       const index = activeIndex(list, start);
       this.active = index;
-      // A frame later, so the router restoring a Back position does not scroll it away again.
+      // A frame later, so the router restoring a Back position does not scroll it away again;
+      // not while a dialog is open, as the page behind it stays put.
       const id = list[index]?.id;
       if (id)
-        requestAnimationFrame(() =>
-          document.getElementById(id)?.scrollIntoView({ block: 'center' }),
-        );
+        requestAnimationFrame(() => {
+          if (!document.querySelector('dialog:modal'))
+            document.getElementById(id)?.scrollIntoView({ block: 'center' });
+        });
     });
 
     $effect(() => {

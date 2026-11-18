@@ -173,3 +173,32 @@ test('following the transcript leaves the page still while a dialog is open', ()
     delete globalThis.matchMedia;
   }
 });
+
+test('revealing a linked passage leaves the page still while a dialog is open', () => {
+  const rows = [
+    { id: 'a', start_ms: 0, end_ms: 1000 },
+    { id: 'b', start_ms: 1000, end_ms: 2000 },
+  ];
+  const scrolled = [];
+  globalThis.document = {
+    getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
+    querySelector: (selector) => (selector === 'dialog:modal' ? {} : null),
+  };
+  globalThis.requestAnimationFrame = (frame) => frame();
+  let playback;
+  const stop = effect_root(() => {
+    playback = new Playback(
+      () => rows,
+      () => 1500,
+    );
+  });
+  try {
+    flush();
+    assert.equal(playback.active, 1);
+    assert.deepEqual(scrolled, []);
+  } finally {
+    stop();
+    delete globalThis.document;
+    delete globalThis.requestAnimationFrame;
+  }
+});

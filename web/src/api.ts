@@ -179,23 +179,19 @@ export async function shared<T>(token: string, path: string, signal?: AbortSigna
   return await r.json();
 }
 
-/** Every transcript page, in order. The server caps page size; follow next_cursor until done. */
-export async function allSegments(
-  page: (cursor: number) => Promise<Page<'segments', Segment>>,
-): Promise<Segment[]> {
+export async function transcript(id: string, signal?: AbortSignal): Promise<Segment[]> {
   const rows: Segment[] = [];
   let cursor: number | null = 0;
   while (cursor !== null) {
-    const next: Page<'segments', Segment> = await page(cursor);
-    rows.push(...next.segments);
-    cursor = next.next_cursor !== null && next.next_cursor > cursor ? next.next_cursor : null;
+    const page: Page<'segments', Segment> = await api(
+      `/v1/entries/${id}/transcript?limit=2000&cursor=${cursor}`,
+      { signal },
+    );
+    rows.push(...page.segments);
+    cursor = page.next_cursor !== null && page.next_cursor > cursor ? page.next_cursor : null;
   }
   return rows;
 }
-export const transcript = (id: string, signal?: AbortSignal) =>
-  allSegments((cursor) =>
-    api(`/v1/entries/${id}/transcript?limit=2000&cursor=${cursor}`, { signal }),
-  );
 
 export const isProcessing = (e: Pick<Entry, 'stage'>) =>
   !['complete', 'failed', 'paused'].includes(e.stage);

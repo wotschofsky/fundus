@@ -37,7 +37,7 @@
    * player's own requests failing does not. */
   const closed = $derived(gone(entry.error) || gone(segments.error));
   const rows = $derived(segments.data ?? []);
-  // The transcript is read after the recording, so the names read with its turns win.
+  // A name read with the transcript's turns wins over the recording's, as it matches them.
   const names = $derived(speakerNames(entry.data?.speakers, rows));
   // A link can point at a moment, like a search result's: `?t=` in seconds.
   const startMs = Number(new URLSearchParams(location.search).get('t')) * 1000 || 0;

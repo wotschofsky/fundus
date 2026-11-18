@@ -6,7 +6,7 @@
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
   import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
   import { date } from '../format';
-  import { LinkClock } from '../share-link.svelte';
+  import { LinkClock } from '../link-clock.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {

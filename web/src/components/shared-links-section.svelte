@@ -2,7 +2,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api, gone, linkToken, send, type SharedLink } from '../api';
-  import { LinkClock } from '../share-link.svelte';
+  import { LinkClock } from '../link-clock.svelte';
   import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
   import ErrorNotice from './error-notice.svelte';

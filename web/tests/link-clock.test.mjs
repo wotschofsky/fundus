@@ -18,7 +18,7 @@ registerHooks({
 });
 // The page listens for being shown again; Node has no document.
 globalThis.document ??= new EventTarget();
-const { LinkClock } = await import('../src/share-link.svelte.ts');
+const { LinkClock } = await import('../src/link-clock.svelte.ts');
 
 const expiring = (ms) => {
   const expires_at = ms === null ? null : new Date(Date.now() + ms).toISOString();
@@ -106,7 +106,8 @@ test('a link checked a moment before it expires still lapses when it does', asyn
       () => {},
     );
   });
-  // The page reads its clock a millisecond before the deadline, then again at it.
+  // A page that read its clock twice per tick would read a millisecond before the deadline, then
+  // at it, and arm no timer; one reading per tick arms one.
   const now = Date.now;
   let reads = 0;
   Date.now = () => (++reads === 1 ? deadline - 1 : reads === 2 ? deadline : now());
