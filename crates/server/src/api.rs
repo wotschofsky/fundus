@@ -123,7 +123,10 @@ fn library_routes(prefix: &str) -> Router<App> {
         .route(&at("/entries/{id}/summarize"), post(summarize))
         .route(
             &at("/entries/{id}/share"),
-            get(share::show).put(share::save).delete(share::stop),
+            get(share::show)
+                .put(share::save)
+                .patch(share::extend)
+                .delete(share::stop),
         )
         .route(&at("/shares"), get(share::list))
         .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))

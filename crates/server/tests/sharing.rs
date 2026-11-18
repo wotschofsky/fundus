@@ -429,7 +429,7 @@ async fn an_expiry_change_that_waits_past_expiry_makes_a_new_link() {
     let v = vault(true).await;
     let link = share(&v, "1d").await;
     let mut writer = v.app.db.acquire().await.unwrap();
-    let soon = (chrono::Utc::now() + chrono::Duration::milliseconds(500))
+    let soon = (chrono::Utc::now() + chrono::Duration::milliseconds(2000))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     sqlx::query("UPDATE shares SET expires_at=?")
         .bind(soon)
@@ -455,7 +455,7 @@ async fn an_expiry_change_that_waits_past_expiry_makes_a_new_link() {
         Some(json!({"expires":"7d"})),
     );
     let meanwhile = async {
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
         let status = anonymous(&v, &format!("{link}/entry")).await;
         sqlx::query("COMMIT").execute(&mut *writer).await.unwrap();
         status
@@ -469,4 +469,101 @@ async fn an_expiry_change_that_waits_past_expiry_makes_a_new_link() {
         anonymous(&v, &format!("{link}/entry")).await,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Changing a link's expiry only ever changes a link that works. A change that lands after Stop
+/// sharing (sent from another tab, say) or after the link expired finds nothing to change, so it
+/// cannot share the recording again.
+#[tokio::test]
+async fn an_expiry_change_never_makes_a_link() {
+    let v = setup().await;
+    let link = share(&v, "1d").await;
+    let patch = async |bearer: &str, expires: &str| {
+        call(
+            &v,
+            "PATCH",
+            "/api/v1/entries/cedar/share",
+            Some(bearer),
+            &[],
+            Some(json!({"expires": expires})),
+        )
+        .await
+    };
+    // A working link keeps its URL.
+    let (status, _, body) = patch(&v.owner, "never").await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let saved = json(&body);
+    assert_eq!(saved["url"], format!("{ORIGIN}{link}"));
+    assert_eq!(saved["expires_at"], Value::Null);
+    assert_eq!(patch(&v.reader, "7d").await.0, StatusCode::FORBIDDEN);
+    assert_eq!(patch(&v.owner, "forever").await.0, StatusCode::BAD_REQUEST);
+
+    // After Stop sharing.
+    let (status, _, _) = call(
+        &v,
+        "DELETE",
+        "/api/v1/entries/cedar/share",
+        Some(&v.owner),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(patch(&v.owner, "7d").await.0, StatusCode::NOT_FOUND);
+    let (_, _, body) = call(
+        &v,
+        "GET",
+        "/api/v1/entries/cedar/share",
+        Some(&v.owner),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(json(&body), Value::Null);
+    assert_eq!(
+        anonymous(&v, &format!("{link}/entry")).await,
+        StatusCode::NOT_FOUND
+    );
+
+    // After the link expired.
+    let fresh = share(&v, "1d").await;
+    sqlx::query("UPDATE shares SET expires_at='2026-01-01T00:00:00.000Z'")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    assert_eq!(patch(&v.owner, "7d").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        anonymous(&v, &format!("{fresh}/entry")).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A link reads the whole transcript at once, so a correction the owner makes meanwhile cannot
+/// land between two pages of it and mix speaker assignments from before and after.
+#[tokio::test]
+async fn a_link_reads_the_whole_transcript_at_once() {
+    let v = setup().await;
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i+1 FROM n WHERE i<2101)
+         INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text)
+         SELECT 'cedar:'||i,'cedar',i,'B',8000+i*10,8005+i*10,'More.' FROM n",
+    )
+    .execute(&v.app.db)
+    .await
+    .unwrap();
+    let link = share(&v, "1d").await;
+    let (status, _, body) = call(
+        &v,
+        "GET",
+        &format!("{link}/transcript?limit=2000&cursor=0"),
+        None,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page = json(&body);
+    assert_eq!(page["segments"].as_array().unwrap().len(), 2102);
+    assert_eq!(page["next_cursor"], Value::Null);
+    assert_eq!(page["truncated"], false);
 }

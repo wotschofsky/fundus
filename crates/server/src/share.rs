@@ -16,7 +16,7 @@ use crate::{
 };
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{Path, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::Response,
@@ -59,8 +59,23 @@ pub struct Expiry {
     expires: String,
 }
 
-/// Shares the recording, or sets how long its link works from now. A link that still works keeps
-/// its URL; an expired one gets a new URL, so whoever had the old one does not get it back.
+/// When a link set to `expires` from now stops working (None: never).
+fn expiry(expires: &str) -> Result<Option<String>> {
+    let days = match expires {
+        "1d" => Some(1),
+        "7d" => Some(7),
+        "30d" => Some(30),
+        "never" => None,
+        _ => return Err(Error::bad("Choose 1d, 7d, 30d or never")),
+    };
+    Ok(days.map(|days| {
+        (chrono::Utc::now() + chrono::Duration::days(days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }))
+}
+
+/// Shares the recording, with its link working for `expires` from now. A link that still works
+/// keeps its URL; an expired one gets a new URL, so whoever had the old one does not get it back.
 pub async fn save(
     State(app): State<App>,
     Extension(a): Extension<Access>,
@@ -68,18 +83,8 @@ pub async fn save(
     Json(p): Json<Expiry>,
 ) -> Result<Json<Value>> {
     a.admin()?;
-    let days = match p.expires.as_str() {
-        "1d" => Some(1),
-        "7d" => Some(7),
-        "30d" => Some(30),
-        "never" => None,
-        _ => return Err(Error::bad("Choose 1d, 7d, 30d or never")),
-    };
+    let expires_at = expiry(&p.expires)?;
     let now = now();
-    let expires_at = days.map(|days| {
-        (chrono::Utc::now() + chrono::Duration::days(days))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    });
     let token = auth::secret();
     // One statement that also returns what it wrote, so Stop sharing and Trash (which deletes the
     // link) cannot land between a read and this write and be undone by it, nor change the answer.
@@ -104,6 +109,32 @@ pub async fn save(
             "Restore the recording from Trash before sharing it",
         ));
     };
+    Ok(Json(
+        json!({"url":url(&app,&r.token),"created_at":r.created_at,"expires_at":r.expires_at}),
+    ))
+}
+
+/// Sets how long a link that works keeps working, from now, keeping its URL. It never makes a
+/// link: one that expired, or that Stop sharing removed (perhaps from another tab while this was
+/// on its way), stays gone, and the owner hears 404.
+pub async fn extend(
+    State(app): State<App>,
+    Extension(a): Extension<Access>,
+    Path(id): Path<String>,
+    Json(p): Json<Expiry>,
+) -> Result<Json<Value>> {
+    a.admin()?;
+    let expires_at = expiry(&p.expires)?;
+    // Trash deletes the link, so a row here is a recording outside Trash.
+    let r = sqlx::query!(
+        "UPDATE shares SET expires_at=?2 WHERE entry_id=?1 AND (expires_at IS NULL OR expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         RETURNING token AS \"token!\",created_at AS \"created_at!\",expires_at",
+        id,
+        expires_at
+    )
+    .fetch_optional(&app.db)
+    .await?
+    .ok_or_else(Error::not_found)?;
     Ok(Json(
         json!({"url":url(&app,&r.token),"created_at":r.created_at,"expires_at":r.expires_at}),
     ))
@@ -197,26 +228,18 @@ async fn entry(State(app): State<App>, Path(token): Path<String>) -> Result<Json
     })))
 }
 
-#[derive(Deserialize)]
-struct Page {
-    cursor: Option<u32>,
-    limit: Option<u32>,
-}
-
-async fn transcript(
-    State(app): State<App>,
-    Path(token): Path<String>,
-    Query(p): Query<Page>,
-) -> Result<Json<Value>> {
+/// The whole transcript in one read, so a correction the owner makes meanwhile cannot fall
+/// between two pages of it (paging parameters are ignored).
+async fn transcript(State(app): State<App>, Path(token): Path<String>) -> Result<Json<Value>> {
     let entry_id = shared(&app, &token).await?;
     let read = retrieval::Read {
         entry_id,
         from_ms: None,
         to_ms: None,
-        cursor: p.cursor,
-        limit: p.limit,
+        cursor: None,
+        limit: Some(u32::MAX),
     };
-    let page = retrieval::transcript(&app, read, 2000).await?;
+    let page = retrieval::transcript(&app, read, u32::MAX).await?;
     // Positions stand in for segment ids, which contain the recording's id.
     let segments: Vec<Value> = page["segments"]
         .as_array()
