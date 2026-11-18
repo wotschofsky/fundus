@@ -177,7 +177,8 @@ private struct RecorderPromptView: View {
                 .disabled(app.uploadServer.isEmpty || partly)
                 .help(!partly ? "Import into \(app.uploadVaultName)"
                       : "Some or all of this is already in \(app.uploadVaultName), or on its way there. "
-                        + (session.recordings.count > 1 ? "Split off what is new, or use the Import screen to import it anyway." : "Use the Import screen to import it anyway."))
+                        + (session.recordings.count > 1 && !app.sessions.boundaryLocks(session, server: app.uploadServer, isQueued: app.isQueued).split
+                           ? "Split it, or use the Import screen to import it anyway." : "Use the Import screen to import it anyway."))
         }
     }
 
