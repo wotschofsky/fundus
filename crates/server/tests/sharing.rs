@@ -116,6 +116,10 @@ async fn share(v: &Vault, expires: &str) -> String {
     let url = json(&body)["url"].as_str().unwrap().to_string();
     url.strip_prefix(ORIGIN).unwrap().to_string()
 }
+/// The token in a link's path, which the owner names when changing or stopping that link.
+fn token(link: &str) -> &str {
+    link.strip_prefix("/s/").unwrap()
+}
 /// The status of an anonymous GET.
 async fn anonymous(v: &Vault, path: &str) -> StatusCode {
     call(v, "GET", path, None, &[], None).await.0
@@ -271,6 +275,7 @@ async fn only_the_owner_manages_links() {
     assert_eq!(json(&body)["shares"][0]["title"], "Cedar launch");
 
     // A read token reads recordings, but neither sees nor changes links.
+    let stop = format!("/api/v1/entries/cedar/share?token={}", token(&link));
     for (method, path, body) in [
         ("GET", "/api/v1/entries/cedar/share", None),
         (
@@ -278,7 +283,12 @@ async fn only_the_owner_manages_links() {
             "/api/v1/entries/cedar/share",
             Some(json!({"expires":"1d"})),
         ),
-        ("DELETE", "/api/v1/entries/cedar/share", None),
+        (
+            "PATCH",
+            "/api/v1/entries/cedar/share",
+            Some(json!({"expires":"1d","token":token(&link)})),
+        ),
+        ("DELETE", stop.as_str(), None),
         ("GET", "/api/v1/shares", None),
     ] {
         let (status, _, _) = call(&v, method, path, Some(&v.reader), &[], body).await;
@@ -306,15 +316,7 @@ async fn only_the_owner_manages_links() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Stop sharing: the link stops at once, and sharing again makes a new one.
-    let (status, _, _) = call(
-        &v,
-        "DELETE",
-        "/api/v1/entries/cedar/share",
-        Some(&v.owner),
-        &[],
-        None,
-    )
-    .await;
+    let (status, _, _) = call(&v, "DELETE", &stop, Some(&v.owner), &[], None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
         anonymous(&v, &format!("{link}/entry")).await,
@@ -478,38 +480,41 @@ async fn an_expiry_change_that_waits_past_expiry_makes_a_new_link() {
 async fn an_expiry_change_never_makes_a_link() {
     let v = setup().await;
     let link = share(&v, "1d").await;
-    let patch = async |bearer: &str, expires: &str| {
+    let patch = async |bearer: &str, link: &str, expires: &str| {
         call(
             &v,
             "PATCH",
             "/api/v1/entries/cedar/share",
             Some(bearer),
             &[],
-            Some(json!({"expires": expires})),
+            Some(json!({"expires": expires, "token": token(link)})),
         )
         .await
     };
     // A working link keeps its URL.
-    let (status, _, body) = patch(&v.owner, "never").await;
+    let (status, _, body) = patch(&v.owner, &link, "never").await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let saved = json(&body);
     assert_eq!(saved["url"], format!("{ORIGIN}{link}"));
     assert_eq!(saved["expires_at"], Value::Null);
-    assert_eq!(patch(&v.reader, "7d").await.0, StatusCode::FORBIDDEN);
-    assert_eq!(patch(&v.owner, "forever").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(patch(&v.reader, &link, "7d").await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        patch(&v.owner, &link, "forever").await.0,
+        StatusCode::BAD_REQUEST
+    );
 
     // After Stop sharing.
     let (status, _, _) = call(
         &v,
         "DELETE",
-        "/api/v1/entries/cedar/share",
+        &format!("/api/v1/entries/cedar/share?token={}", token(&link)),
         Some(&v.owner),
         &[],
         None,
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(patch(&v.owner, "7d").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(patch(&v.owner, &link, "7d").await.0, StatusCode::NOT_FOUND);
     let (_, _, body) = call(
         &v,
         "GET",
@@ -531,7 +536,7 @@ async fn an_expiry_change_never_makes_a_link() {
         .execute(&v.app.db)
         .await
         .unwrap();
-    assert_eq!(patch(&v.owner, "7d").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(patch(&v.owner, &fresh, "7d").await.0, StatusCode::NOT_FOUND);
     assert_eq!(
         anonymous(&v, &format!("{fresh}/entry")).await,
         StatusCode::NOT_FOUND
@@ -566,4 +571,54 @@ async fn a_link_reads_the_whole_transcript_at_once() {
     assert_eq!(page["segments"].as_array().unwrap().len(), 2102);
     assert_eq!(page["next_cursor"], Value::Null);
     assert_eq!(page["truncated"], false);
+}
+
+/// Changing or stopping a link names it, so a dialog still showing a link that was stopped and
+/// replaced meanwhile (from another tab, say) leaves the replacement as it is.
+#[tokio::test]
+async fn a_change_or_stop_for_an_old_link_leaves_its_replacement_alone() {
+    let v = setup().await;
+    let old = share(&v, "1d").await;
+    let request = async |method: &str, path: &str, body: Option<Value>| {
+        call(&v, method, path, Some(&v.owner), &[], body).await.0
+    };
+    let stop = |link: &str| format!("/api/v1/entries/cedar/share?token={}", token(link));
+    assert_eq!(
+        request("DELETE", &stop(&old), None).await,
+        StatusCode::NO_CONTENT
+    );
+    let new = share(&v, "7d").await;
+    assert_ne!(new, old);
+
+    let change = Some(json!({"expires":"never","token":token(&old)}));
+    assert_eq!(
+        request("PATCH", "/api/v1/entries/cedar/share", change).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request("DELETE", &stop(&old), None).await,
+        StatusCode::NOT_FOUND
+    );
+    let (_, _, body) = call(
+        &v,
+        "GET",
+        "/api/v1/entries/cedar/share",
+        Some(&v.owner),
+        &[],
+        None,
+    )
+    .await;
+    let current = json(&body);
+    assert_eq!(current["url"], format!("{ORIGIN}{new}"));
+    assert_ne!(current["expires_at"], Value::Null);
+    assert_eq!(anonymous(&v, &format!("{new}/entry")).await, StatusCode::OK);
+
+    assert_eq!(
+        request("DELETE", &stop(&new), None).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        anonymous(&v, &format!("{new}/entry")).await,
+        StatusCode::NOT_FOUND
+    );
 }

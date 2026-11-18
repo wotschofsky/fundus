@@ -16,7 +16,7 @@ use crate::{
 };
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::Response,
@@ -114,22 +114,30 @@ pub async fn save(
     ))
 }
 
-/// Sets how long a link that works keeps working, from now, keeping its URL. It never makes a
-/// link: one that expired, or that Stop sharing removed (perhaps from another tab while this was
-/// on its way), stays gone, and the owner hears 404.
+#[derive(Deserialize)]
+pub struct Change {
+    expires: String,
+    token: String,
+}
+
+/// Sets how long the named link keeps working, from now, keeping its URL. It never makes a link,
+/// and touches no other: a link that expired, or that Stop sharing removed (perhaps from another
+/// tab while this was on its way), stays gone, as does any link that replaced it, and the owner
+/// hears 404.
 pub async fn extend(
     State(app): State<App>,
     Extension(a): Extension<Access>,
     Path(id): Path<String>,
-    Json(p): Json<Expiry>,
+    Json(p): Json<Change>,
 ) -> Result<Json<Value>> {
     a.admin()?;
     let expires_at = expiry(&p.expires)?;
     // Trash deletes the link, so a row here is a recording outside Trash.
     let r = sqlx::query!(
-        "UPDATE shares SET expires_at=?2 WHERE entry_id=?1 AND (expires_at IS NULL OR expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        "UPDATE shares SET expires_at=?3 WHERE entry_id=?1 AND token=?2 AND (expires_at IS NULL OR expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now'))
          RETURNING token AS \"token!\",created_at AS \"created_at!\",expires_at",
         id,
+        p.token,
         expires_at
     )
     .fetch_optional(&app.db)
@@ -140,16 +148,31 @@ pub async fn extend(
     ))
 }
 
-/// Stop sharing: the link stops working at its next request.
+#[derive(Deserialize)]
+pub struct Named {
+    token: String,
+}
+
+/// Stop sharing the named link: it stops working at its next request. A link that replaced it
+/// meanwhile stays; the owner hears 404, as for a link already gone.
 pub async fn stop(
     State(app): State<App>,
     Extension(a): Extension<Access>,
     Path(id): Path<String>,
+    Query(p): Query<Named>,
 ) -> Result<StatusCode> {
     a.admin()?;
-    sqlx::query!("DELETE FROM shares WHERE entry_id=?", id)
-        .execute(&app.db)
-        .await?;
+    let stopped = sqlx::query!(
+        "DELETE FROM shares WHERE entry_id=? AND token=?",
+        id,
+        p.token
+    )
+    .execute(&app.db)
+    .await?
+    .rows_affected();
+    if stopped == 0 {
+        return Err(Error::not_found());
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
