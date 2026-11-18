@@ -1,7 +1,8 @@
 //! Share links: one recording, read-only, for whoever holds its link (`/s/{token}`).
 //!
 //! The owner's routes sit in the library (`api::library_routes`) behind owner access. The
-//! recipient's routes are public, nested at `/s`, and look the token up on every request, seeks
+//! recipient's routes are public, nested at `/s`. The page itself is the web app; everything it
+//! reads (the recording, transcript, audio and video) looks the token up on every request, seeks
 //! included: a link stops working at the next request once it expires, the owner stops sharing,
 //! or the recording goes to Trash (which deletes the link). A recipient gets what the share page
 //! shows (player, summary, transcript), never the recording's id, labels, sources or speaker
@@ -82,11 +83,13 @@ pub async fn save(
     let token = auth::secret();
     // One statement that also returns what it wrote, so Stop sharing and Trash (which deletes the
     // link) cannot land between a read and this write and be undone by it, nor change the answer.
+    // It reads the clock itself, once it may write: a link that expired while this waited for
+    // another writer gets a new URL too.
     let saved = sqlx::query!(
         "INSERT INTO shares(entry_id,token,created_at,expires_at) SELECT id,?2,?3,?4 FROM entries WHERE id=?1 AND trashed_at IS NULL
          ON CONFLICT(entry_id) DO UPDATE SET expires_at=excluded.expires_at,
-           token=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>?3 THEN shares.token ELSE excluded.token END,
-           created_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>?3 THEN shares.created_at ELSE excluded.created_at END
+           token=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN shares.token ELSE excluded.token END,
+           created_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN shares.created_at ELSE excluded.created_at END
          RETURNING token AS \"token!\",created_at AS \"created_at!\",expires_at",
         id,
         token,

@@ -22,7 +22,7 @@ Clients copy, prepare lossless FLAC where appropriate, verify, and transfer dura
 
 The Rust server owns storage, audio assembly, transcription, enrichment, search, and recurring voice recognition. Recording context describes the audio to the transcription model and gives background for summaries; it is never evidence for a speaker identity. Provider credentials and model selection stay on the server: AssemblyAI transcribes each recording as one job (a configured key is required before startup), OpenAI writes titles, summaries and name evidence and the embeddings for semantic search.
 
-The server serves HTTP behind separately managed HTTPS and browser authentication. Native API routes require owner OAuth even when browser requests are trusted from the proxy. No historical migration or built-in chat in v1. No personal device information in artifacts or fixtures. Hardware compatibility is not claimed as tested without physical validation.
+The server serves HTTP behind separately managed HTTPS and browser authentication, except share links: `/s/` (with the app's `/assets/`) opens one recording, read-only, without signing in. Native API routes require owner OAuth even when browser requests are trusted from the proxy. No historical migration or built-in chat in v1. No personal device information in artifacts or fixtures. Hardware compatibility is not claimed as tested without physical validation.
 
 ## Product Principles
 - Preserve the original Mac recorder workflow; keep expensive processing and archive storage remote.
