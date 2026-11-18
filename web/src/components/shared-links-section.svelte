@@ -2,6 +2,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api, gone, linkToken, send, type SharedLink } from '../api';
+  import { LinkClock } from '../share-link.svelte';
   import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
   import ErrorNotice from './error-notice.svelte';
@@ -12,6 +13,14 @@
     queryKey: ['shares'],
     queryFn: () => api<{ shares: SharedLink[] }>('/v1/shares'),
   }));
+  const clock = new LinkClock(
+    () => shares.data?.shares.map((link) => link.expires_at) ?? [],
+    () => shares.refetch(),
+  );
+  /** The links that work by this page's clock: one drops out of the list as it expires. */
+  const working = $derived(
+    shares.data?.shares.filter((link) => clock.works(link.expires_at)) ?? [],
+  );
   const stop = (link: SharedLink) =>
     (confirming = {
       title: `Stop sharing “${link.title}”?`,
@@ -38,9 +47,9 @@
       from its page.
     </p>
     <ErrorNotice error={shares.error} />
-    {#if shares.data?.shares.length}
+    {#if working.length}
       <div class="rows">
-        {#each shares.data.shares as link (link.entry_id)}
+        {#each working as link (link.entry_id)}
           <div class="connection">
             <div>
               <a href={`/entries/${encodeURIComponent(link.entry_id)}`}

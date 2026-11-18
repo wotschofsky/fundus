@@ -6,7 +6,7 @@
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
   import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
   import { date } from '../format';
-  import { ShareLink } from '../share-link.svelte';
+  import { LinkClock } from '../share-link.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {
@@ -28,12 +28,12 @@
   ];
 
   const share = createQuery(() => shareQuery(id));
-  const offered = new ShareLink(
-    () => share.data,
+  const clock = new LinkClock(
+    () => [share.data?.expires_at],
     () => share.refetch(),
   );
   /** The saved link while it works by this page's clock: never offered once it has expired. */
-  const link = $derived(offered.link);
+  const link = $derived(clock.offered(share.data));
   const saved = async (value: Share | null) => {
     // A read still under way would land after this and bring back what was just changed.
     await qc.cancelQueries({ queryKey: ['share', id] });
@@ -90,7 +90,7 @@
       extend.reset();
       stop.reset();
       // What the page has may be out of date: by its clock now, and from the server again.
-      offered.check();
+      clock.check();
       share.refetch();
       dialog.showModal();
       // Done, the safe default, rather than the access menu the dialog would otherwise focus.
@@ -112,7 +112,7 @@
     if (value === 'private' && link) stopping = link.url;
   }
   function copy() {
-    offered.check();
+    clock.check();
     if (!link) return;
     // No clipboard API outside secure origins (plain HTTP on a LAN address): show the link.
     (navigator.clipboard?.writeText(link.url) ?? Promise.reject()).then(
@@ -207,6 +207,11 @@
         readonly
         value={link.url}
         onfocus={(event) => event.currentTarget.select()}
+        oncopy={(event) => {
+          // Copied by hand: only while the link still works.
+          clock.check();
+          if (!link) event.preventDefault();
+        }}
         {@attach (input) => input.focus()}
       />
     </label>

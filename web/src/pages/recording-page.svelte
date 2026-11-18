@@ -38,7 +38,7 @@
     type CorrectionReceipt,
   } from '../components/speaker-correction.svelte';
   import TranscriptTurn from '../components/transcript-turn.svelte';
-  import { ShareLink } from '../share-link.svelte';
+  import { LinkClock } from '../share-link.svelte';
 
   let { id }: { id: string } = $props();
   const qc = useQueryClient();
@@ -75,11 +75,12 @@
   }));
   const people = createQuery(() => peopleQuery);
   const share = createQuery(() => shareQuery(id));
-  // Shared only while the link works by this page's clock, so an expired one is never offered.
-  const offered = new ShareLink(
-    () => share.data,
+  const clock = new LinkClock(
+    () => [share.data?.expires_at],
     () => share.refetch(),
   );
+  // Shared only while the link works by this page's clock, so an expired one is never offered.
+  const offered = $derived(clock.offered(share.data));
   const rows = $derived(segments.data ?? []);
   const firstAppearances = $derived.by(() => {
     const first = new Map<string, Segment>();
@@ -148,7 +149,7 @@
   const moveToTrash = () =>
     (confirming = {
       title: 'Move this recording to Trash?',
-      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps${offered.link ? ', and its share link stops working' : ''}. You can restore it from Trash.`,
+      text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps${offered ? ', and its share link stops working' : ''}. You can restore it from Trash.`,
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
@@ -228,12 +229,12 @@
       {/if}
       <button
         aria-haspopup="dialog"
-        title={offered.link
+        title={offered
           ? 'Anyone with the link can open this recording'
           : 'Only you can open this recording'}
         onclick={() => (sharing = true)}
       >
-        {#if offered.link}
+        {#if offered}
           <Globe size={14} aria-hidden="true" />
           Shared
         {:else}

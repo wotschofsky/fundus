@@ -18,7 +18,7 @@ registerHooks({
 });
 // The page listens for being shown again; Node has no document.
 globalThis.document ??= new EventTarget();
-const { ShareLink } = await import('../src/share-link.svelte.ts');
+const { LinkClock } = await import('../src/share-link.svelte.ts');
 
 const expiring = (ms) => {
   const expires_at = ms === null ? null : new Date(Date.now() + ms).toISOString();
@@ -28,28 +28,28 @@ const expiring = (ms) => {
     expires_at,
   };
 };
-/** What a page offers for `share`, as the recording page and the share dialog build it, and
- * how often it asked the server again. */
-function page(share) {
-  let offer;
+/** The clock of a page showing `links`, as the recording page, the share dialog and Settings
+ * build it, and how often it asked the server again. */
+function page(...links) {
+  let clock;
   const asked = { count: 0 };
   const stop = effect_root(() => {
-    offer = new ShareLink(
-      () => share,
+    clock = new LinkClock(
+      () => links.map((link) => link.expires_at),
       () => asked.count++,
     );
   });
   flush();
-  return { offer, asked, stop };
+  return { clock, asked, stop };
 }
 
 test('a link stops being offered when it expires, without waiting for the server', async () => {
   const share = expiring(200);
-  const { offer, stop } = page(share);
+  const { clock, stop } = page(share);
   try {
-    assert.equal(offer.link, share);
+    assert.equal(clock.offered(share), share);
     await delay(300);
-    assert.equal(offer.link, null);
+    assert.equal(clock.offered(share), null);
   } finally {
     stop();
   }
@@ -57,14 +57,14 @@ test('a link stops being offered when it expires, without waiting for the server
 
 test('a page whose timer runs late checks the clock before it offers the link', () => {
   const share = expiring(60_000);
-  const { offer, stop } = page(share);
+  const { clock, stop } = page(share);
   const now = Date.now;
   try {
-    assert.equal(offer.link, share);
+    assert.equal(clock.offered(share), share);
     // A minute on, before the timer has run, as in a page that was hidden meanwhile.
     Date.now = () => now() + 61_000;
-    offer.check();
-    assert.equal(offer.link, null);
+    clock.check();
+    assert.equal(clock.offered(share), null);
   } finally {
     Date.now = now;
     stop();
@@ -73,12 +73,12 @@ test('a page whose timer runs late checks the clock before it offers the link', 
 
 test('a page checks the clock when it is shown again', () => {
   const share = expiring(60_000);
-  const { offer, stop } = page(share);
+  const { clock, stop } = page(share);
   const now = Date.now;
   try {
     Date.now = () => now() + 61_000;
     document.dispatchEvent(new Event('visibilitychange'));
-    assert.equal(offer.link, null);
+    assert.equal(clock.offered(share), null);
   } finally {
     Date.now = now;
     stop();
@@ -87,10 +87,10 @@ test('a page checks the clock when it is shown again', () => {
 
 test('a link that never expires stays offered', () => {
   const share = expiring(null);
-  const { offer, stop } = page(share);
+  const { clock, stop } = page(share);
   try {
-    offer.check();
-    assert.equal(offer.link, share);
+    clock.check();
+    assert.equal(clock.offered(share), share);
   } finally {
     stop();
   }
@@ -99,10 +99,10 @@ test('a link that never expires stays offered', () => {
 test('a link checked a moment before it expires still lapses when it does', async () => {
   const share = expiring(50);
   const deadline = Date.parse(share.expires_at);
-  let offer;
+  let clock;
   const stop = effect_root(() => {
-    offer = new ShareLink(
-      () => share,
+    clock = new LinkClock(
+      () => [share.expires_at],
       () => {},
     );
   });
@@ -117,7 +117,7 @@ test('a link checked a moment before it expires still lapses when it does', asyn
   }
   try {
     await delay(150);
-    assert.equal(offer.link, null);
+    assert.equal(clock.offered(share), null);
   } finally {
     stop();
   }
@@ -125,12 +125,33 @@ test('a link checked a moment before it expires still lapses when it does', asyn
 
 test('a page asks the server again when its link lapses, once', async () => {
   const share = expiring(100);
-  const { offer, asked, stop } = page(share);
+  const { clock, asked, stop } = page(share);
   try {
     assert.equal(asked.count, 0);
     await delay(200);
-    assert.equal(offer.link, null);
+    assert.equal(clock.offered(share), null);
     assert.equal(asked.count, 1);
+    document.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(asked.count, 1);
+  } finally {
+    stop();
+  }
+});
+
+test('a list of links drops each one as it expires and asks again each time', async () => {
+  const first = expiring(100);
+  const second = expiring(250);
+  const lasting = expiring(null);
+  const { clock, asked, stop } = page(first, second, lasting);
+  try {
+    await delay(170);
+    assert.equal(clock.offered(first), null);
+    assert.equal(clock.offered(second), second);
+    assert.equal(asked.count, 1);
+    await delay(150);
+    assert.equal(clock.offered(second), null);
+    assert.equal(clock.offered(lasting), lasting);
+    assert.equal(asked.count, 2);
   } finally {
     stop();
   }
