@@ -74,7 +74,7 @@ struct ImportView: View {
         ToolbarItemGroup {
             Button("Rescan", systemImage: "arrow.clockwise") {
                 app.sources.refresh()
-                if let folder = app.sources.folder { app.sources.chooseFolder(folder) }
+                app.sources.rescanFolder()
             }
             .help("Look for recordings again")
             Button("Choose Source Folder…", systemImage: "folder") { app.chooseSourceFolder() }
