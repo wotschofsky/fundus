@@ -38,6 +38,7 @@
     type CorrectionReceipt,
   } from '../components/speaker-correction.svelte';
   import TranscriptTurn from '../components/transcript-turn.svelte';
+  import { ShareLink } from '../share-link.svelte';
 
   let { id }: { id: string } = $props();
   const qc = useQueryClient();
@@ -74,6 +75,11 @@
   }));
   const people = createQuery(() => peopleQuery);
   const share = createQuery(() => shareQuery(id));
+  // Shared only while the link works by this page's clock, so an expired one is never offered.
+  const offered = new ShareLink(
+    () => share.data,
+    () => share.refetch(),
+  );
   const rows = $derived(segments.data ?? []);
   const firstAppearances = $derived.by(() => {
     const first = new Map<string, Segment>();
@@ -222,12 +228,12 @@
       {/if}
       <button
         aria-haspopup="dialog"
-        title={share.data
+        title={offered.link
           ? 'Anyone with the link can open this recording'
           : 'Only you can open this recording'}
         onclick={() => (sharing = true)}
       >
-        {#if share.data}
+        {#if offered.link}
           <Globe size={14} aria-hidden="true" />
           Shared
         {:else}

@@ -1,7 +1,7 @@
 <!-- Every recording shared by link, so a link that never expires is not forgotten. -->
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { api, send, type SharedLink } from '../api';
+  import { api, gone, linkToken, send, type SharedLink } from '../api';
   import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
   import ErrorNotice from './error-notice.svelte';
@@ -19,7 +19,11 @@
       action: 'Stop sharing',
       danger: true,
       run: async () => {
-        await api(`/v1/entries/${link.entry_id}/share`, send('DELETE'));
+        const named = `token=${encodeURIComponent(linkToken(link))}`;
+        // Already gone (stopped, or replaced from another tab): the list shows what is left.
+        await api(`/v1/entries/${link.entry_id}/share?${named}`, send('DELETE')).catch((error) => {
+          if (!gone(error)) throw error;
+        });
         qc.removeQueries({ queryKey: ['share', link.entry_id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });
       },

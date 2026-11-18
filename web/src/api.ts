@@ -152,6 +152,11 @@ export const shareQuery = (id: string) =>
     queryKey: ['share', id],
     queryFn: () => api<Share | null>(`/v1/entries/${id}/share`),
   });
+/** The token at the end of a link's URL, which names the link when it is changed or stopped. */
+export const linkToken = (share: Pick<Share, 'url'>) =>
+  share.url.slice(share.url.lastIndexOf('/') + 1);
+/** The answer for a link that is no longer there: stopped, expired or replaced meanwhile. */
+export const gone = (error: unknown) => error instanceof ApiError && error.status === 404;
 /** A recording as its share link shows it: no labels, sources or speaker evidence. */
 export type SharedEntry = Pick<
   Entry,

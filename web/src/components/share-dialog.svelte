@@ -4,8 +4,9 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
-  import { api, send, shareQuery, type Expiry, type Share } from '../api';
+  import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
   import { date } from '../format';
+  import { ShareLink } from '../share-link.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {
@@ -16,8 +17,8 @@
   const qc = useQueryClient();
   let dialog: HTMLDialogElement;
   let done: HTMLButtonElement;
-  /** "Only you" was chosen while shared: the dialog asks before the link stops working. */
-  let stopping = $state(false);
+  /** "Only you" was chosen while shared: the URL of the link the dialog asks about stopping. */
+  let stopping = $state<string | null>(null);
   let copied = $state<'idle' | 'copied' | 'failed'>('idle');
   const expiries: [Expiry, string][] = [
     ['1d', 'Expires in 1 day'],
@@ -27,7 +28,12 @@
   ];
 
   const share = createQuery(() => shareQuery(id));
-  const link = $derived(share.data ?? null);
+  const offered = new ShareLink(
+    () => share.data,
+    () => share.refetch(),
+  );
+  /** The saved link while it works by this page's clock: never offered once it has expired. */
+  const link = $derived(offered.link);
   const saved = async (value: Share | null) => {
     // A read still under way would land after this and bring back what was just changed.
     await qc.cancelQueries({ queryKey: ['share', id] });
@@ -39,26 +45,53 @@
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
     onSuccess: saved,
   }));
+  /** The named link is no longer there (stopped, expired or replaced elsewhere): ask again. */
+  const reread = (error: Error) => {
+    if (!gone(error)) return;
+    qc.invalidateQueries({ queryKey: ['shares'] });
+    return qc.invalidateQueries({ queryKey: ['share', id] });
+  };
+  /** Changes only the link shown, so it never shares again or touches a link that replaced it. */
+  const extend = createMutation(() => ({
+    mutationFn: ({ link, expires }: { link: Share; expires: Expiry }) =>
+      api<Share>(`/v1/entries/${id}/share`, send('PATCH', { expires, token: linkToken(link) })),
+    onSuccess: saved,
+    onError: reread,
+  }));
   const stop = createMutation(() => ({
-    mutationFn: () => api(`/v1/entries/${id}/share`, send('DELETE')),
+    mutationFn: (url: string) =>
+      api(
+        `/v1/entries/${id}/share?token=${encodeURIComponent(linkToken({ url }))}`,
+        send('DELETE'),
+      ),
     onSuccess: () => {
-      stopping = false;
+      stopping = null;
       return saved(null);
     },
+    onError: (error) => {
+      stopping = null;
+      return reread(error);
+    },
   }));
+  /** Stop sharing is being confirmed, for the link still offered. */
+  const confirming = $derived(!!link && stopping === link.url);
   /** What the access menu shows: the saved state, or a choice still being saved or confirmed. */
-  const access = $derived(stopping ? 'private' : link || save.isPending ? 'link' : 'private');
+  const access = $derived(confirming ? 'private' : link || save.isPending ? 'link' : 'private');
   /** A change is being saved: the dialog stays open until it lands, so reopening it cannot drop
    * one change's result while another (such as Stop sharing) goes ahead. */
-  const saving = $derived(save.isPending || stop.isPending);
+  const saving = $derived(save.isPending || extend.isPending || stop.isPending);
   const busy = $derived(share.isPending || saving);
 
   $effect(() => {
     if (open && !dialog.open) {
-      stopping = false;
+      stopping = null;
       copied = 'idle';
       save.reset();
+      extend.reset();
       stop.reset();
+      // What the page has may be out of date: by its clock now, and from the server again.
+      offered.check();
+      share.refetch();
       dialog.showModal();
       // Done, the safe default, rather than the access menu the dialog would otherwise focus.
       done.focus();
@@ -72,10 +105,14 @@
   });
 
   function choose(value: string) {
-    if (value === 'link' && !link) save.mutate('30d');
-    if (value === 'private' && link) stopping = true;
+    if (value === 'link' && !link) {
+      stopping = null;
+      save.mutate('30d');
+    }
+    if (value === 'private' && link) stopping = link.url;
   }
   function copy() {
+    offered.check();
     if (!link) return;
     // No clipboard API outside secure origins (plain HTTP on a LAN address): show the link.
     (navigator.clipboard?.writeText(link.url) ?? Promise.reject()).then(
@@ -105,7 +142,7 @@
         <select
           aria-label="Who can open this recording"
           value={access}
-          disabled={busy || stopping}
+          disabled={busy || confirming}
           onchange={(event) => choose(event.currentTarget.value)}
         >
           <option value="private">Only you</option>
@@ -114,7 +151,7 @@
         <ChevronDown size={14} aria-hidden="true" />
       </span>
       <p>
-        {#if stopping}
+        {#if confirming}
           Anyone who has the link loses access right away. Sharing again makes a new link.
         {:else if access === 'link'}
           Anyone with the link can play it and read its summary and transcript, without signing in.
@@ -122,25 +159,26 @@
           Only you can open it, signed in to your library.
         {/if}
       </p>
-      {#if stopping}
+      {#if confirming && stopping}
+        {@const url = stopping}
         <div class="stop-actions">
-          <button type="button" disabled={stop.isPending} onclick={() => (stopping = false)}>
+          <button type="button" disabled={stop.isPending} onclick={() => (stopping = null)}>
             Keep sharing
           </button>
           <button
             type="button"
             class="danger"
             disabled={stop.isPending}
-            onclick={() => stop.mutate()}
+            onclick={() => stop.mutate(url)}
           >
             {stop.isPending ? 'Stopping…' : 'Stop sharing'}
           </button>
         </div>
       {/if}
     </div>
-    {#if link && !stopping}
+    {#if link && !confirming}
       <!-- Rebuilt when the expiry is saved or fails to save, so it always shows the saved one. -->
-      {#key `${link.expires_at} ${save.status}`}
+      {#key `${link.expires_at} ${extend.status}`}
         <span class="quiet-select expiry">
           <select
             aria-label="When the link stops working"
@@ -148,7 +186,7 @@
             disabled={busy}
             onchange={(event) => {
               const value = event.currentTarget.value;
-              if (value !== 'current') save.mutate(value as Expiry);
+              if (value !== 'current') extend.mutate({ link, expires: value as Expiry });
             }}
           >
             <!-- The saved date; choosing it again changes nothing. -->
@@ -173,9 +211,15 @@
       />
     </label>
   {/if}
-  <ErrorNotice error={share.error ?? save.error ?? stop.error} />
+  <!-- A link gone meanwhile is not an error: the dialog asks again and shows what is there. -->
+  <ErrorNotice
+    error={share.error ??
+      save.error ??
+      (gone(extend.error) ? null : extend.error) ??
+      (gone(stop.error) ? null : stop.error)}
+  />
   <div class="dialog-actions share-actions">
-    <button type="button" disabled={!link || stopping} onclick={copy}>
+    <button type="button" disabled={!link || confirming} onclick={copy}>
       {#if copied === 'copied'}
         <Check size={15} aria-hidden="true" />
         Link copied

@@ -2,7 +2,7 @@
 <script lang="ts">
   import { createQuery, keepPreviousData } from '@tanstack/svelte-query';
   import { Download } from '@lucide/svelte';
-  import { ApiError, allSegments, isProcessing, shared, type SharedEntry } from '../api';
+  import { allSegments, gone, isProcessing, shared, type SharedEntry } from '../api';
   import { dateTime, downloadTranscript, duration, speakerNames } from '../format';
   import { Playback } from '../playback.svelte';
   import EmptyState from '../components/empty-state.svelte';
@@ -12,8 +12,6 @@
   import TranscriptTurn from '../components/transcript-turn.svelte';
 
   let { token }: { token: string } = $props();
-  /** The link stopped working: it expired, sharing stopped, or the recording went to Trash. */
-  const gone = (error: unknown) => error instanceof ApiError && error.status === 404;
   const entry = createQuery(() => ({
     queryKey: ['shared', token],
     queryFn: ({ signal }) => shared<SharedEntry>(token, 'entry', signal),
@@ -25,7 +23,8 @@
         : false,
   }));
   const stage = $derived(entry.data?.stage);
-  // Segments only change when processing moves on, so the stage is part of the key.
+  // Processing moving on changes the segments, so the stage is part of the key. The owner's
+  // speaker corrections change them too; they show when the page asks again, on coming back to it.
   const segments = createQuery(() => ({
     queryKey: ['shared-transcript', token, stage],
     queryFn: ({ signal }) =>
@@ -33,7 +32,8 @@
     enabled: !!stage && !gone(entry.error),
     placeholderData: keepPreviousData,
   }));
-  /** Whichever request finds out first closes the page, which takes the player away. */
+  /** Either read finding the link gone closes the page, which takes the player away. The
+   * player's own requests failing does not. */
   const closed = $derived(gone(entry.error) || gone(segments.error));
   const rows = $derived(segments.data ?? []);
   const names = $derived(speakerNames(entry.data?.speakers));
