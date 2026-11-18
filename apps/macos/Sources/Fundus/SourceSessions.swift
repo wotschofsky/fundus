@@ -56,7 +56,7 @@ final class SourceSessions {
         }
     }
 
-    /// New in the mic window: not in this vault yet, even in part.
+    /// New in the mic window: not in this vault or on its way there, even in part.
     func proposed(server: String) -> [RecordingSession] {
         sessions.filter { record(for: $0, server: server) == nil && !partlyImported($0, server: server) }
     }
@@ -68,7 +68,7 @@ final class SourceSessions {
     }
     /// The session Merge with Previous joins this one to.
     func previous(of session: RecordingSession) -> RecordingSession? {
-        session.follows.flatMap { follows in sessions.first { $0.recordings.last == follows } }
+        session.follows.flatMap { follows in sessions.first { $0.members.last?.recording == follows } }
     }
     func mergeWithPrevious(_ session: RecordingSession) {
         guard let previous = previous(of: session), let last = previous.recordings.last, let first = session.recordings.first else { return }
@@ -108,12 +108,15 @@ final class SourceSessions {
         return (all.map(\.url), plans, Dictionary(all.map { ($0.url.path, Self.sourceID($0)) }, uniquingKeysWith: { first, _ in first }))
     }
     /// What may not be regrouped, on the Import screen and in the mic window. A merge changes this
-    /// session and the one before it, so neither may be waiting its turn (`isQueued`: it would drop out of
-    /// the queue) or hold audio this vault already has or is getting (it would go up twice). A split
-    /// changes only this session, and can take apart one partly imported under another grouping.
+    /// session and the one before it, so neither may be waiting its turn (`isQueued`: its import would be
+    /// lost, or recorded under a grouping that is gone) or hold audio this vault already has or is
+    /// getting (it would go up twice). A split changes only this session, and can take apart one
+    /// partly imported under another grouping. A trim belongs to its grouping, so neither touches a
+    /// trimmed session: the audio cut off would be imported after all. Resetting the trim unlocks it.
     func boundaryLocks(_ session: RecordingSession, server: String, isQueued: (RecordingSession) -> Bool) -> (merge: Bool, split: Bool) {
-        func held(_ session: RecordingSession) -> Bool { isQueued(session) || partlyImported(session, server: server) }
-        let split = isQueued(session) || record(for: session, server: server).map { !["failed", "paused"].contains($0.stage) } == true
+        func held(_ session: RecordingSession) -> Bool { isQueued(session) || trim(for: session) != nil || partlyImported(session, server: server) }
+        let split = isQueued(session) || trim(for: session) != nil
+            || record(for: session, server: server).map { !["failed", "paused"].contains($0.stage) } == true
         return (held(session) || previous(of: session).map(held) == true, split)
     }
     func record(for session: RecordingSession, server: String) -> SessionImportRecord? {

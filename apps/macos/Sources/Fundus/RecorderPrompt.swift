@@ -175,8 +175,9 @@ private struct RecorderPromptView: View {
                 .buttonBorderShape(.circle)
                 // A partly imported row goes up again only from the Import screen, as a deliberate choice.
                 .disabled(app.uploadServer.isEmpty || partly)
-                .help(partly ? "Some of this is already in \(app.uploadVaultName) or on its way there. Split it to import the rest, or use the Import screen."
-                      : "Import into \(app.uploadVaultName)")
+                .help(!partly ? "Import into \(app.uploadVaultName)"
+                      : "Some or all of this is already in \(app.uploadVaultName), or on its way there. "
+                        + (session.recordings.count > 1 ? "Split off what is new, or use the Import screen to import it anyway." : "Use the Import screen to import it anyway."))
         }
     }
 

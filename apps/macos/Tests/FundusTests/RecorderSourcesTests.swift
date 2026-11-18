@@ -103,6 +103,22 @@ final class RecorderSourcesTests: XCTestCase {
         XCTAssert(locks() == (true, true), "uploading itself")
     }
 
+    func testRegroupingCannotDropATrim() {
+        let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        sessions.update(files([recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
+                               recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 1800),
+                               recording("TX01_MIC003_20261020_123000_orig.wav", seconds: 300)]), server: "https://vault")
+        let older = sessions.sessions[0], newer = sessions.sessions[1]
+        func locks() -> (merge: Bool, split: Bool) { sessions.boundaryLocks(newer, server: "https://vault", isQueued: { _ in false }) }
+        // A trim belongs to its grouping: regrouped, the audio cut off would be imported after all.
+        sessions.setTrim(start: 60, for: newer)
+        XCTAssert(locks() == (true, true), "trimmed itself")
+        sessions.resetTrim(for: newer)
+        XCTAssert(locks() == (false, false))
+        sessions.setTrim(end: 300, for: older)
+        XCTAssert(locks() == (true, false), "the one before it trimmed")
+    }
+
     /// The session a merge locks must be the one the grouper then joins, however the recordings tie.
     private func assertMergeChecksItsPartner(_ recordings: [SourceRecording], file: StaticString = #filePath, line: UInt = #line) {
         let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)

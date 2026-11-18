@@ -288,8 +288,8 @@ private struct SessionRow: View {
     }
 }
 
-/// A session's right-click menu, here and in the mic window: join it to the recording before it on the
-/// same mic, so they import as one, or split it again.
+/// A session's right-click menu, here and in the mic window: join it to the session before it from the
+/// same transmitter (by name, rendition and format), so they import as one, or split it.
 struct SessionBoundaryMenu: View {
     let session: RecordingSession
     @Environment(AppModel.self) private var app
