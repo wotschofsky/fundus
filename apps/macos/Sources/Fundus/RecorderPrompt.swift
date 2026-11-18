@@ -26,7 +26,8 @@ final class RecorderPrompt {
         // The hidden title bar would otherwise add its height above the header.
         host.safeAreaRegions = []
         panel.contentViewController = host
-        panel.center()
+        // A mic coming back while the window is open leaves it where it was put.
+        if !panel.isVisible { panel.center() }
         panel.orderFrontRegardless()
     }
 }
@@ -81,8 +82,14 @@ private struct RecorderPromptView: View {
             .accessibilityLabel("Close")
         }
         .onChange(of: app.sources.shownFiles) { _, files in app.sessions.update(files, server: app.uploadServer) }
-        // Unplugged: nothing left to show.
-        .onChange(of: app.sources.showsRecorders) { _, shows in if !shows { close() } }
+        // Unplugged: nothing left to show. Taking one mic out of the case can make the others drop
+        // out for a moment too, so they get time to mount again; a scan or a returning mic cancels it.
+        // ponytail: fixed grace; a mic that takes longer to come back reopens the window on arrival.
+        .task(id: app.sources.showsRecorders || app.sources.isScanning) {
+            guard !app.sources.showsRecorders, !app.sources.isScanning else { return }
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled { close() }
+        }
     }
 
     private var header: some View {
