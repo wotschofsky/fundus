@@ -2,7 +2,7 @@
 <script lang="ts">
   import { createQuery, keepPreviousData } from '@tanstack/svelte-query';
   import { Download } from '@lucide/svelte';
-  import { allSegments, gone, isProcessing, shared, type SharedEntry } from '../api';
+  import { gone, isProcessing, shared, type Segment, type SharedEntry } from '../api';
   import { dateTime, downloadTranscript, duration, speakerNames } from '../format';
   import { Playback } from '../playback.svelte';
   import EmptyState from '../components/empty-state.svelte';
@@ -27,8 +27,9 @@
   // speaker corrections change them too; they show when the page asks again, on coming back to it.
   const segments = createQuery(() => ({
     queryKey: ['shared-transcript', token, stage],
-    queryFn: ({ signal }) =>
-      allSegments((cursor) => shared(token, `transcript?limit=2000&cursor=${cursor}`, signal)),
+    // The whole transcript in one read, so no correction falls between parts of it.
+    queryFn: async ({ signal }): Promise<Segment[]> =>
+      (await shared<{ segments: Segment[] }>(token, 'transcript', signal)).segments,
     enabled: !!stage && !gone(entry.error),
     placeholderData: keepPreviousData,
   }));
@@ -36,7 +37,8 @@
    * player's own requests failing does not. */
   const closed = $derived(gone(entry.error) || gone(segments.error));
   const rows = $derived(segments.data ?? []);
-  const names = $derived(speakerNames(entry.data?.speakers));
+  // The transcript is read after the recording, so the names read with its turns win.
+  const names = $derived(speakerNames(entry.data?.speakers, rows));
   // A link can point at a moment, like a search result's: `?t=` in seconds.
   const startMs = Number(new URLSearchParams(location.search).get('t')) * 1000 || 0;
   const playback = new Playback(

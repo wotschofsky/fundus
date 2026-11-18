@@ -17,8 +17,12 @@ export const stageName = (e: Pick<Entry, 'stage' | 'pause_requested'>) =>
 /** Display names follow the speaker list order: "Speaker 1", "Speaker 2", unless identified. */
 export function speakerNames(
   speakers: Pick<Speaker, 'label' | 'name'>[] = [],
+  /** Turns read after `speakers`: the names read with them win, as they match them. */
+  turns: Pick<Segment, 'speaker' | 'speaker_name'>[] = [],
 ): Map<string, string> {
-  return new Map(speakers.map((s, i) => [s.label, s.name ?? `Speaker ${i + 1}`]));
+  const names = new Map(speakers.map((s, i) => [s.label, s.name ?? `Speaker ${i + 1}`]));
+  for (const turn of turns) if (turn.speaker_name) names.set(turn.speaker, turn.speaker_name);
+  return names;
 }
 
 export const duration = (ms: number) => {
