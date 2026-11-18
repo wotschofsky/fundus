@@ -80,32 +80,27 @@ pub async fn save(
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     });
     let token = auth::secret();
-    // One statement, so Stop sharing and Trash (which deletes the link) cannot land between a read
-    // and this write and be undone by it: each runs wholly before or after.
+    // One statement that also returns what it wrote, so Stop sharing and Trash (which deletes the
+    // link) cannot land between a read and this write and be undone by it, nor change the answer.
     let saved = sqlx::query!(
         "INSERT INTO shares(entry_id,token,created_at,expires_at) SELECT id,?2,?3,?4 FROM entries WHERE id=?1 AND trashed_at IS NULL
          ON CONFLICT(entry_id) DO UPDATE SET expires_at=excluded.expires_at,
            token=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>?3 THEN shares.token ELSE excluded.token END,
-           created_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>?3 THEN shares.created_at ELSE excluded.created_at END",
+           created_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>?3 THEN shares.created_at ELSE excluded.created_at END
+         RETURNING token AS \"token!\",created_at AS \"created_at!\",expires_at",
         id,
         token,
         now,
         expires_at
     )
-    .execute(&app.db)
+    .fetch_optional(&app.db)
     .await?;
-    if saved.rows_affected() == 0 {
+    let Some(r) = saved else {
         retrieval::get_including_trash(&app, &id).await?;
         return Err(Error::conflict(
             "Restore the recording from Trash before sharing it",
         ));
-    }
-    let r = sqlx::query!(
-        "SELECT token,created_at,expires_at FROM shares WHERE entry_id=?",
-        id
-    )
-    .fetch_one(&app.db)
-    .await?;
+    };
     Ok(Json(
         json!({"url":url(&app,&r.token),"created_at":r.created_at,"expires_at":r.expires_at}),
     ))

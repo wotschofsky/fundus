@@ -28,7 +28,9 @@
 
   const share = createQuery(() => shareQuery(id));
   const link = $derived(share.data ?? null);
-  const saved = (value: Share | null) => {
+  const saved = async (value: Share | null) => {
+    // A read still under way would land after this and bring back what was just changed.
+    await qc.cancelQueries({ queryKey: ['share', id] });
     qc.setQueryData(['share', id], value);
     return qc.invalidateQueries({ queryKey: ['shares'] });
   };
@@ -46,7 +48,10 @@
   }));
   /** What the access menu shows: the saved state, or a choice still being saved or confirmed. */
   const access = $derived(stopping ? 'private' : link || save.isPending ? 'link' : 'private');
-  const busy = $derived(share.isPending || save.isPending || stop.isPending);
+  /** A change is being saved: the dialog stays open until it lands, so reopening it cannot drop
+   * one change's result while another (such as Stop sharing) goes ahead. */
+  const saving = $derived(save.isPending || stop.isPending);
+  const busy = $derived(share.isPending || saving);
 
   $effect(() => {
     if (open && !dialog.open) {
@@ -86,7 +91,7 @@
   aria-labelledby="share-title"
   oncancel={(event) => {
     event.preventDefault();
-    if (!stop.isPending) open = false;
+    if (!saving) open = false;
   }}
 >
   <h2 id="share-title">Share “{title}”</h2>
@@ -134,8 +139,8 @@
       {/if}
     </div>
     {#if link && !stopping}
-      <!-- Rebuilt per expiry, so it shows the saved date rather than the option just picked. -->
-      {#key link.expires_at}
+      <!-- Rebuilt when the expiry is saved or fails to save, so it always shows the saved one. -->
+      {#key `${link.expires_at} ${save.status}`}
         <span class="quiet-select expiry">
           <select
             aria-label="When the link stops working"
@@ -184,7 +189,7 @@
       bind:this={done}
       type="button"
       class="primary"
-      disabled={stop.isPending}
+      disabled={saving}
       onclick={() => (open = false)}
     >
       Done

@@ -12,25 +12,29 @@
   import TranscriptTurn from '../components/transcript-turn.svelte';
 
   let { token }: { token: string } = $props();
+  /** The link stopped working: it expired, sharing stopped, or the recording went to Trash. */
+  const gone = (error: unknown) => error instanceof ApiError && error.status === 404;
   const entry = createQuery(() => ({
     queryKey: ['shared', token],
     queryFn: ({ signal }) => shared<SharedEntry>(token, 'entry', signal),
-    // Like the owner's page: while the recording, then its video, is being prepared.
-    refetchInterval: ({ state: { data } }) =>
-      data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
+    // Like the owner's page: while the recording, then its video, is being prepared; never
+    // after the link stopped working, though the last answer is still at hand.
+    refetchInterval: ({ state: { data, error } }) =>
+      !gone(error) && data && (isProcessing(data) || data.video?.state === 'preparing')
+        ? 3000
+        : false,
   }));
-  /** The link stopped working (it expired, sharing stopped, or the recording went to Trash);
-   * also when a refetch finds out, which takes the player away. */
-  const closed = $derived(entry.error instanceof ApiError && entry.error.status === 404);
   const stage = $derived(entry.data?.stage);
   // Segments only change when processing moves on, so the stage is part of the key.
   const segments = createQuery(() => ({
     queryKey: ['shared-transcript', token, stage],
     queryFn: ({ signal }) =>
       allSegments((cursor) => shared(token, `transcript?limit=2000&cursor=${cursor}`, signal)),
-    enabled: !!stage && !closed,
+    enabled: !!stage && !gone(entry.error),
     placeholderData: keepPreviousData,
   }));
+  /** Whichever request finds out first closes the page, which takes the player away. */
+  const closed = $derived(gone(entry.error) || gone(segments.error));
   const rows = $derived(segments.data ?? []);
   const names = $derived(speakerNames(entry.data?.speakers));
   // A link can point at a moment, like a search result's: `?t=` in seconds.

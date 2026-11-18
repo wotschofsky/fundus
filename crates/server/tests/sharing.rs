@@ -38,7 +38,11 @@ async fn setup() -> Vault {
     let owner = auth::issue(&app, "Web session", "session").await.unwrap();
     let reader = auth::issue(&app, "test reader", "read").await.unwrap();
     for sql in [
-        "INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,summary,audio_path,created_at,updated_at) VALUES('cedar','cedar','Cedar launch',12000,'UTC','complete','{A} plans the launch with {B}.','playback.m4a','2026-11-18T10:00:00.000Z','2026-11-18T10:00:00.000Z')",
+        // With a converted video.
+        "INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,summary,audio_path,video_status,video_width,video_height,created_at,updated_at) VALUES('cedar','cedar','Cedar launch',12000,'UTC','complete','{A} plans the launch with {B}.','playback.m4a','ready',1280,720,'2026-11-18T10:00:00.000Z','2026-11-18T10:00:00.000Z')",
+        // Another recording, never shared: no link may read it.
+        "INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,created_at,updated_at) VALUES('other','other','Other meeting',1000,'UTC','complete','2026-11-18T10:00:00.000Z','2026-11-18T10:00:00.000Z')",
+        "INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text) VALUES('other:0','other',0,'A',0,1000,'Not for the link.')",
         "INSERT INTO people(id,name) VALUES('morgan','Morgan')",
         "INSERT INTO speakers(entry_id,label,person_id,state,evidence) VALUES('cedar','A','morgan','manual','[{\"source\":\"manual\"}]'),('cedar','B',NULL,'unknown','[]')",
         "INSERT INTO segments(id,entry_id,position,speaker,start_ms,end_ms,text) VALUES('cedar:0','cedar',0,'A',0,5000,'The cedar launch is on Tuesday.'),('cedar:1','cedar',1,'B',5200,8000,'Great, I will tell the team.')",
@@ -49,6 +53,7 @@ async fn setup() -> Vault {
     }
     std::fs::create_dir_all(app.entry_dir(ID)).unwrap();
     std::fs::write(app.entry_dir(ID).join("playback.m4a"), "0123456789").unwrap();
+    std::fs::write(app.entry_dir(ID).join("video.mp4"), "videobytes").unwrap();
     let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     Vault {
         _dir: dir,
@@ -153,6 +158,10 @@ async fn a_link_opens_one_recording_without_signing_in() {
         entry["speakers"],
         json!([{"label":"A","name":"Morgan"},{"label":"B","name":null}])
     );
+    assert_eq!(
+        entry["video"],
+        json!({"state":"ready","width":1280,"height":720})
+    );
 
     // The transcript, with positions for ids; a query cannot pick another recording.
     let (status, headers, body) = call(
@@ -173,8 +182,9 @@ async fn a_link_opens_one_recording_without_signing_in() {
         json!({"id":"0","position":0,"speaker":"A","speaker_name":"Morgan","start_ms":0,"end_ms":5000,"text":"The cedar launch is on Tuesday."})
     );
     assert_eq!(page["segments"].as_array().unwrap().len(), 2);
+    assert!(!String::from_utf8_lossy(&body).contains("Not for the link"));
 
-    // Audio seeks by range, and HEAD answers too; neither is cached.
+    // Audio and video seek by range, and HEAD answers too; none of it is cached.
     let audio = format!("{link}/audio");
     let (status, headers, body) =
         call(&v, "GET", &audio, None, &[("Range", "bytes=2-5")], None).await;
@@ -184,11 +194,28 @@ async fn a_link_opens_one_recording_without_signing_in() {
     let (status, headers, _) = call(&v, "HEAD", &audio, None, &[], None).await;
     assert_eq!(status, StatusCode::OK);
     private(&headers);
-    // No video was uploaded.
+    let video = format!("{link}/video");
+    let (status, headers, body) =
+        call(&v, "GET", &video, None, &[("Range", "bytes=0-4")], None).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"video");
+    assert_eq!(headers["content-type"], "video/mp4");
+    private(&headers);
+    // A failed conversion shows as failed, without its error (FFmpeg's, with server paths).
+    sqlx::query("UPDATE entries SET video_status='failed',video_failure='ffmpeg: /data/uploads/x' WHERE id='cedar'")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    let (_, _, body) = call(&v, "GET", &format!("{link}/entry"), None, &[], None).await;
     assert_eq!(
-        anonymous(&v, &format!("{link}/video")).await,
-        StatusCode::NOT_FOUND
+        json(&body)["video"],
+        json!({"state":"failed","width":1280,"height":720})
     );
+    assert_eq!(anonymous(&v, &video).await, StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE entries SET video_status='ready',video_failure=NULL WHERE id='cedar'")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
 
     // Nothing else under /s answers, and every miss carries the same headers. (The page itself
     // loads for any token; it says so when its link does not work.)
@@ -288,10 +315,18 @@ async fn only_the_owner_manages_links() {
         anonymous(&v, &format!("{link}/entry")).await,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        anonymous(&v, &format!("{link}/audio")).await,
-        StatusCode::NOT_FOUND
-    );
+    // A player still open on it gets nothing more: seeks and HEAD are refused alike.
+    for (method, media, range) in [
+        ("GET", "audio", Some("bytes=2-5")),
+        ("GET", "video", Some("bytes=0-4")),
+        ("HEAD", "audio", None),
+    ] {
+        let headers: Vec<_> = range.map(|r| ("Range", r)).into_iter().collect();
+        let (status, response, _) =
+            call(&v, method, &format!("{link}/{media}"), None, &headers, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {media}");
+        private(&response);
+    }
     let (_, _, body) = call(
         &v,
         "GET",
