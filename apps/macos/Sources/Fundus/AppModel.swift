@@ -230,9 +230,10 @@ final class AppModel {
 
     private func importWaiting() {
         guard !waitingSessions.isEmpty, canImport, pendingSessions.isEmpty else { return }
-        // Imported meanwhile, or the mic was unplugged.
+        // Imported meanwhile, even in part (from elsewhere, while it waited), or the mic was unplugged.
         let next = waitingSessions.filter { waiting in
-            sessions.record(for: waiting, server: uploadServer) == nil && sessions.sessions.contains { $0.id == waiting.id }
+            sessions.record(for: waiting, server: uploadServer) == nil && !sessions.partlyImported(waiting, server: uploadServer)
+                && sessions.sessions.contains { $0.id == waiting.id }
         }
         waitingSessions = []
         if !next.isEmpty { importSessions(next) }

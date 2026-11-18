@@ -66,6 +66,103 @@ final class RecorderSourcesTests: XCTestCase {
         XCTAssertEqual(sessions.proposed(server: "https://other").count, 4, "imports are per vault")
     }
 
+    private func files(_ recordings: [SourceRecording]) -> [RecorderFile] {
+        recordings.map { RecorderFile(url: $0.url, size: $0.fileSize, modified: nil, recorded: $0.start, transmitter: $0.transmitter, recording: $0) }
+    }
+
+    func testSplittingDependsOnlyOnTheSessionItself() {
+        let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        // One file, then a 30-minute rollover pair: two sessions on one mic.
+        sessions.update(files([recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
+                               recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 1800),
+                               recording("TX01_MIC003_20261020_123000_orig.wav", seconds: 300)]), server: "https://vault")
+        let older = sessions.sessions[0], newer = sessions.sessions[1]
+        XCTAssertEqual(newer.recordings.count, 2)
+        var queued: Set<String> = []
+        func locks() -> (merge: Bool, split: Bool) { sessions.boundaryLocks(newer, server: "https://vault", isQueued: { queued.contains($0.id) }) }
+        XCTAssert(locks() == (false, false))
+
+        // The older one waits its turn, uploads, is imported: nothing may merge into it, the newer one still splits.
+        queued = [older.id]
+        XCTAssert(locks() == (true, false), "queued before")
+        queued = []
+        sessions.register([older], server: "https://vault", importID: "import")
+        XCTAssert(locks() == (true, false), "uploading before")
+        sessions.updateReceipt(server: "https://vault", importID: "import",
+                               entries: [.init(id: "entry", sessionIndex: 0, stage: "complete", activeStage: nil, failure: nil, pauseRequested: nil)])
+        XCTAssert(locks() == (true, false), "imported before")
+        sessions.updateReceipt(server: "https://vault", importID: "import",
+                               entries: [.init(id: "entry", sessionIndex: 0, stage: "failed", activeStage: nil, failure: "x", pauseRequested: nil)])
+        XCTAssert(locks() == (false, false), "a failed import regroups")
+
+        // The newer one itself waiting its turn, or on its way: neither.
+        queued = [newer.id]
+        XCTAssert(locks() == (true, true), "queued itself")
+        queued = []
+        sessions.register([newer], server: "https://vault", importID: "newer")
+        XCTAssert(locks() == (true, true), "uploading itself")
+    }
+
+    /// The session a merge locks must be the one the grouper then joins, however the recordings tie.
+    private func assertMergeChecksItsPartner(_ recordings: [SourceRecording], file: StaticString = #filePath, line: UInt = #line) {
+        let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        sessions.update(files(recordings), server: "https://vault")
+        XCTAssertEqual(sessions.sessions.count, 3, file: file, line: line)
+        for session in sessions.sessions {
+            guard let partner = sessions.previous(of: session) else { continue }
+            XCTAssertTrue(sessions.boundaryLocks(session, server: "https://vault", isQueued: { $0.id == partner.id }).merge,
+                          "a merge must not take the queued partner with it", file: file, line: line)
+            let probe = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+            probe.update(files(recordings), server: "https://vault")
+            probe.mergeWithPrevious(session)
+            XCTAssertTrue(probe.sessions.contains { $0.recordings == partner.recordings + session.recordings }, file: file, line: line)
+        }
+        let unmatched = sessions.sessions.filter { sessions.previous(of: $0) == nil }
+        XCTAssertEqual(unmatched.count, 1, "only the first one has nothing before it", file: file, line: line)
+    }
+
+    func testMergeChecksTheSessionItJoinsWhenRecordingsStartInTheSameSecond() {
+        // A mic whose clock was never set can start two recordings in the same second.
+        assertMergeChecksItsPartner([recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
+                                     recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 60),
+                                     recording("TX01_MIC003_20261020_120000_orig.wav", seconds: 60)])
+    }
+
+    func testMergeChecksTheSessionItJoinsWhenTwoDrivesHoldTheSameName() {
+        // Two kits whose first mics are both TX01: same name, same second, different drives.
+        var copy = recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 120)
+        copy.url = URL(fileURLWithPath: "/Volumes/DJI 1/\(copy.filename)")
+        assertMergeChecksItsPartner([recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600), copy,
+                                     recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 60)])
+    }
+
+    func testMergesNoAudioAnImportIntoThisVaultHolds() {
+        let sessions = SourceSessions(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let recordings = [recording("TX01_MIC001_20261020_100000_orig.wav", seconds: 600),
+                          recording("TX01_MIC002_20261020_120000_orig.wav", seconds: 600),
+                          recording("TX01_MIC003_20261020_140000_orig.wav", seconds: 600)]
+        sessions.update(files(recordings), server: "https://vault")
+        let second = sessions.sessions[1], third = sessions.sessions[2]
+        func merge(_ session: RecordingSession, server: String = "https://vault") -> Bool {
+            sessions.boundaryLocks(session, server: server, isQueued: { _ in false }).merge
+        }
+        XCTAssertFalse(merge(third))
+        XCTAssertFalse(sessions.partlyImported(second, server: "https://vault"))
+
+        // The first two went into the vault as one recording, from another Mac.
+        func history(_ stage: String) -> SourceHistoryEntry {
+            SourceHistoryEntry(id: "entry", stage: stage, activeStage: nil, failure: nil, pauseRequested: nil, trimStartFrame: nil, trimEndFrame: nil,
+                               sourceIds: recordings.prefix(2).map(SourceSessions.sourceID))
+        }
+        sessions.syncHistory([history("transcribing")], server: "https://vault")
+        XCTAssertTrue(sessions.partlyImported(second, server: "https://vault"), "on its way counts")
+        XCTAssertTrue(merge(third), "in progress elsewhere")
+        XCTAssertTrue(merge(second))
+        sessions.syncHistory([history("complete")], server: "https://vault")
+        XCTAssertTrue(merge(third), "imported elsewhere")
+        XCTAssertFalse(merge(third, server: "https://other"), "imports are per vault")
+    }
+
     func testEjectsAllRecordersAndPreservesFailuresForRetry() async throws {
         let devices = [first, second]
         var attempts: [URL] = []

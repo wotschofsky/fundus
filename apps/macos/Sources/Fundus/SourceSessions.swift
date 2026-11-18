@@ -66,8 +66,9 @@ final class SourceSessions {
         if value { selected.formUnion(session.recordings.map(\.fingerprint)) }
         else { selected.subtract(session.recordings.map(\.fingerprint)) }
     }
+    /// The session Merge with Previous joins this one to.
     func previous(of session: RecordingSession) -> RecordingSession? {
-        sessions.last { $0.transmitter == session.transmitter && $0.recordings[0].variant == session.recordings[0].variant && $0.recordings[0].format == session.recordings[0].format && $0.start < session.start }
+        session.follows.flatMap { follows in sessions.first { $0.recordings.last == follows } }
     }
     func mergeWithPrevious(_ session: RecordingSession) {
         guard let previous = previous(of: session), let last = previous.recordings.last, let first = session.recordings.first else { return }
@@ -106,6 +107,15 @@ final class SourceSessions {
         }
         return (all.map(\.url), plans, Dictionary(all.map { ($0.url.path, Self.sourceID($0)) }, uniquingKeysWith: { first, _ in first }))
     }
+    /// What may not be regrouped, on the Import screen and in the mic window. A merge changes this
+    /// session and the one before it, so neither may be waiting its turn (`isQueued`: it would drop out of
+    /// the queue) or hold audio this vault already has or is getting (it would go up twice). A split
+    /// changes only this session, and can take apart one partly imported under another grouping.
+    func boundaryLocks(_ session: RecordingSession, server: String, isQueued: (RecordingSession) -> Bool) -> (merge: Bool, split: Bool) {
+        func held(_ session: RecordingSession) -> Bool { isQueued(session) || partlyImported(session, server: server) }
+        let split = isQueued(session) || record(for: session, server: server).map { !["failed", "paused"].contains($0.stage) } == true
+        return (held(session) || previous(of: session).map(held) == true, split)
+    }
     func record(for session: RecordingSession, server: String) -> SessionImportRecord? {
         let ids = session.recordings.map(Self.sourceID)
         let total = session.recordings.reduce(Int64(0)) { $0 + $1.frameCount }
@@ -116,9 +126,12 @@ final class SourceSessions {
             && ($0.trimEndFrame ?? total) == (bounds?.upperBound ?? total)
         }
     }
+    /// Some of its audio is in this vault, or on its way there, in an import grouped any way, this
+    /// session's own included. Failed and paused imports do not count, as they can be grouped again.
     func partlyImported(_ session: RecordingSession, server: String) -> Bool {
-        let imported = Set(records.filter { $0.server == server && $0.stage == "complete" }.flatMap(\.sources))
-        let sourceIDs = Set(records.filter { $0.server == server && $0.stage == "complete" }.flatMap { $0.sourceIDs ?? [] })
+        let held = records.filter { $0.server == server && !["failed", "paused"].contains($0.stage) }
+        let imported = Set(held.flatMap(\.sources))
+        let sourceIDs = Set(held.flatMap { $0.sourceIDs ?? [] })
         return session.recordings.contains { imported.contains($0.fingerprint) || sourceIDs.contains(Self.sourceID($0)) }
     }
     func register(_ selectedSessions: [RecordingSession], server: String, importID: String) {

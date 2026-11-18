@@ -97,7 +97,7 @@ private struct RecorderPromptView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("DJI Mic connected")
                     .font(.title3.weight(.semibold))
-                Text(proposed.isEmpty ? "Everything is imported"
+                Text(proposed.isEmpty ? "Nothing new to import"
                      : "\(proposed.count == 1 ? "1 new recording" : "\(proposed.count) new recordings") · \(Format.duration(proposed.map(length).reduce(0, +)))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -144,22 +144,16 @@ private struct RecorderPromptView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            status(session, record: record)
+            status(session, record: record, partly: partly)
         }
         .monospacedDigit()
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-        // Neither side of a merge may be imported or queued: it would drop out of the queue, or its audio be imported twice.
-        .contextMenu { SessionBoundaryMenu(session: session, isLocked: isSettled(session) || app.sessions.previous(of: session).map(isSettled) == true) }
+        .contextMenu { SessionBoundaryMenu(session: session) }
     }
 
-    /// Imported, on its way, or waiting its turn: its files stay grouped as they are.
-    private func isSettled(_ session: RecordingSession) -> Bool {
-        app.isQueued(session) || app.sessions.record(for: session, server: app.uploadServer).map { !["failed", "paused"].contains($0.stage) } == true
-    }
-
-    @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?) -> some View {
+    @ViewBuilder private func status(_ session: RecordingSession, record: SessionImportRecord?, partly: Bool) -> some View {
         if let record, record.stage == "complete" {
             Label("Imported", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -179,8 +173,10 @@ private struct RecorderPromptView: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.circle)
-                .disabled(app.uploadServer.isEmpty)
-                .help("Import into \(app.uploadVaultName)")
+                // A partly imported row goes up again only from the Import screen, as a deliberate choice.
+                .disabled(app.uploadServer.isEmpty || partly)
+                .help(partly ? "Some of this is already in \(app.uploadVaultName) or on its way there. Split it to import the rest, or use the Import screen."
+                      : "Import into \(app.uploadVaultName)")
         }
     }
 
