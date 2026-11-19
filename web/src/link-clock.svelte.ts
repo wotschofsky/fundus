@@ -6,10 +6,11 @@
  * their skew. */
 import { SvelteSet } from 'svelte/reactivity';
 
-/** URLs the server answered 404 for. A token never works again once it is gone, so no page
- * offers these again, even before it hears what (if anything) replaced them. */
+/** URLs of links that are gone: this page stopped them, or the server answered 404 for them. A
+ * token never works again once it is gone, so no page offers these again, even before it hears
+ * what (if anything) replaced them. */
 const dead = new SvelteSet<string>();
-/** The server answered 404 for this link. */
+/** This link is gone: stopped here, or the server answered 404 for it. */
 export const forget = (url: string) => {
   dead.add(url);
 };
