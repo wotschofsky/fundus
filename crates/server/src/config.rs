@@ -44,6 +44,8 @@ pub struct Config {
     pub recorder_timezone: String,
     pub secure_cookie: bool,
     pub proxy_auth: bool,
+    /// With `proxy_auth`: whose Cloudflare Access sign-ins are the owner's (`access.rs`).
+    pub access: Option<crate::access::Settings>,
     /// Disk space uploads and video conversions leave free: `RESERVE`.
     pub reserve: u64,
 }
@@ -84,15 +86,21 @@ impl Config {
         recorder_timezone
             .parse::<chrono_tz::Tz>()
             .context("Invalid recorder timezone")?;
+        let proxy_auth = match std::env::var("VAULT_AUTH_MODE")
+            .as_deref()
+            .unwrap_or("password")
+        {
+            "password" => false,
+            "proxy" => true,
+            _ => bail!("VAULT_AUTH_MODE must be password or proxy"),
+        };
         Ok(Self {
-            proxy_auth: match std::env::var("VAULT_AUTH_MODE")
-                .as_deref()
-                .unwrap_or("password")
-            {
-                "password" => false,
-                "proxy" => true,
-                _ => bail!("VAULT_AUTH_MODE must be password or proxy"),
+            access: if proxy_auth {
+                Some(crate::access::Settings::from_env()?)
+            } else {
+                None
             },
+            proxy_auth,
             secure_cookie: public_url.scheme() == "https",
             public_url,
             data,
@@ -147,6 +155,8 @@ pub struct App {
     pub login_attempts: Arc<Mutex<Vec<std::time::Instant>>>,
     /// The running video conversion, by entry, so Trash can stop it (`video::convert`).
     pub conversions: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
+    /// Cloudflare Access's signing keys, read when a sign-in is first checked (`access.rs`).
+    pub access_keys: Arc<crate::access::Keys>,
 }
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
@@ -182,6 +192,7 @@ impl App {
             background: Default::default(),
             login_attempts: Default::default(),
             conversions: Default::default(),
+            access_keys: Default::default(),
         })
     }
     /// Whether `bytes` more still leave the reserve free on the disk that holds `dir`.

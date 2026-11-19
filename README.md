@@ -52,7 +52,7 @@ docker compose up -d
 
 Open your public URL and sign in. The server listens on loopback port `3000`; your reverse proxy provides HTTPS. Use a password of at least 12 characters.
 
-An existing authenticating proxy can provide the browser login instead. See the [server setup guide](docs/guide.md#run-the-server) for proxy authentication, the exact client routes to expose, environment variables, and running a local binary. For a published container image, see [packaging and releases](docs/packaging.md).
+Cloudflare Access can provide the browser login instead. See the [server setup guide](docs/guide.md#run-the-server) for proxy authentication, the exact client routes to expose, environment variables, and running a local binary. For a published container image, see [packaging and releases](docs/packaging.md).
 
 ## The apps
 

@@ -1,5 +1,6 @@
 //! Share links: a link opens one recording read-only, without signing in, until it expires, the
 //! owner stops sharing, or the recording goes to Trash.
+mod common;
 use axum::{
     Router,
     body::Body,
@@ -27,8 +28,8 @@ struct Vault {
 async fn setup() -> Vault {
     vault(false).await
 }
-/// With `proxy_auth`, the owner's browser requests are trusted as they arrive and write nothing
-/// before the handler runs (a session token records when it was last used).
+/// With `proxy_auth`, the owner's browser requests come signed in by Cloudflare Access and write
+/// nothing before the handler runs (a session token records when it was last used).
 async fn vault(proxy_auth: bool) -> Vault {
     let dir = tempfile::tempdir().unwrap();
     let web = dir.path().join("web");
@@ -38,7 +39,9 @@ async fn vault(proxy_auth: bool) -> Vault {
     c.data = dir.path().join("data");
     c.web = web;
     c.public_url = format!("{ORIGIN}/").parse().unwrap();
-    c.proxy_auth = proxy_auth;
+    if proxy_auth {
+        common::proxy(&mut c);
+    }
     let app = App::new(c).await.unwrap();
     let owner = auth::issue(&app, "Web session", "session").await.unwrap();
     let reader = auth::issue(&app, "test reader", "read").await.unwrap();
@@ -59,7 +62,10 @@ async fn vault(proxy_auth: bool) -> Vault {
     std::fs::create_dir_all(app.entry_dir(ID)).unwrap();
     std::fs::write(app.entry_dir(ID).join("playback.m4a"), "0123456789").unwrap();
     std::fs::write(app.entry_dir(ID).join("video.mp4"), "videobytes").unwrap();
-    let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     Vault {
         _dir: dir,
         app,

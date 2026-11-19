@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     Json, Router,
     body::Body,
@@ -27,7 +28,7 @@ async fn setup() -> (tempfile::TempDir, App, Router) {
     let mut c = Config::from_env().unwrap();
     c.data = dir.path().into();
     c.public_url = ORIGIN.parse().unwrap();
-    c.proxy_auth = true;
+    common::proxy(&mut c);
     let app = App::new(c).await.unwrap();
     let probe = Router::new()
         .route(
@@ -44,7 +45,11 @@ async fn setup() -> (tempfile::TempDir, App, Router) {
             oauth::require_native,
         ))
         .with_state(app.clone());
-    let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new()).merge(probe);
+    let router = common::signed_in(
+        &app,
+        api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    )
+    .merge(probe);
     (dir, app, router)
 }
 async fn call(

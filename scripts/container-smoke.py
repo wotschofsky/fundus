@@ -7,6 +7,7 @@ The same file serves the mock provider and runs the HTTP client in Python contai
 """
 
 import base64
+import hashlib
 import http.cookiejar
 import http.server
 import io
@@ -26,6 +27,48 @@ import wave
 PASSWORD = "synthetic-container-password"
 BASE = "http://vault:3000"
 FIXTURE_IMAGE = "python:3.12-slim-bookworm"
+# Proxy mode: the mock stands in for the Cloudflare Access team, and the client signs its tokens
+# with this throwaway RSA key (made for the tests; it signs nothing real).
+ACCESS_TEAM = "http://provider:3119"
+ACCESS_AUD = "smoke-audience"
+ACCESS_E = 65537
+ACCESS_N = int(
+    "da4ddae11b5c1b41559163e0b86ae6e93f5f512081bd30b0e3cbd7ff53aa4c841e40571a92e5c6d7cd17b87c"
+    "2f5f83b5006a653ff8cd7c62c7a7b6838b4e5d22d8c78ca131c7304ef7d374441ebaf79cc9ff63c7d8b83942"
+    "fcd61a082eb0cb5e489d09d3b83bbc838fd919875621648707c6ec265854ca29c6cead471a9f129a0bd251d5"
+    "07cf874b3215fe8cdec68c242c2b08b9085dbe09bfbbe917b9f80fb71745bfed31f2d1ff244c76c5fe8fbafc"
+    "9a5f68d0762161cd9854d2bdba558e4d3d37c6ebecea18654263b399bc9f17d662402aec52f6992e0a8eb4c2"
+    "c706ebab56a83f2f6547b66ccd916232cd9280a19269a13ced09c2be14d19e6f189c4985",
+    16,
+)
+ACCESS_D = int(
+    "21ba4044372debd2bef2fa3365f55e3cfb303175e1959148431438b2ecace0557e8c57937623fa0202b5d4d2"
+    "f0496ed7dad0955964df4530731853a279e0b43db0b063e723ac5aa7ae07b016e0dde769049713461fbd96b0"
+    "9024f95b4f9b66503d77c5ba3d8f3d238bbdf1abc480343fddd110a5d14fdda1716322725c87e71f8c912292"
+    "83f7180629f8358288406aa3f6bd6db2d65ba578461a7b1a92ee23865eab4290e7228e91ade5c2091193bb4e"
+    "23b70e5fca2b512a2f85d5bf97e8b3465a2cc749ced2c7d22717c8275e73b48f1c2173d5ab5e823e6e442b43"
+    "c8d4b5b245464f637b105665aff0abc3222d383f158e7cfe7c8020b40ac9bc23bfec71a1",
+    16,
+)
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def access_token():
+    """A token as Cloudflare Access signs one in (RS256, PKCS#1 v1.5)."""
+    now = int(time.time())
+    signed = ".".join(b64url(json.dumps(part).encode()) for part in (
+        {"alg": "RS256", "kid": "smoke", "typ": "JWT"},
+        {"iss": ACCESS_TEAM, "aud": [ACCESS_AUD], "iat": now, "nbf": now, "exp": now + 600,
+         "email": "owner@example.com", "type": "app"}))
+    digest = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(
+        signed.encode()).digest()
+    size = (ACCESS_N.bit_length() + 7) // 8
+    padded = b"\x00\x01" + b"\xff" * (size - len(digest) - 3) + b"\x00" + digest
+    signature = pow(int.from_bytes(padded, "big"), ACCESS_D, ACCESS_N).to_bytes(size, "big")
+    return signed + "." + b64url(signature)
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -44,6 +87,12 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.wfile.write(response)
 
     def do_GET(self):
+        if self.path == "/cdn-cgi/access/certs":
+            size = (ACCESS_N.bit_length() + 7) // 8
+            self.reply({"keys": [{"kid": "smoke", "kty": "RSA", "alg": "RS256", "use": "sig",
+                                  "n": b64url(ACCESS_N.to_bytes(size, "big")),
+                                  "e": b64url(ACCESS_E.to_bytes(3, "big"))}]})
+            return
         if not self.path.startswith("/v2/transcript/"):
             self.send_error(404)
             return
@@ -84,8 +133,11 @@ def exercise(restarted=False, proxy=False):
     client = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
+    token = {"Cf-Access-Jwt-Assertion": access_token()} if proxy else {}
+
     def call(path, method="GET", body=None, headers=None):
-        merged = {"Origin": BASE, **(headers or {})}
+        merged = {"Origin": BASE, **token, **(headers or {})}
+        merged = {name: value for name, value in merged.items() if value is not None}
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
             merged["Content-Type"] = "application/json"
@@ -110,6 +162,8 @@ def exercise(restarted=False, proxy=False):
         _, me = call("/api/v1/me")
         assert me["auth_mode"] == "proxy" and me["scope"] == "admin"
         for path, method, body, headers, expected in [
+            # What reaches the server without Access's token for it is not the owner's.
+            ("/api/v1/me", "GET", None, {"Cf-Access-Jwt-Assertion": None}, 401),
             ("/api/login", "POST", {"password": PASSWORD}, {}, 403),
             ("/api/v1/uploads", "OPTIONS", None, {}, 401),
             ("/mcp", "POST", {}, {}, 401),
@@ -222,6 +276,8 @@ def run_image(image, proxy=False):
                    "-e", name + "_API_KEY=synthetic-only", "-e", name + "_BASE_URL=http://provider:3119")],
                "-e", "VAULT_PUBLIC_URL=" + BASE,
                "-e", "VAULT_AUTH_MODE=" + ("proxy" if proxy else "password"),
+               *(["-e", "VAULT_ACCESS_TEAM_DOMAIN=" + ACCESS_TEAM,
+                  "-e", "VAULT_ACCESS_AUD=" + ACCESS_AUD] if proxy else []),
                image, stdout=subprocess.DEVNULL)
         for mode in ("client", "restarted"):
             if mode == "restarted":

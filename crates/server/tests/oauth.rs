@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode},
@@ -20,9 +21,12 @@ async fn setup() -> (tempfile::TempDir, App, axum::Router) {
     let mut config = Config::from_env().unwrap();
     config.data = dir.path().into();
     config.public_url = ORIGIN.parse().unwrap();
-    config.proxy_auth = true;
+    common::proxy(&mut config);
     let app = App::new(config).await.unwrap();
-    let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     (dir, app, router)
 }
 async fn call(
