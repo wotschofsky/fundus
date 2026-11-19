@@ -19,7 +19,15 @@
     return () => client.unmount();
   });
   // The server serves this page at `/s/{token}` only.
-  const token = location.pathname.split('/')[2] ?? '';
+  // Decoded once, as the server reads it, so a link with an escaped character still opens.
+  const segment = location.pathname.split('/')[2] ?? '';
+  const token = (() => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  })();
 </script>
 
 <header class="app-header">
