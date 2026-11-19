@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient } from '@tanstack/svelte-query';
-import { forget } from './link-clock.svelte';
+import { confirm, forget, leaving } from './link-clock.svelte';
 
 export class ApiError extends Error {
   constructor(
@@ -153,8 +153,10 @@ export const shareQuery = (id: string) =>
     queryKey: ['share', id],
     queryFn: async ({ client, signal }) => {
       const known = cachedLinks(client, id);
+      const since = leaving();
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
       landed++;
+      if (next) confirm(next.url, since);
       forgetMissing(known, new Set(next ? [next.url] : []));
       return next;
     },
@@ -164,8 +166,10 @@ export const sharesQuery = queryOptions({
   queryKey: ['shares'],
   queryFn: async ({ client, signal }) => {
     const known = cachedLinks(client);
+    const since = leaving();
     const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
     landed++;
+    for (const link of next.shares) confirm(link.url, since);
     forgetMissing(known, new Set(next.shares.map((link) => link.url)));
     return next;
   },
@@ -194,17 +198,21 @@ function forgetMissing(known: Share[], answered: Set<string>) {
   for (const link of known)
     if (!answered.has(link.url) && !lapsedUrls.has(link.url)) forget(link.url);
 }
-/** Share reads (of a recording's link or of Settings' list) that have landed on this page. It
- * only grows: a list dropped from memory and read afresh counts on from here, unlike the
- * cache's own per-query counts. */
+/** Share reads (of a recording's link or of Settings' list) and change answers that have landed
+ * on this page. It only grows: a list dropped from memory and read afresh counts on from here,
+ * unlike the cache's own per-query counts. */
 let landed = 0;
-/** How many share reads had landed as a change went out, for `keepAnswer`: each read that lands
+/** How many share reads and answers had landed as a change went out, for `keepAnswer`: each
  * counts, even two in one millisecond. */
 export const sentAt = () => landed;
 /** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
- * cache, unless a read of the link or of Settings' list landed after the change was sent: that
- * read may be newer than the answer (another tab shared again, say), so the page asks again
- * instead of overwriting it. */
+ * cache, unless a read of the link or of Settings' list, or another change's answer, landed after
+ * the change was sent: that may be newer than this answer (another tab shared again, or a later
+ * change answered first), so the page asks again instead of overwriting it.
+ *
+ * ponytail: tabs do not tell each other what they changed; each page reconciles with the server
+ * when it reads, so another tab's change shows here at this page's next read (offline, not until
+ * it can read). A BroadcastChannel between tabs is the upgrade if that ever matters. */
 export async function keepAnswer(
   client: QueryClient,
   id: string,
@@ -213,8 +221,10 @@ export async function keepAnswer(
 ) {
   // A read still under way would land after this and bring back what was just changed.
   await client.cancelQueries({ queryKey: ['share', id] });
-  if (landed === sent) client.setQueryData(['share', id], value);
-  else await client.invalidateQueries({ queryKey: ['share', id] });
+  if (landed === sent) {
+    landed++;
+    client.setQueryData(['share', id], value);
+  } else await client.invalidateQueries({ queryKey: ['share', id] });
   return client.invalidateQueries({ queryKey: ['shares'] });
 }
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */

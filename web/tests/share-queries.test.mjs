@@ -41,7 +41,7 @@ registerHooks({
 });
 globalThis.document ??= new EventTarget();
 const { keepAnswer, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
-const { LinkClock } = await import('../src/link-clock.svelte.ts');
+const { LinkClock, forget } = await import('../src/link-clock.svelte.ts');
 
 let made = 0;
 /** A link that never expires, with its own URL. */
@@ -217,4 +217,46 @@ test('a link any held copy shows as lapsed is not taken for gone', async () => {
   answer(extended);
   await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 });
   assert.equal(offered(extended), true);
+});
+
+test('a link a racing read took for gone is offered again once a later read returns it', async () => {
+  const client = new QueryClient();
+  // This tab holds the link as never expiring; another tab set a deadline, and an extension made
+  // at that deadline was still committing when this tab read: no link.
+  const held = link();
+  client.setQueryData(['share', 'cedar'], held);
+  answer(null);
+  await client.fetchQuery(shareQuery('cedar'));
+  assert.equal(offered(held), false);
+  // A later read finds the same link working: it was never gone.
+  answer(held);
+  await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 });
+  assert.equal(offered(held), true);
+});
+
+test('a read that left before a link was stopped does not bring it back', async () => {
+  const client = new QueryClient();
+  const stopped = link();
+  client.setQueryData(['share', 'cedar'], stopped);
+  const release = answerLater(stopped);
+  const read = client.fetchQuery(shareQuery('cedar'));
+  await delay(0);
+  // The owner stops the link while that read is on its way.
+  forget(stopped.url);
+  release();
+  await read;
+  assert.equal(offered(stopped), false);
+});
+
+test("an older change's answer arriving after a newer one does not overwrite it", async () => {
+  const client = new QueryClient();
+  const shared = link();
+  answer(shared);
+  await client.fetchQuery(shareQuery('cedar'));
+  const first = sentAt(); // Never expires, answered late.
+  const second = sentAt(); // One day, answered first.
+  const oneDay = { ...shared, expires_at: new Date(Date.now() + 86_400_000).toISOString() };
+  await keepAnswer(client, 'cedar', oneDay, second);
+  await keepAnswer(client, 'cedar', { ...shared, expires_at: null }, first);
+  assert.deepEqual(client.getQueryData(['share', 'cedar']), oneDay);
 });

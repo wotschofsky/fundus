@@ -1,14 +1,26 @@
-import { SvelteSet } from 'svelte/reactivity';
+import { SvelteMap } from 'svelte/reactivity';
 
-/** URLs of links that are gone: this page stopped them or moved their recording to Trash, the
- * server answered 404 for them, or a read no longer returned them. A token never works again
- * once it is gone, so no page offers these again, even before it hears what (if anything)
- * replaced them. */
-const dead = new SvelteSet<string>();
+/** Links taken for gone, by URL, with when (`moment`): this page stopped them or moved their
+ * recording to Trash, the server answered 404 for them, or a read no longer returned them. A
+ * token never works again once it is gone, so no page offers these, even before it hears what
+ * (if anything) replaced them; `confirm` corrects one a racing read took for gone. */
+const dead = new SvelteMap<string, number>();
+/** This page's share events, in order: each link taken for gone and each read that leaves. */
+let moment = 0;
 /** This link is gone (stopped, deleted by Trash, answered 404, or no longer read back). */
 export const forget = (url: string) => {
-  dead.add(url);
+  dead.set(url, ++moment);
 };
+/** A read leaves: the moment to `confirm` what it returns against. */
+export const leaving = () => ++moment;
+/** A read that left at `since` returned this link working. If the link was taken for gone before
+ * that read left, the read that did so had raced a change at the server (an extension at the
+ * deadline, say): the link works and is offered again. One taken for gone after the read left
+ * stays gone, as the read may have been served before the link was stopped. */
+export function confirm(url: string, since: number) {
+  const at = dead.get(url);
+  if (at !== undefined && at < since) dead.delete(url);
+}
 
 /** The owner's pages decide by their own clock whether a share link still works, so an expired
  * link is never offered or handed out. The clock moves on when a link expires, when the page is
