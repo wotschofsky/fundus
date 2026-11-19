@@ -155,6 +155,8 @@ export const shareQuery = (id: string) =>
       const known = cachedLinks(client, id);
       const since = leaving();
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
+      // Cancelled once its answer had arrived: the cache keeps what it had, and so does the page.
+      signal.throwIfAborted();
       landed++;
       if (next) confirm(next.url, since);
       forgetMissing(known, new Set(next ? [next.url] : []), since);
@@ -168,6 +170,7 @@ export const sharesQuery = queryOptions({
     const known = cachedLinks(client);
     const since = leaving();
     const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
+    signal.throwIfAborted();
     landed++;
     for (const link of next.shares) confirm(link.url, since);
     forgetMissing(known, new Set(next.shares.map((link) => link.url)), since);
@@ -178,7 +181,7 @@ export const sharesQuery = queryOptions({
  * recording's own read and from Settings' list. Taken before a read, so a link the server no
  * longer answers with is known to be gone (stopped or replaced: its token never works again) for
  * every reader, while a link made during the read, which the read may predate, is not in it. A
- * read that was cancelled throws before it gets that far. */
+ * read that was cancelled, even once its answer had arrived, throws before it gets that far. */
 export function cachedLinks(client: QueryClient, entry?: string): Share[] {
   const links: Share[] = [];
   for (const [key, share] of client.getQueriesData<Share | null>({ queryKey: ['share'] }))

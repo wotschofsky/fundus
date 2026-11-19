@@ -420,3 +420,31 @@ test("after a change, Settings' list is read again even while Settings is not sh
   assert.equal(listReads, 1);
   assert.deepEqual(client.getQueryData(['shares']), { shares: [changed] });
 });
+
+test('a read cancelled after its answer arrived takes nothing for gone', async () => {
+  const client = new QueryClient();
+  const held = link();
+  client.setQueryData(['share', 'cedar'], held);
+  // The answer has arrived when a change ends and cancels the read, before the read goes on.
+  globalThis.fetch = () => {
+    client.cancelQueries({ queryKey: ['share', 'cedar'] });
+    return Promise.resolve(Response.json(null));
+  };
+  await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 }).catch(() => {});
+  await delay(0);
+  assert.equal(offered(held), true);
+});
+
+test('a read cancelled after its answer arrived does not count as landed', async () => {
+  const client = new QueryClient();
+  answer(null);
+  await client.fetchQuery(shareQuery('cedar'));
+  const sent = sentAt();
+  globalThis.fetch = () => {
+    client.cancelQueries({ queryKey: ['shares'] });
+    return Promise.resolve(Response.json({ shares: [] }));
+  };
+  await client.fetchQuery(sharesQuery).catch(() => {});
+  await delay(0);
+  assert.equal(sentAt(), sent);
+});
