@@ -240,8 +240,9 @@ export async function keepAnswer(
   await client.cancelQueries({ queryKey: ['share', id] });
   if (landed === sent) client.setQueryData(['share', id], value);
   // Shown at once if nothing newer landed, and read again either way: another change may have
-  // committed after this one.
-  return rereadLinks(client, id);
+  // committed after this one. Not waited for: the change is saved, and a read paused offline
+  // would hold the dialog open until the connection came back.
+  void rereadLinks(client, id);
 }
 /** A change to the recording's links has ended, whether or not it worked (one that failed may
  * have gone through before its answer was lost): it counts as landed, so the answer to a change

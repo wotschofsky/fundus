@@ -130,7 +130,9 @@
   const save = (edit: EntryEdit) =>
     act(async () => {
       await api(`/v1/entries/${id}`, send('PATCH', edit));
-      // Settings' shared links show the title too.
+      // Settings' shared links show the title too. A list read still under way left before the
+      // rename, and landing after it would take its old title for fresh: cancelled.
+      await qc.cancelQueries({ queryKey: ['shares'] });
       await Promise.all([refresh(), qc.invalidateQueries({ queryKey: ['shares'] })]);
       editing = false;
     });

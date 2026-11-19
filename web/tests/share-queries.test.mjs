@@ -314,6 +314,7 @@ test("a change's answer is shown at once and then read again, so crossed answers
   await keepAnswer(client, 'cedar', sevenDays, sent, since);
   assert.deepEqual(client.getQueryData(['share', 'cedar']), sevenDays);
   // Another change may have committed after this one: the next read settles it.
+  await delay(0);
   assert.equal(client.getQueryState(['share', 'cedar']).isInvalidated, true);
 });
 
@@ -417,6 +418,7 @@ test("after a change, Settings' list is read again even while Settings is not sh
   };
   const { sent, since } = sending();
   await keepAnswer(client, 'cedar', changed, sent, since);
+  await delay(10); // The read after the change.
   assert.equal(listReads, 1);
   assert.deepEqual(client.getQueryData(['shares']), { shares: [changed] });
 });
@@ -447,4 +449,24 @@ test('a read cancelled after its answer arrived does not count as landed', async
   await client.fetchQuery(sharesQuery).catch(() => {});
   await delay(0);
   assert.equal(sentAt(), sent);
+});
+
+test("a change's answer is kept without waiting for the read after it, which may be paused offline", async () => {
+  const client = new QueryClient();
+  const shared = link();
+  answer(shared);
+  // Watched, as the dialog watches it, so the read after the change goes out at once.
+  const { QueryObserver } = await import('@tanstack/query-core');
+  const stop = new QueryObserver(client, shareQuery('cedar')).subscribe(() => {});
+  await delay(10);
+  const { sent, since } = sending();
+  let release;
+  globalThis.fetch = () =>
+    new Promise((resolve) => (release = () => resolve(Response.json(shared))));
+  const kept = keepAnswer(client, 'cedar', shared, sent, since).then(() => 'kept');
+  const result = await Promise.race([kept, delay(50).then(() => 'waiting')]);
+  release?.();
+  stop();
+  client.clear();
+  assert.equal(result, 'kept');
 });
