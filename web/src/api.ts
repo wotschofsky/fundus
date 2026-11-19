@@ -238,8 +238,9 @@ export async function keepAnswer(
 }
 /** Reads the recording's link and Settings' list again after a change to the recording's links,
  * whether or not it worked: one that failed may have gone through before its answer was lost. A
- * read still under way left before the change, so it is cancelled rather than kept: the cache
- * would wait for a first read (one with no answer yet) instead of reading again. */
+ * read still under way may have been answered before the change committed, so it is cancelled
+ * rather than kept: the cache would wait for a first read (one with no answer yet) instead of
+ * reading again. */
 export async function rereadLinks(client: QueryClient, id: string) {
   const keys = [['share', id], ['shares']];
   await Promise.all(keys.map((queryKey) => client.cancelQueries({ queryKey })));
