@@ -41,7 +41,10 @@ registerHooks({
 });
 globalThis.document ??= new EventTarget();
 const { keepAnswer, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
-const { LinkClock, forget } = await import('../src/link-clock.svelte.ts');
+const { LinkClock, forget, leaving } = await import('../src/link-clock.svelte.ts');
+
+/** What the share dialog takes as a change goes out. */
+const sending = () => ({ sent: sentAt(), since: leaving() });
 
 let made = 0;
 /** A link that never expires, with its own URL. */
@@ -259,4 +262,27 @@ test("an older change's answer arriving after a newer one does not overwrite it"
   await keepAnswer(client, 'cedar', oneDay, second);
   await keepAnswer(client, 'cedar', { ...shared, expires_at: null }, first);
   assert.deepEqual(client.getQueryData(['share', 'cedar']), oneDay);
+});
+
+test('sharing again brings back a working link a racing read took for gone', async () => {
+  const client = new QueryClient();
+  const held = link();
+  client.setQueryData(['share', 'cedar'], held);
+  answer(null); // A read racing an extension at the deadline: no link.
+  await client.fetchQuery(shareQuery('cedar'));
+  assert.equal(offered(held), false);
+  // The owner chooses Anyone with the link; the server answers with the same working link.
+  const { sent, since } = sending();
+  await keepAnswer(client, 'cedar', held, sent, since);
+  assert.equal(offered(held), true);
+});
+
+test('an answer does not bring back a link stopped after the change was sent', async () => {
+  const client = new QueryClient();
+  const shared = link();
+  client.setQueryData(['share', 'cedar'], shared);
+  const { sent, since } = sending();
+  forget(shared.url); // Stopped (elsewhere on this page) while the change was on its way.
+  await keepAnswer(client, 'cedar', shared, sent, since);
+  assert.equal(offered(shared), false);
 });

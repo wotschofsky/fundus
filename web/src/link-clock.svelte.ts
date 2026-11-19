@@ -11,12 +11,12 @@ let moment = 0;
 export const forget = (url: string) => {
   dead.set(url, ++moment);
 };
-/** A read leaves: the moment to `confirm` what it returns against. */
+/** A read or a change leaves: the moment to `confirm` what its answer returns against. */
 export const leaving = () => ++moment;
-/** A read that left at `since` returned this link working. If the link was taken for gone before
- * that read left, the read that did so had raced a change at the server (an extension at the
- * deadline, say): the link works and is offered again. One taken for gone after the read left
- * stays gone, as the read may have been served before the link was stopped. */
+/** A read or change that left at `since` was answered with this link working. If the link was
+ * taken for gone before that left, the read that did so had raced a change at the server (an
+ * extension at the deadline, say): the link works and is offered again. One taken for gone after
+ * it left stays gone, as the answer may have been served before the link was stopped. */
 export function confirm(url: string, since: number) {
   const at = dead.get(url);
   if (at !== undefined && at < since) dead.delete(url);

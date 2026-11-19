@@ -16,7 +16,7 @@
     shareQuery,
   } from '../api';
   import { date } from '../format';
-  import { forget, type LinkClock } from '../link-clock.svelte';
+  import { forget, leaving, type LinkClock } from '../link-clock.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {
@@ -54,13 +54,13 @@
   /** When a change goes out, how many share reads and answers had landed, for `keepAnswer`. */
   const sending = (change: 'save' | 'extend' | 'stop') => () => {
     latest = change;
-    return { sent: sentAt() };
+    return { sent: sentAt(), since: leaving() };
   };
   const save = createMutation(() => ({
     onMutate: sending('save'),
     mutationFn: (expires: Expiry) =>
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
-    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
+    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent, context.since),
   }));
   /** The named link is no longer there (stopped, expired or replaced elsewhere): drop it and ask
    * again. */
@@ -75,7 +75,7 @@
     onMutate: sending('extend'),
     mutationFn: ({ link, expires }: { link: Share; expires: Expiry }) =>
       api<Share>(`/v1/entries/${id}/share`, send('PATCH', { expires, token: linkToken(link) })),
-    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
+    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent, context.since),
     onError: (error, { link }) => reread(error, link.url),
   }));
   const stop = createMutation(() => ({
@@ -89,7 +89,7 @@
       stopping = null;
       // Gone for every reader, Settings' list too, even before it refreshes.
       forget(url);
-      return keepAnswer(qc, id, null, context.sent);
+      return keepAnswer(qc, id, null, context.sent, context.since);
     },
     onError: (error, url) => {
       stopping = null;

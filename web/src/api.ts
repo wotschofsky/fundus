@@ -218,7 +218,12 @@ export async function keepAnswer(
   id: string,
   value: Share | null,
   sent: number,
+  /** `leaving()` as the change went out. */
+  since: number,
 ) {
+  // The server answered with this link working: if a racing read took it for gone before the
+  // change went out, it was not.
+  if (value) confirm(value.url, since);
   // A read still under way would land after this and bring back what was just changed.
   await client.cancelQueries({ queryKey: ['share', id] });
   if (landed === sent) {
