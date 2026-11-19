@@ -425,3 +425,66 @@ async fn native_owner_alias_supports_crud_uploads_and_excludes_credential_manage
         );
     }
 }
+
+#[tokio::test]
+async fn owner_access_returns_only_to_the_device_that_signed_in() {
+    let (_dir, app, r) = setup().await;
+    let owner = |redirect: &str| {
+        json!({"client_name":"Fundus","redirect_uris":[redirect],"scope":"vault:owner"}).to_string()
+    };
+    // Anyone can register a client: one approval of theirs must not send the library to a website.
+    let json = "application/json";
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/oauth/register",
+        Some(owner("https://evil.example/callback")),
+        json,
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    for redirect in [CALLBACK, "dev.wsky.fundus:/oauth"] {
+        let (s, _) = call(
+            &r,
+            "POST",
+            "/oauth/register",
+            Some(owner(redirect)),
+            json,
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{redirect}");
+    }
+    // Nor does an ID written by hand, or a client stored before registration checked this.
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        json!({"name":"Fundus","redirect_uris":["https://evil.example/callback"],"auth_method":"none","secret_hash":null,"scope":"vault:owner","nonce":"x"}).to_string(),
+    );
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES('stored','Fundus','[\"https://evil.example/callback\"]','none',unixepoch(),'vault:owner')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(VERIFIER.as_bytes()));
+    for client in [forged.as_str(), "stored"] {
+        let q = form(&[
+            ("client_id", client),
+            ("redirect_uri", "https://evil.example/callback"),
+            ("response_type", "code"),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "vault:owner"),
+            ("resource", NATIVE),
+        ]);
+        let (s, _) = call(
+            &r,
+            "GET",
+            &format!("/api/v1/oauth/authorize?{q}"),
+            None,
+            "",
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{client}");
+    }
+}

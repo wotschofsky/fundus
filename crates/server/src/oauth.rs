@@ -14,8 +14,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use base64::Engine;
-use serde::Deserialize;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
@@ -193,37 +193,83 @@ fn valid_redirect(value: &str) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.fragment().is_none()
-        && (url.scheme() == "https"
-            || (url.scheme() == "http"
-                && matches!(
-                    url.host_str(),
-                    Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-                )))
+        && (url.scheme() == "https" || loopback(&url))
 }
-async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Result<Response> {
+fn loopback(url: &url::Url) -> bool {
+    url.scheme() == "http"
+        && matches!(
+            url.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+        )
+}
+/// Owner access is sent only back to the device that signed in (a loopback address, or an app's
+/// own scheme), never to a website: approving a client someone else registered cannot hand them
+/// the library.
+fn on_device(redirect: &str) -> bool {
+    url::Url::parse(redirect).is_ok_and(|url| url.scheme().contains('.') || loopback(&url))
+}
+const OWNER_REDIRECT: &str = "Owner access returns only to a loopback address or an app scheme";
+
+/// A registered client, carried in its own ID. Registering stores nothing, so however many
+/// registrations anyone makes, none crowds out the owner's: a client is stored only once the
+/// owner opens its consent page (`authorization`).
+#[derive(Serialize, Deserialize)]
+struct Client {
+    name: String,
+    redirect_uris: Vec<String>,
+    auth_method: String,
+    /// Of the secret only the registering client was given.
+    secret_hash: Option<String>,
+    scope: String,
+    /// Sets each registration apart from others alike.
+    nonce: String,
+}
+impl Client {
+    fn id(&self) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).unwrap())
+    }
+    /// Anyone can register any client, so an ID needs no signature: only the same checks.
+    fn from_id(id: &str) -> Option<Self> {
+        let client: Self = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(id).ok()?).ok()?;
+        client.check().ok().map(|()| client)
+    }
+    fn check(&self) -> Result<()> {
+        let bad = |message| Err(OAuthError::bad("invalid_client_metadata", message));
+        if self.name.trim().is_empty()
+            || self.name.len() > 120
+            || self.name.chars().any(char::is_control)
+            || self.redirect_uris.is_empty()
+            || self.redirect_uris.len() > 10
+            || !self.redirect_uris.iter().all(|s| valid_redirect(s))
+        {
+            return bad(
+                "Provide a client name and HTTPS, loopback or app-scheme redirect addresses without credentials or fragments",
+            );
+        }
+        if !["none", "client_secret_basic", "client_secret_post"]
+            .contains(&self.auth_method.as_str())
+        {
+            return bad("Unsupported token authentication method");
+        }
+        if ![SCOPE, NATIVE_SCOPE].contains(&self.scope.as_str()) {
+            return bad("Use authorization code, refresh token, and one supported resource scope");
+        }
+        if self.scope == NATIVE_SCOPE && !self.redirect_uris.iter().all(|s| on_device(s)) {
+            return bad(OWNER_REDIRECT);
+        }
+        // The ID travels in the authorization address.
+        if self.id().len() > 4096 {
+            return bad("The client name and redirect addresses are too long");
+        }
+        Ok(())
+    }
+}
+async fn register(Json(body): Json<Registration>) -> Result<Response> {
     let scope = body.scope.as_deref().unwrap_or(SCOPE);
     let name = body.client_name.unwrap_or_else(|| "Fundus client".into());
     let method = body
         .token_endpoint_auth_method
         .unwrap_or_else(|| "none".into());
-    if name.trim().is_empty()
-        || name.len() > 120
-        || name.chars().any(char::is_control)
-        || body.redirect_uris.is_empty()
-        || body.redirect_uris.len() > 10
-        || !body.redirect_uris.iter().all(|s| valid_redirect(s))
-    {
-        return Err(OAuthError::bad(
-            "invalid_client_metadata",
-            "Provide a client name and HTTPS, loopback or app-scheme redirect addresses without credentials or fragments",
-        ));
-    }
-    if !["none", "client_secret_basic", "client_secret_post"].contains(&method.as_str()) {
-        return Err(OAuthError::bad(
-            "invalid_client_metadata",
-            "Unsupported token authentication method",
-        ));
-    }
     if body.grant_types.as_ref().is_some_and(|types| {
         !types.iter().any(|s| s == "authorization_code")
             || types
@@ -240,35 +286,17 @@ async fn register(State(app): State<App>, Json(body): Json<Registration>) -> Res
             "Use authorization code, refresh token, and one supported resource scope",
         ));
     }
-    let _lock = app.mutations.lock().await;
-    sqlx::query!("DELETE FROM oauth_pending WHERE expires_at<unixepoch()")
-        .execute(&app.db)
-        .await?;
-    sqlx::query!("DELETE FROM oauth_codes WHERE expires_at<unixepoch()")
-        .execute(&app.db)
-        .await?;
-    sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id)").execute(&app.db).await?;
-    let count: i64 =
-        sqlx::query_scalar!("SELECT count(*) FROM oauth_clients WHERE created_at>unixepoch() - 60")
-            .fetch_one(&app.db)
-            .await?;
-    let total: i64 = sqlx::query_scalar!("SELECT count(*) FROM oauth_clients")
-        .fetch_one(&app.db)
-        .await?;
-    if count >= 20 || total >= 1000 {
-        return Err(OAuthError(
-            StatusCode::TOO_MANY_REQUESTS,
-            "temporarily_unavailable",
-            "Client registration is temporarily limited; try again later".into(),
-        ));
-    }
-    let client_id = id();
     let secret = (method != "none").then(auth::secret);
-    let trimmed_name = name.trim();
-    let redirect_uris_json = serde_json::to_string(&body.redirect_uris).unwrap();
-    let secret_hash = secret.as_ref().map(|s| auth::hash(s));
-    sqlx::query!("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", client_id, trimmed_name, redirect_uris_json, method, secret_hash, scope).execute(&app.db).await?;
-    let mut value = json!({"client_id":client_id,"client_id_issued_at":seconds(),"client_name":name.trim(),"redirect_uris":body.redirect_uris,"token_endpoint_auth_method":method,"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":scope});
+    let client = Client {
+        name: name.trim().into(),
+        redirect_uris: body.redirect_uris,
+        auth_method: method,
+        secret_hash: secret.as_ref().map(|s| auth::hash(s)),
+        scope: scope.into(),
+        nonce: auth::secret(),
+    };
+    client.check()?;
+    let mut value = json!({"client_id":client.id(),"client_id_issued_at":seconds(),"client_name":client.name,"redirect_uris":client.redirect_uris,"token_endpoint_auth_method":client.auth_method,"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":client.scope});
     if let Some(secret) = secret {
         value["client_secret"] = json!(secret);
         value["client_secret_expires_at"] = json!(0);
@@ -308,6 +336,10 @@ pub async fn authorization(
             "Owner access required".into(),
         )
     })?;
+    if let Some(client) = Client::from_id(&query.client_id) {
+        let redirects = serde_json::to_string(&client.redirect_uris).unwrap();
+        sqlx::query!("INSERT OR IGNORE INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", query.client_id, client.name, redirects, client.auth_method, client.secret_hash, client.scope).execute(&app.db).await?;
+    }
     let client = sqlx::query!(
         "SELECT name,redirect_uris,allowed_scope FROM oauth_clients WHERE id=?",
         query.client_id
@@ -327,6 +359,10 @@ pub async fn authorization(
             "invalid_request",
             "The callback address is not registered for this client",
         ));
+    }
+    // Also for clients registered before `Client::check` refused such addresses.
+    if client.allowed_scope == NATIVE_SCOPE && !on_device(&query.redirect_uri) {
+        return Err(OAuthError::bad("invalid_request", OWNER_REDIRECT));
     }
     if query.response_type != "code"
         || query.code_challenge_method != "S256"
@@ -353,6 +389,10 @@ pub async fn authorization(
     sqlx::query!("DELETE FROM oauth_pending WHERE expires_at<unixepoch()")
         .execute(&app.db)
         .await?;
+    sqlx::query!("DELETE FROM oauth_codes WHERE expires_at<unixepoch()")
+        .execute(&app.db)
+        .await?;
+    sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id)").execute(&app.db).await?;
     let request_hash = auth::hash(&request_id);
     sqlx::query!("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,?,?,?,?,?,?,unixepoch() + 600)", request_hash, query.client_id, query.redirect_uri, query.code_challenge, scope, requested_resource, query.state).execute(&app.db).await?;
     Ok(response(
@@ -476,14 +516,16 @@ async fn authenticate(
         client_id
     )
     .fetch_optional(&app.db)
-    .await?;
-    let valid = row.is_some_and(|row| {
-        let expected: String = row.auth_method.clone();
+    .await?
+    .map(|row| (row.auth_method, row.secret_hash))
+    // Registered, but not yet stored: its consent page was never opened.
+    .or_else(|| Client::from_id(&client_id).map(|c| (c.auth_method, c.secret_hash)));
+    let valid = row.is_some_and(|(expected, secret_hash)| {
         expected == method
             && (method == "none"
                 || secret
                     .as_ref()
-                    .zip(row.secret_hash.clone())
+                    .zip(secret_hash)
                     .is_some_and(|(value, hash)| equal_secret(&auth::hash(value), &hash)))
     });
     if !valid {

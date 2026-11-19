@@ -737,3 +737,30 @@ async fn connected_app_usage_survives_rotation_and_ignores_expired_access() {
         "2000-01-01T00:00:00.000Z"
     );
 }
+
+#[tokio::test]
+async fn registering_stores_nothing_so_no_one_can_use_registration_up() {
+    let (_dir, app, r) = setup().await;
+    let stored = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_clients")
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+    };
+    // Past the 20 a minute registration used to allow everyone together.
+    for i in 0..30 {
+        let (status, _, _) = json_call(
+            &r,
+            "/oauth/register",
+            json!({"client_name":format!("Flood {i}"),"redirect_uris":[REDIRECT]}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    assert_eq!(stored().await, 0);
+    // The owner's own client still connects, and is stored once its consent page opens.
+    let client = register(&r).await;
+    approve(&r, &client).await;
+    assert_eq!(stored().await, 1);
+}
