@@ -74,8 +74,10 @@ fn expiry(expires: &str) -> Result<Option<String>> {
     }))
 }
 
-/// Shares the recording, with its link working for `expires` from now. A link that still works
-/// keeps its URL; an expired one gets a new URL, so whoever had the old one does not get it back.
+/// Shares the recording, with its link working for `expires` from now. A link that still works is
+/// returned as it is, its expiry too (only `extend` changes that), so a dialog that had not yet
+/// seen a link made elsewhere cannot shorten or lengthen it; an expired one gets a new URL, so
+/// whoever had the old one does not get it back.
 pub async fn save(
     State(app): State<App>,
     Extension(a): Extension<Access>,
@@ -92,7 +94,8 @@ pub async fn save(
     // another writer gets a new URL too.
     let saved = sqlx::query!(
         "INSERT INTO shares(entry_id,token,created_at,expires_at) SELECT id,?2,?3,?4 FROM entries WHERE id=?1 AND trashed_at IS NULL
-         ON CONFLICT(entry_id) DO UPDATE SET expires_at=excluded.expires_at,
+         ON CONFLICT(entry_id) DO UPDATE SET
+           expires_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN shares.expires_at ELSE excluded.expires_at END,
            token=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN shares.token ELSE excluded.token END,
            created_at=CASE WHEN shares.expires_at IS NULL OR shares.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN shares.created_at ELSE excluded.created_at END
          RETURNING token AS \"token!\",created_at AS \"created_at!\",expires_at",

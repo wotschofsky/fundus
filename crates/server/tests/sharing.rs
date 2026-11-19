@@ -257,19 +257,26 @@ async fn a_link_opens_one_recording_without_signing_in() {
 async fn only_the_owner_manages_links() {
     let v = setup().await;
     let link = share(&v, "7d").await;
-    // Sharing again while the link works keeps its URL, whatever the new expiry.
+    let read = async || {
+        let (_, _, body) = call(
+            &v,
+            "GET",
+            "/api/v1/entries/cedar/share",
+            Some(&v.owner),
+            &[],
+            None,
+        )
+        .await;
+        json(&body)
+    };
+    let before = read().await;
+    // Sharing again while the link works leaves it as it is, its expiry too: a dialog that had
+    // not yet seen a link made elsewhere cannot shorten or lengthen it. Only PATCH changes it.
     assert_eq!(share(&v, "never").await, link);
-    let (_, _, body) = call(
-        &v,
-        "GET",
-        "/api/v1/entries/cedar/share",
-        Some(&v.owner),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(json(&body)["expires_at"], Value::Null);
-    assert_eq!(json(&body)["url"], format!("{ORIGIN}{link}"));
+    let after = read().await;
+    assert_eq!(after["url"], format!("{ORIGIN}{link}"));
+    assert_eq!(after["expires_at"], before["expires_at"]);
+    assert_ne!(after["expires_at"], Value::Null);
     let (_, _, body) = call(&v, "GET", "/api/v1/shares", Some(&v.owner), &[], None).await;
     assert_eq!(json(&body)["shares"][0]["entry_id"], ID);
     assert_eq!(json(&body)["shares"][0]["title"], "Cedar launch");
