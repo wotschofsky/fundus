@@ -199,9 +199,10 @@ function forgetMissing(known: Share[], answered: Set<string>, since: number) {
   for (const link of known)
     if (!answered.has(link.url) && !lapsedUrls.has(link.url)) missing(link.url, since);
 }
-/** Share reads (of a recording's link or of Settings' list) and changes that have ended on this
- * page, answered or failed (a failed one may have gone through). It only grows: a list dropped
- * from memory and read afresh counts on from here, unlike the cache's own per-query counts. */
+/** Share reads (of a recording's link or of Settings' list) that have landed on this page, and
+ * changes that have ended on it, answered or failed (a failed one may have gone through). It only
+ * grows: a list dropped from memory and read afresh counts on from here, unlike the cache's own
+ * per-query counts. */
 let landed = 0;
 /** How many share reads and changes had ended as a change went out, for `keepAnswer`: each
  * counts, even two in one millisecond. */
@@ -233,8 +234,8 @@ export async function keepAnswer(
   return rereadLinks(client, id);
 }
 /** A change to the recording's links has ended, whether or not it worked (one that failed may
- * have gone through before its answer was lost): it counts as landed, shown or not, so an
- * answer sent before it, which may be the older one at the server, is not shown over it; and
+ * have gone through before its answer was lost): it counts as landed, so the answer to a change
+ * sent before it ended, which may be the older one at the server, is not shown over it; and
  * the recording's link and Settings' list are read again. A read still under way may have been
  * answered before the change committed, so it is cancelled rather than kept: the cache would
  * wait for a first read (one with no answer yet) instead of reading again. Settings' list is
