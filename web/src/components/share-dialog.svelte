@@ -48,7 +48,7 @@
   /** The saved link while it works by this page's clock: never offered once it has expired, or
    * once the server has said it is gone. */
   const link = $derived(clock.offered(share.data));
-  /** When a change goes out, how many share reads had landed, for `keepAnswer`. */
+  /** When a change goes out, how many share reads and answers had landed, for `keepAnswer`. */
   const sending = () => ({ sent: sentAt() });
   const save = createMutation(() => ({
     onMutate: sending,
