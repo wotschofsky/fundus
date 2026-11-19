@@ -61,7 +61,11 @@ private enum NativeOAuthFailure: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .message(let message): message
-        case .keychain: "Could not access the saved vault connection in Keychain. Unlock this device and reconnect."
+        #if os(macOS)
+        case .keychain: "Could not access the vault connection in macOS Keychain. Unlock Keychain and reconnect."
+        #else
+        case .keychain: "Could not access the saved vault connection in Keychain. Unlock this iPhone and reconnect."
+        #endif
         case .cancelled: "Connection cancelled."
         }
     }
@@ -279,6 +283,8 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             ])
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
+            // A sign-in while this was under way stored a newer grant: keep that one.
+            if let current = try stored(credentials.server), current.refreshToken != credentials.refreshToken { return current }
             try store(updated)
             return updated
         }
@@ -312,9 +318,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         try VaultConnection.check(result.1, result.0)
         return result.0
     }
-    public func signOut() async {
-        cancelSignIn()
-        let origin = server
+    /// Revokes and forgets the connection to `supplied`, or to the selected vault.
+    public func signOut(server supplied: String? = nil) async {
+        let origin = supplied.flatMap { try? Self.origin($0) } ?? server
+        let selected = origin == server
+        if selected { cancelSignIn() }
         if let credentials = try? stored(origin) {
             _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
         }
@@ -322,6 +330,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         refreshes[origin] = nil
         try? storage.remove(server: origin)
         cached[origin] = nil
+        guard selected else { return }
         isConnected = false
         server = ""
         lastError = nil

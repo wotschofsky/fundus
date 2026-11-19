@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+#if os(iOS)
+import UIKit
+#endif
 
 public struct ImportSessionPlan: Codable, Sendable {
     public let sourceIDs: [String]
@@ -68,8 +71,8 @@ public struct QueueState: Codable, Sendable {
         return URLSession(configuration: configuration)
     }()
     #if os(iOS)
-    /// One refresh and resend per rejected chunk before the queue fails.
-    private var chunkRetried = false
+    /// The chunk (`upload@offset`) already given its one refresh and resend after a 401.
+    private var retriedChunk: String?
     #endif
     private var responseData: [Int: Data] = [:]
     private lazy var session: URLSession = {
@@ -154,10 +157,12 @@ public struct QueueState: Codable, Sendable {
         try await NativeVaultSession.shared.signIn(server: origin)
         try await configureNative(server: origin, timezone: timezone)
     }
-    /// Stops uploading and revokes this iPhone's access to its vault.
+    /// Revokes this iPhone's access to the queue's vault and stops uploading there. Refused while
+    /// an import is unfinished: finish or clear it first.
     public func signOut() async throws {
+        let origin = snapshot.server
         try forgetServer()
-        await NativeVaultSession.shared.signOut()
+        await NativeVaultSession.shared.signOut(server: origin.isEmpty ? nil : origin)
     }
     #endif
     public func enqueue(_ urls: [URL], sessions: [ImportSessionPlan] = [], sourceIDs: [String: String] = [:]) async throws {
@@ -219,7 +224,7 @@ public struct QueueState: Codable, Sendable {
         snapshot.error = nil
         snapshot.state = snapshot.files.contains(where: { $0.originalURL != nil }) ? "copying" : "uploading"
         #else
-        snapshot.error = nil; snapshot.state = "uploading"; chunkRetried = false
+        snapshot.error = nil; snapshot.state = "uploading"; retriedChunk = nil
         #endif
         save(); start()
     }
@@ -257,8 +262,14 @@ public struct QueueState: Codable, Sendable {
         guard runner == nil, snapshot.state == "uploading" else { return }
         #endif
         let currentID = UUID(); runnerID = currentID
+        #if os(iOS)
+        let awake = StayAwake()
+        #endif
         runner = Task {
             defer {
+                #if os(iOS)
+                awake.end()
+                #endif
                 if runnerID == currentID {
                     runner = nil
                     #if os(macOS)
@@ -636,26 +647,33 @@ public struct QueueState: Codable, Sendable {
         let taskID = task.taskIdentifier, itemID = task.taskDescription, response = task.response
         Task { @MainActor in
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
-            guard self.snapshot.state == "uploading", let itemID, self.snapshot.files.contains(where: { $0.id == itemID }) else { return }
+            guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
+            let batch = self.snapshot.importID
             do {
                 if let error { throw error }
                 guard let response else { throw self.failure("No upload response.") }
                 #if os(iOS)
-                if (response as? HTTPURLResponse)?.statusCode == 401, !self.chunkRetried {
-                    self.chunkRetried = true
+                let chunk = "\(itemID)@\(item.offset)"
+                if (response as? HTTPURLResponse)?.statusCode == 401, self.retriedChunk != chunk {
+                    self.retriedChunk = chunk
+                    // Awake until the runner below holds its own: iOS may have woken the app only
+                    // for this chunk, and a refresh cut short loses its rotated token.
+                    let awake = StayAwake()
+                    defer { awake.end() }
                     // HEAD reconciles the offset, then the chunk goes out again with the refreshed token.
                     _ = try await self.connection(forceRefresh: true)
-                    guard self.snapshot.state == "uploading" else { return }
+                    guard self.snapshot.state == "uploading", self.snapshot.importID == batch else { return }
                     self.start()
                     return
                 }
-                self.chunkRetried = false
+                self.retriedChunk = nil
                 #endif
                 try VaultConnection.check(response, data)
                 try? FileManager.default.removeItem(at: self.folder.appendingPathComponent("chunk-\(itemID)"))
                 self.start()
             } catch {
-                guard self.snapshot.state == "uploading" else { return } // Paused while refreshing.
+                // Paused, or another batch started, while refreshing.
+                guard self.snapshot.state == "uploading", self.snapshot.importID == batch else { return }
                 self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save()
             }
         }
@@ -665,6 +683,25 @@ public struct QueueState: Codable, Sendable {
     }
     private func failure(_ message: String) -> NSError { NSError(domain: "VaultUpload", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
+
+#if os(iOS)
+/// Keeps the app running, as long as iOS allows, until `end`. When iOS woke the app only for a
+/// finished background chunk, it may otherwise suspend it mid-refresh (losing the rotated
+/// token) or before the next chunk reaches the background session.
+@MainActor private final class StayAwake {
+    private var id = UIBackgroundTaskIdentifier.invalid
+    init() {
+        id = UIApplication.shared.beginBackgroundTask(withName: "Fundus upload") { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
+    }
+}
+#endif
 
 /// Audio callbacks run on a preparation worker; emit at most twice per second.
 private final class PreparationProgressReporter: @unchecked Sendable {

@@ -63,6 +63,32 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+/// Registration and code exchange answer at once; a refresh answers only after a delay.
+private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var body = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 { body.append(buffer, count: count) }
+        }
+        let url = request.url!, refresh = String(decoding: body, as: UTF8.self).contains("grant_type=refresh_token")
+        let reply = url.path == "/oauth/register" ? #"{"client_id":"synthetic-new-client"}"#
+            : refresh ? #"{"access_token":"oa_synthetic-old-rotated","refresh_token":"synthetic-old-rotated","expires_in":3600,"scope":"vault:owner"}"#
+            : #"{"access_token":"oa_synthetic-new","refresh_token":"synthetic-new-refresh","expires_in":3600,"scope":"vault:owner"}"#
+        let deliver = { [self] in
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(reply.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if refresh { DispatchQueue.global().asyncAfter(deadline: .now() + 0.15, execute: deliver) } else { deliver() }
+    }
+    override func stopLoading() {}
+}
+
 @MainActor final class NativeOAuthSessionTests: XCTestCase {
     private func phoneSession(_ storage: MemoryNativeCredentials) -> NativeVaultSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -154,6 +180,26 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
             XCTAssertTrue(storage.values.isEmpty)
             XCTAssertFalse(session.isConnected)
         }
+    }
+    func testARefreshFinishingAfterANewSignInKeepsTheNewGrant() async throws {
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+        // An upload starts refreshing the old grant, and the owner connects again before it answers.
+        async let refreshing = session.connection(for: origin)
+        try await Task.sleep(for: .milliseconds(30))
+        try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
+            URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
+        }
+        _ = try await refreshing
+        XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh")
+        let current = try await session.connection(for: origin)
+        XCTAssertEqual(current.token, "oa_synthetic-new")
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
