@@ -65,6 +65,11 @@
 * {
   box-sizing: border-box;
 }
+/* Pages keep a scrollbar's space whether or not they scroll, so nothing shifts when a dialog
+   stops the page scrolling. */
+html {
+  scrollbar-gutter: stable;
+}
 body {
   margin: 0;
 }
@@ -266,6 +271,11 @@ label {
   font-size: 17px;
   font-weight: 650;
   letter-spacing: -0.035em;
+}
+/* A share link's page says what it is where the app has its navigation. */
+.header-note {
+  color: var(--muted);
+  font-size: 13px;
 }
 nav {
   display: flex;
@@ -655,7 +665,7 @@ mark {
   width: 100%;
   height: 40px;
 }
-/* Width and shape come from the recording (recording-page.svelte), never above 40vh. */
+/* Width and shape come from the recording (player.svelte), never above 40vh. */
 .player video {
   display: block;
   max-width: 100%;
@@ -1069,6 +1079,10 @@ dd {
 }
 
 /* Dialog */
+/* The page behind an open dialog stays put. */
+html:has(dialog:modal) {
+  overflow: hidden;
+}
 dialog.confirm {
   width: min(420px, calc(100vw - 32px));
   padding: 24px;
@@ -1093,6 +1107,116 @@ dialog.confirm p {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 24px;
+}
+
+/* Share dialog (share-dialog.svelte): who can open a recording, laid out like a document's. */
+dialog.share-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+dialog.share-dialog h2 {
+  overflow-wrap: anywhere;
+}
+dialog.share-dialog h3 {
+  margin-top: 24px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.access {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: start;
+  margin-top: 12px;
+}
+.access-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+}
+.access.shared .access-icon {
+  border-color: var(--control-hover);
+  color: var(--ink);
+}
+dialog.share-dialog .access-body p {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* A menu that reads as text until hovered: the access level, and when the link expires. Its own
+   chevron replaces the native arrow, which some browsers draw over the end of the text. */
+.quiet-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  margin-left: -8px;
+}
+.quiet-select select {
+  appearance: none;
+  min-height: 30px;
+  padding: 4px 28px 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.quiet-select svg {
+  position: absolute;
+  right: 8px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.quiet-select select:hover:not(:disabled) {
+  background: var(--subtle);
+}
+.quiet-select select:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.quiet-select.expiry {
+  margin: 0 -8px 0 0;
+}
+.quiet-select.expiry select {
+  color: var(--body);
+  font-size: 13px;
+  font-weight: 400;
+}
+.stop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.share-url {
+  margin-top: 16px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.share-url input {
+  width: 100%;
+  color: var(--ink);
+  font-size: 13px;
+}
+.share-actions {
+  justify-content: space-between;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 480px) {
+  .access {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+  .quiet-select.expiry {
+    grid-column: 2;
+    justify-self: start;
+    margin: 6px 0 0 -8px;
+  }
 }
 
 /* Sign-in and consent */

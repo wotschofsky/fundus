@@ -162,7 +162,7 @@ Page headings and actions share a row with a (28px) bottom margin. The library t
 
 At (760px) the header becomes (56px) tall with padding (20px); workspace padding becomes (28px 20px 72px). The detail grid becomes one column and the speaker/source panel moves **above** the transcript, so naming speakers never requires scrolling past a long recording. Filters wrap, token creation and row actions stack. At (360px) header padding and navigation gaps reduce further; workspace side padding becomes (16px).
 
-The header scrolls with the page. The audio player is sticky at the viewport top, on white, with a bottom divider. Navigating to a page starts at its top or at its `#anchor`; Back and Forward return to the previous scroll position, and list filters live in the URL. Long titles, transcript prose, addresses, and filenames wrap within their containers.
+Pages keep a scrollbar's width whether or not they scroll, so nothing shifts when a dialog stops the page scrolling. The header scrolls with the page. The audio player is sticky at the viewport top, on white, with a bottom divider. Navigating to a page starts at its top or at its `#anchor`; Back and Forward return to the previous scroll position, and list filters live in the URL. Long titles, transcript prose, addresses, and filenames wrap within their containers.
 
 ## Elevation & Depth
 
@@ -200,7 +200,11 @@ Archive, trash, people, token, connection, and search rows are plain rows separa
 
 ### Dialog
 
-Confirmations use the native modal `<dialog>`: title, one explanatory sentence, Cancel, and an explicit action verb. Escape and Cancel close it unless the action is running; failures show inside the dialog.
+Confirmations use the native modal `<dialog>`: title, one explanatory sentence, Cancel, and an explicit action verb. Escape and Cancel close it unless the action is running; failures show inside the dialog. While any dialog is open, the page behind it does not scroll.
+
+Sharing uses the same dialog surface, laid out like a document's share dialog: General access is a quiet menu (no border, a chevron) choosing Only you or Anyone with the link, beside a round outlined icon that shows which (a lock or a globe); until the page has read which it is, the menu reads Not known yet and cannot be changed, beside a link icon; the link's expiry is a second quiet menu; Copy link and Done sit at the foot of the dialog. Copy link leaves it open; Done or Escape closes it, unless a change is still being saved. Going back to Only you asks inline, with Keep sharing and Stop sharing, rather than in a second dialog.
+
+A share link opens a reading page without the library: the header has the brand and a muted "Shared recording" note in place of navigation, then the recording's date, title, player, summary and transcript, with Download and nothing to edit.
 
 ### Timestamp-linked transcript
 

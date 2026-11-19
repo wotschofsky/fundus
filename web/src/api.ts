@@ -1,4 +1,5 @@
-import { queryOptions } from '@tanstack/svelte-query';
+import { queryOptions, type QueryClient } from '@tanstack/svelte-query';
+import { confirm, leaving, missing } from './link-clock.svelte';
 
 export class ApiError extends Error {
   constructor(
@@ -141,6 +142,152 @@ export type Authorization = {
   scope: string;
   redirect_uri: string;
 };
+
+/** A share link: whoever holds `url` can open the recording until `expires_at` (null: never). */
+export type Share = { url: string; created_at: string; expires_at: string | null };
+export type SharedLink = Share & { entry_id: string; title: string };
+export type Expiry = '1d' | '7d' | '30d' | 'never';
+/** A recording's link while it works, or null; the Share button and dialog read the same. */
+export const shareQuery = (id: string) =>
+  queryOptions({
+    queryKey: ['share', id],
+    queryFn: async ({ client, signal }) => {
+      const known = cachedLinks(client, id);
+      const since = leaving();
+      const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
+      // Cancelled once its answer had arrived: the cache keeps what it had, and so does the page.
+      // ponytail: a cancel in the few microtasks after the query function returns (here and in
+      // Settings' list), before the cache takes the answer, keeps what follows while the cache
+      // reverts. A fresh read follows each cancel (a change ending, the dialog opening; a page
+      // that closed reads at its next mount once its answer is stale, or on focus or a lapse),
+      // which the extra count only makes a change's answer wait for, and which undoes an
+      // omission if it has the link. Reconciling in the query cache's success events is the
+      // upgrade if that ever matters.
+      signal.throwIfAborted();
+      landed++;
+      if (next) confirm(next.url, since);
+      forgetMissing(known, new Set(next ? [next.url] : []), since);
+      return next;
+    },
+  });
+/** Every link that works (Settings → Shared links). */
+export const sharesQuery = queryOptions({
+  queryKey: ['shares'],
+  queryFn: async ({ client, signal }) => {
+    const known = cachedLinks(client);
+    const since = leaving();
+    const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
+    signal.throwIfAborted();
+    landed++;
+    for (const link of next.shares) confirm(link.url, since);
+    forgetMissing(known, new Set(next.shares.map((link) => link.url)), since);
+    return next;
+  },
+});
+/** The links this page holds for a recording (`entry`), or for every recording: from the
+ * recording's own read and from Settings' list. Taken before a read, so a link the server no
+ * longer answers with is known to be gone (stopped or replaced: its token never works again) for
+ * every reader, while a link made during the read, which the read may predate, is not in it. A
+ * read that was cancelled, even once its answer had arrived, throws before it gets that far. */
+export function cachedLinks(client: QueryClient, entry?: string): Share[] {
+  const links: Share[] = [];
+  for (const [key, share] of client.getQueriesData<Share | null>({ queryKey: ['share'] }))
+    if (share && (entry === undefined || key[1] === entry)) links.push(share);
+  for (const link of client.getQueryData<{ shares: SharedLink[] }>(['shares'])?.shares ?? [])
+    if (entry === undefined || link.entry_id === entry) links.push(link);
+  return links;
+}
+/** A link past its expiry by this page's clock. Its absence from a read says nothing more than
+ * the clock does, and the page clock already stops offering it, while taking it for gone would
+ * hide an extension made at its deadline that a read could have just missed. */
+const lapsed = (link: Share) => !!link.expires_at && Date.parse(link.expires_at) <= Date.now();
+/** Takes for gone each held link a read that left at `since` no longer has, unless any copy the
+ * page holds of it has merely lapsed (an older copy in the other view may not show the deadline
+ * it has since read), or a read or change that left later was answered with it (`missing`). */
+function forgetMissing(known: Share[], answered: Set<string>, since: number) {
+  const lapsedUrls = new Set(known.filter(lapsed).map((link) => link.url));
+  for (const link of known)
+    if (!answered.has(link.url) && !lapsedUrls.has(link.url)) missing(link.url, since);
+}
+/** Share reads (of a recording's link or of Settings' list) that have landed on this page, and
+ * changes that have ended on it, answered or failed (a failed one may have gone through). It only
+ * grows: a list dropped from memory and read afresh counts on from here, unlike the cache's own
+ * per-query counts. */
+let landed = 0;
+/** How many share reads had landed and changes had ended as a change went out, for
+ * `keepAnswer`: each counts, even two in one millisecond. */
+export const sentAt = () => landed;
+/** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
+ * cache, unless a read of the link or of Settings' list landed, or another change ended, after
+ * the change was sent: that may be newer than this answer (another tab shared again, or a later
+ * change committed first, answered or not), so the page asks again instead of overwriting it.
+ *
+ * ponytail: tabs do not tell each other what they changed; each page reconciles with the server
+ * when it reads, so another tab's change shows here at this page's next read (offline, not until
+ * it can read). A BroadcastChannel between tabs is the upgrade if that ever matters. */
+export async function keepAnswer(
+  client: QueryClient,
+  id: string,
+  value: Share | null,
+  sent: number,
+  /** `leaving()` as the change went out. */
+  since: number,
+) {
+  // The server answered with this link working: if a racing read took it for gone before the
+  // change went out, it was not.
+  if (value) confirm(value.url, since);
+  // A read still under way would land after this and bring back what was just changed.
+  await client.cancelQueries({ queryKey: ['share', id] });
+  if (landed === sent) client.setQueryData(['share', id], value);
+  // Shown at once if nothing newer landed, and read again either way: another change may have
+  // committed after this one. Not waited for: the change is saved, and a read paused offline
+  // would hold the dialog open until the connection came back.
+  void rereadLinks(client, id);
+}
+/** A change to the recording's links has ended, whether or not it worked (one that failed may
+ * have gone through before its answer was lost): it counts as landed, so the answer to a change
+ * sent before it ended, which may be the older one at the server, is not shown over it; and
+ * the recording's link and Settings' list are read again. A read still under way may have been
+ * answered before the change committed, so it is cancelled rather than kept: the cache would
+ * wait for a first read (one with no answer yet) instead of reading again. Settings' list is
+ * read even while Settings is not shown, as changes are made from a recording's page; a stop
+ * from Settings already takes the link for gone wherever it shows. */
+export async function rereadLinks(client: QueryClient, id: string) {
+  landed++;
+  await Promise.all(
+    [['share', id], ['shares']].map((queryKey) => client.cancelQueries({ queryKey })),
+  );
+  await Promise.all([
+    client.invalidateQueries({ queryKey: ['share', id] }),
+    client.invalidateQueries({ queryKey: ['shares'], refetchType: 'all' }),
+  ]);
+}
+/** The token at the end of a link's URL, which names the link when it is changed or stopped. */
+export const linkToken = (share: Pick<Share, 'url'>) =>
+  share.url.slice(share.url.lastIndexOf('/') + 1);
+/** The answer for a link that is no longer there: stopped, expired or replaced meanwhile. */
+export const gone = (error: unknown) => error instanceof ApiError && error.status === 404;
+/** A recording as its share link shows it: no labels, sources or speaker evidence. */
+export type SharedEntry = Pick<
+  Entry,
+  | 'title'
+  | 'recorded_at'
+  | 'duration_ms'
+  | 'stage'
+  | 'summary'
+  | 'summary_manual'
+  | 'audio_available'
+> & {
+  video: Omit<NonNullable<Entry['video']>, 'failure'> | null;
+  speakers: Pick<Speaker, 'label' | 'name'>[];
+};
+
+/** A share link's own data (`/s/{token}/…`), read with the link alone, never a session. */
+export async function shared<T>(token: string, path: string, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(`/s/${encodeURIComponent(token)}/${path}`, { credentials: 'omit', signal });
+  if (!r.ok) throw new ApiError(r.status, `Request failed (${r.status})`);
+  return await r.json();
+}
 
 /** Every transcript page, in order. The server caps page size; follow next_cursor until done. */
 export async function transcript(id: string, signal?: AbortSignal): Promise<Segment[]> {

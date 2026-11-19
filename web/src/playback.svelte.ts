@@ -13,6 +13,13 @@ export function activeIndex(rows: Segment[], ms: number) {
   return low - 1;
 }
 
+/** Scrolls the page now, or once the open dialog closes: the page behind a dialog stays put. */
+function behindDialogs(scroll: () => void) {
+  const dialog = document.querySelector('dialog:modal');
+  if (dialog) dialog.addEventListener('close', () => behindDialogs(scroll), { once: true });
+  else scroll();
+}
+
 /**
  * Transcript-linked playback. `active` changes only when the spoken segment changes, so
  * playback touches two transcript rows, not all of them, however long the recording is.
@@ -60,16 +67,20 @@ export class Playback {
       const id = list[index]?.id;
       if (id)
         requestAnimationFrame(() =>
-          document.getElementById(id)?.scrollIntoView({ block: 'center' }),
+          behindDialogs(() => document.getElementById(id)?.scrollIntoView({ block: 'center' })),
         );
     });
 
     $effect(() => {
       if (!this.follow || !this.playing || this.active < 0) return;
-      const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      document
-        .getElementById(rows()[this.active]?.id)
-        ?.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      behindDialogs(() => {
+        // The turn playing by now, once a dialog that held this back has closed.
+        if (!this.follow || !this.playing || this.active < 0) return;
+        const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        document
+          .getElementById(rows()[this.active]?.id)
+          ?.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      });
     });
 
     // Space toggles playback unless a control has focus; Shift+Space still scrolls up.

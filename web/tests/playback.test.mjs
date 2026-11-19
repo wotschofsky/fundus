@@ -132,3 +132,83 @@ test('a paused player that is replaced stays paused at its place', () => {
   assert.equal(video.playing, false);
   stop();
 });
+
+test('following the transcript leaves the page still while a dialog is open', () => {
+  const rows = [
+    { id: 'a', start_ms: 0, end_ms: 1000 },
+    { id: 'b', start_ms: 1000, end_ms: 2000 },
+    { id: 'c', start_ms: 2000, end_ms: 3000 },
+  ];
+  const scrolled = [];
+  let dialog = null;
+  globalThis.document = {
+    getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
+    querySelector: (selector) => (selector === 'dialog:modal' ? dialog : null),
+  };
+  globalThis.matchMedia = () => ({ matches: false });
+  let playback;
+  const stop = effect_root(() => {
+    playback = new Playback(
+      () => rows,
+      () => 0,
+    );
+  });
+  try {
+    playback.follow = true;
+    playback.playing = true;
+    playback.active = 0;
+    flush();
+    assert.deepEqual(scrolled, ['a']);
+    dialog = new EventTarget();
+    playback.active = 1;
+    flush();
+    assert.deepEqual(scrolled, ['a']);
+    // Closing the dialog catches up with the turn now playing.
+    const open = dialog;
+    dialog = null;
+    open.dispatchEvent(new Event('close'));
+    assert.deepEqual(scrolled, ['a', 'b']);
+    playback.active = 2;
+    flush();
+    assert.deepEqual(scrolled, ['a', 'b', 'c']);
+  } finally {
+    stop();
+    delete globalThis.document;
+    delete globalThis.matchMedia;
+  }
+});
+
+test('revealing a linked passage leaves the page still while a dialog is open', () => {
+  const rows = [
+    { id: 'a', start_ms: 0, end_ms: 1000 },
+    { id: 'b', start_ms: 1000, end_ms: 2000 },
+  ];
+  const scrolled = [];
+  let dialog = new EventTarget();
+  globalThis.document = {
+    getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
+    querySelector: (selector) => (selector === 'dialog:modal' ? dialog : null),
+  };
+  globalThis.requestAnimationFrame = (frame) => frame();
+  let playback;
+  const stop = effect_root(() => {
+    playback = new Playback(
+      () => rows,
+      () => 1500,
+    );
+  });
+  try {
+    flush();
+    assert.equal(playback.active, 1);
+    assert.deepEqual(scrolled, []);
+    // Closing the dialog reveals the passage after all.
+    const open = dialog;
+    dialog = null;
+    open.dispatchEvent(new Event('close'));
+    assert.deepEqual(scrolled, ['b']);
+  } finally {
+    stop();
+    delete globalThis.document;
+    delete globalThis.requestAnimationFrame;
+  }
+});
