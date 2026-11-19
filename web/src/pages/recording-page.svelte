@@ -130,7 +130,8 @@
   const save = (edit: EntryEdit) =>
     act(async () => {
       await api(`/v1/entries/${id}`, send('PATCH', edit));
-      await refresh();
+      // Settings' shared links show the title too.
+      await Promise.all([refresh(), qc.invalidateQueries({ queryKey: ['shares'] })]);
       editing = false;
     });
   // Fails to the control, which shows the error beside it and keeps a typed name.

@@ -111,7 +111,9 @@
     </div>
     <ErrorNotice error={segments.error} />
     {#if rows.length === 0 && !segments.error}
-      {#if segments.isFetching}
+      <!-- Says there is no transcript only once this stage's read has answered: a first read paused
+           offline is not fetching, and the previous stage's rows stand in while it reads. -->
+      {#if !segments.isSuccess || segments.isPlaceholderData || segments.isFetching}
         <LoadingState label="Loading transcript…" />
       {:else}
         <p class="muted">
