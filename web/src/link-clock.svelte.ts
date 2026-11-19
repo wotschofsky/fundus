@@ -29,7 +29,11 @@ const seen = new Map<string, number>();
  * left after it was answered with the link working. Either answer may be the newer one at the
  * server; the link stays offered until the page's next read settles it. */
 export function missing(url: string, since: number) {
-  if ((seen.get(url) ?? 0) < since) forget(url);
+  if ((seen.get(url) ?? 0) >= since) return;
+  // Marked as of when that read left, not when it landed, so a read that left after it and finds
+  // the link working still brings it back (`confirm`), whichever lands first; never earlier than a
+  // mark already there (a stop or a 404 comes after the server committed it).
+  dead.set(url, Math.max(dead.get(url) ?? 0, since));
 }
 
 /** The owner's pages decide by their own clock whether a share link still works, so an expired

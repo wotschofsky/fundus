@@ -316,3 +316,28 @@ test("a change's answer is shown at once and then read again, so crossed answers
   // Another change may have committed after this one: the next read settles it.
   assert.equal(client.getQueryState(['share', 'cedar']).isInvalidated, true);
 });
+
+test('a newer read returning a link undoes an older omission that landed first', async () => {
+  const client = new QueryClient();
+  const held = link();
+  client.setQueryData(['share', 'cedar'], held);
+  // The recording's read leaves first and will answer no link; Settings' read leaves after it
+  // and will answer the link working. The older one lands first.
+  let releaseOlder, releaseNewer;
+  globalThis.fetch = (url) =>
+    new Promise((resolve) => {
+      const body = String(url).endsWith('/v1/shares') ? { shares: [held] } : null;
+      const go = () => resolve(Response.json(body));
+      if (body) releaseNewer = go;
+      else releaseOlder = go;
+    });
+  const older = client.fetchQuery(shareQuery('cedar'));
+  await delay(0);
+  const newer = client.fetchQuery(sharesQuery);
+  await delay(0);
+  releaseOlder();
+  await older;
+  releaseNewer();
+  await newer;
+  assert.equal(offered(held), true);
+});
