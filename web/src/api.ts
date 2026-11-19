@@ -174,13 +174,32 @@ export const sharesQuery = queryOptions({
  * longer answers with is known to be gone (stopped, expired or replaced: its token never works
  * again) for every reader, while a link made during the read, which the read may predate, is
  * not in it. A read that was cancelled throws before it gets that far. */
-function cachedLinks(client: QueryClient, entry?: string): string[] {
+export function cachedLinks(client: QueryClient, entry?: string): string[] {
   const urls: string[] = [];
   for (const [key, share] of client.getQueriesData<Share | null>({ queryKey: ['share'] }))
     if (share && (entry === undefined || key[1] === entry)) urls.push(share.url);
   for (const link of client.getQueryData<{ shares: SharedLink[] }>(['shares'])?.shares ?? [])
     if (entry === undefined || link.entry_id === entry) urls.push(link.url);
   return urls;
+}
+/** When the recording's link was last read or saved here: taken as a change is sent, for
+ * `keepAnswer`. */
+export const sentAt = (client: QueryClient, id: string) =>
+  client.getQueryState(['share', id])?.dataUpdatedAt ?? 0;
+/** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
+ * cache, unless a read landed after the change was sent: that read may be newer than the answer
+ * (another tab shared again, say), so the page asks again instead of overwriting it. */
+export async function keepAnswer(
+  client: QueryClient,
+  id: string,
+  value: Share | null,
+  sent: number,
+) {
+  // A read still under way would land after this and bring back what was just changed.
+  await client.cancelQueries({ queryKey: ['share', id] });
+  if (sentAt(client, id) === sent) client.setQueryData(['share', id], value);
+  else await client.invalidateQueries({ queryKey: ['share', id] });
+  return client.invalidateQueries({ queryKey: ['shares'] });
 }
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */
 export const linkToken = (share: Pick<Share, 'url'>) =>

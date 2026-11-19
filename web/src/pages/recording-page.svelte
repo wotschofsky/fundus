@@ -13,6 +13,7 @@
   import {
     ApiError,
     api,
+    cachedLinks,
     isProcessing,
     peopleQuery,
     send,
@@ -21,7 +22,6 @@
     type Entry,
     type Person,
     type Segment,
-    type SharedLink,
   } from '../api';
   import { dateTime, downloadTranscript, duration, speakerNames, startAt } from '../format';
   import { Playback } from '../playback.svelte';
@@ -154,12 +154,12 @@
       text: `${entry.data && isProcessing(entry.data) ? 'Processing stops after its current step. ' : ''}It disappears from your library, search and chat apps${offered ? ', and its share link stops working' : ''}. You can restore it from Trash.`,
       action: 'Move to Trash',
       run: async () => {
+        // The links Trash deletes: those this page or Settings held as it went out, not one
+        // read after it (another tab may have restored and shared again by then).
+        const deleted = cachedLinks(qc, id);
         await api(`/v1/entries/${id}/trash`, send('POST'));
-        // Trash deleted the link: gone for every reader, Settings' list too, whatever this page
-        // or Settings last read of it.
-        if (share.data) forget(share.data.url);
-        for (const link of qc.getQueryData<{ shares: SharedLink[] }>(['shares'])?.shares ?? [])
-          if (link.entry_id === id) forget(link.url);
+        // Gone for every reader, Settings' list too.
+        for (const url of deleted) forget(url);
         await refresh();
         qc.removeQueries({ queryKey: ['share', id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });

@@ -4,7 +4,17 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
-  import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
+  import {
+    api,
+    type Expiry,
+    gone,
+    keepAnswer,
+    linkToken,
+    send,
+    sentAt,
+    type Share,
+    shareQuery,
+  } from '../api';
   import { date } from '../format';
   import { forget, type LinkClock } from '../link-clock.svelte';
   import ErrorNotice from './error-notice.svelte';
@@ -38,16 +48,13 @@
   /** The saved link while it works by this page's clock: never offered once it has expired, or
    * once the server has said it is gone. */
   const link = $derived(clock.offered(share.data));
-  const saved = async (value: Share | null) => {
-    // A read still under way would land after this and bring back what was just changed.
-    await qc.cancelQueries({ queryKey: ['share', id] });
-    qc.setQueryData(['share', id], value);
-    return qc.invalidateQueries({ queryKey: ['shares'] });
-  };
+  /** When a change goes out, what the page then held of the link, for `keepAnswer`. */
+  const sending = () => ({ sent: sentAt(qc, id) });
   const save = createMutation(() => ({
+    onMutate: sending,
     mutationFn: (expires: Expiry) =>
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
-    onSuccess: saved,
+    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
   }));
   /** The named link is no longer there (stopped, expired or replaced elsewhere): drop it and ask
    * again. */
@@ -59,22 +66,24 @@
   };
   /** Changes only the link shown, so it never shares again or touches a link that replaced it. */
   const extend = createMutation(() => ({
+    onMutate: sending,
     mutationFn: ({ link, expires }: { link: Share; expires: Expiry }) =>
       api<Share>(`/v1/entries/${id}/share`, send('PATCH', { expires, token: linkToken(link) })),
-    onSuccess: saved,
+    onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
     onError: (error, { link }) => reread(error, link.url),
   }));
   const stop = createMutation(() => ({
+    onMutate: sending,
     mutationFn: (url: string) =>
       api(
         `/v1/entries/${id}/share?token=${encodeURIComponent(linkToken({ url }))}`,
         send('DELETE'),
       ),
-    onSuccess: (_, url) => {
+    onSuccess: (_, url, context) => {
       stopping = null;
       // Gone for every reader, Settings' list too, even before it refreshes.
       forget(url);
-      return saved(null);
+      return keepAnswer(qc, id, null, context.sent);
     },
     onError: (error, url) => {
       stopping = null;

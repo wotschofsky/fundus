@@ -40,7 +40,7 @@ registerHooks({
   },
 });
 globalThis.document ??= new EventTarget();
-const { shareQuery, sharesQuery } = await import('../src/api.ts');
+const { keepAnswer, shareQuery, sharesQuery } = await import('../src/api.ts');
 const { LinkClock } = await import('../src/link-clock.svelte.ts');
 
 let made = 0;
@@ -118,4 +118,27 @@ test('a link made while Settings was reading stays offered', async () => {
   release();
   await read;
   assert.equal(offered(fresh), true);
+});
+
+test("a change's answer does not overwrite a read that landed after the change was sent", async () => {
+  const client = new QueryClient();
+  const stopped = link();
+  client.setQueryData(['share', 'cedar'], stopped);
+  const sent = client.getQueryState(['share', 'cedar']).dataUpdatedAt;
+  await delay(2);
+  // Stop sharing went out; another tab shared again, and this page read the new link.
+  const replacement = link();
+  client.setQueryData(['share', 'cedar'], replacement);
+  await keepAnswer(client, 'cedar', null, sent);
+  assert.deepEqual(client.getQueryData(['share', 'cedar']), replacement);
+});
+
+test("a change's answer lands when nothing newer was read meanwhile", async () => {
+  const client = new QueryClient();
+  const before = link();
+  client.setQueryData(['share', 'cedar'], before);
+  const sent = client.getQueryState(['share', 'cedar']).dataUpdatedAt;
+  const changed = { ...before, expires_at: '2026-12-01T00:00:00.000Z' };
+  await keepAnswer(client, 'cedar', changed, sent);
+  assert.deepEqual(client.getQueryData(['share', 'cedar']), changed);
 });
