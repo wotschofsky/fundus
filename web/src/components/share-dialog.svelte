@@ -48,10 +48,16 @@
   /** The saved link while it works by this page's clock: never offered once it has expired, or
    * once the server has said it is gone. */
   const link = $derived(clock.offered(share.data));
+  /** The change sent last: only its error is shown, not that of an earlier change since
+   * overtaken (a failed expiry change before a Stop that worked, say). */
+  let latest = $state<'save' | 'extend' | 'stop' | null>(null);
   /** When a change goes out, how many share reads and answers had landed, for `keepAnswer`. */
-  const sending = () => ({ sent: sentAt() });
+  const sending = (change: 'save' | 'extend' | 'stop') => () => {
+    latest = change;
+    return { sent: sentAt() };
+  };
   const save = createMutation(() => ({
-    onMutate: sending,
+    onMutate: sending('save'),
     mutationFn: (expires: Expiry) =>
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
     onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
@@ -66,14 +72,14 @@
   };
   /** Changes only the link shown, so it never shares again or touches a link that replaced it. */
   const extend = createMutation(() => ({
-    onMutate: sending,
+    onMutate: sending('extend'),
     mutationFn: ({ link, expires }: { link: Share; expires: Expiry }) =>
       api<Share>(`/v1/entries/${id}/share`, send('PATCH', { expires, token: linkToken(link) })),
     onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent),
     onError: (error, { link }) => reread(error, link.url),
   }));
   const stop = createMutation(() => ({
-    onMutate: sending,
+    onMutate: sending('stop'),
     mutationFn: (url: string) =>
       api(
         `/v1/entries/${id}/share?token=${encodeURIComponent(linkToken({ url }))}`,
@@ -102,6 +108,7 @@
   $effect(() => {
     if (open && !dialog.open) {
       stopping = null;
+      latest = null;
       copied = 'idle';
       save.reset();
       extend.reset();
@@ -236,9 +243,9 @@
   <!-- A link gone meanwhile is not an error: the dialog asks again and shows what is there. -->
   <ErrorNotice
     error={share.error ??
-      save.error ??
-      (gone(extend.error) ? null : extend.error) ??
-      (gone(stop.error) ? null : stop.error)}
+      (latest === 'save' ? save.error : null) ??
+      (latest === 'extend' && !gone(extend.error) ? extend.error : null) ??
+      (latest === 'stop' && !gone(stop.error) ? stop.error : null)}
   />
   <div class="dialog-actions share-actions">
     <button type="button" disabled={!link || confirming} onclick={copy}>

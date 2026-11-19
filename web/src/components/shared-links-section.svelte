@@ -30,7 +30,8 @@
         });
         // Stopped, here or before: it leaves the list now, even if the refresh below fails.
         forget(link.url);
-        qc.removeQueries({ queryKey: ['share', link.entry_id] });
+        // Asked again rather than dropped: a recording page may still be showing that query.
+        qc.invalidateQueries({ queryKey: ['share', link.entry_id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });
       },
     });
