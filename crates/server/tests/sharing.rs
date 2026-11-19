@@ -21,7 +21,9 @@ struct Vault {
     _dir: tempfile::TempDir,
     app: App,
     router: Router,
+    /// The owner's browser session.
     owner: String,
+    /// A chat app's MCP read grant.
     reader: String,
 }
 
@@ -29,8 +31,7 @@ async fn setup() -> Vault {
     vault(false).await
 }
 /// With `proxy_auth`, requests come signed in by Cloudflare Access as the owner (unless they carry
-/// a token of their own) and write nothing before the handler runs (a session token records when
-/// it was last used). Without, password mode, whatever the environment says.
+/// a token of their own). Without, password mode, whatever the environment says.
 async fn vault(proxy_auth: bool) -> Vault {
     let dir = tempfile::tempdir().unwrap();
     let web = dir.path().join("web");
@@ -46,8 +47,8 @@ async fn vault(proxy_auth: bool) -> Vault {
         common::proxy(&mut c);
     }
     let app = App::new(c).await.unwrap();
-    let owner = auth::issue(&app, "Web session", "session").await.unwrap();
-    let reader = auth::issue(&app, "test reader", "read").await.unwrap();
+    let owner = auth::session(&app).await.unwrap();
+    let reader = common::grant(&app, "mcp:read").await;
     for sql in [
         // With a converted video.
         "INSERT INTO entries(id,fingerprint,title,duration_ms,timezone,stage,summary,audio_path,video_status,video_width,video_height,created_at,updated_at) VALUES('cedar','cedar','Cedar launch',12000,'UTC','complete','{A} plans the launch with {B}.','playback.m4a','ready',1280,720,'2026-11-18T10:00:00.000Z','2026-11-18T10:00:00.000Z')",
@@ -84,13 +85,20 @@ async fn call(
     v: &Vault,
     method: &str,
     path: &str,
-    bearer: Option<&str>,
+    credential: Option<&str>,
     headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> (StatusCode, HeaderMap, Vec<u8>) {
     let mut req = Request::builder().method(method).uri(path);
-    if let Some(token) = bearer {
-        req = req.header("Authorization", format!("Bearer {token}"));
+    match credential {
+        // The owner's browser: its session cookie, sent from the vault's own pages.
+        Some(session) if session == v.owner => {
+            req = req
+                .header("Cookie", format!("vault_session={session}"))
+                .header("Origin", ORIGIN);
+        }
+        Some(token) => req = req.header("Authorization", format!("Bearer {token}")),
+        None => {}
     }
     if body.is_some() {
         req = req.header("Content-Type", "application/json");
@@ -294,7 +302,7 @@ async fn only_the_owner_manages_links() {
     assert_eq!(json(&body)["shares"][0]["entry_id"], ID);
     assert_eq!(json(&body)["shares"][0]["title"], "Cedar launch");
 
-    // A read token reads recordings, but neither sees nor changes links.
+    // An MCP read grant reads recordings through MCP only: it neither sees nor changes links.
     let stop = format!("/api/v1/entries/cedar/share?token={}", token(&link));
     for (method, path, body) in [
         ("GET", "/api/v1/entries/cedar/share", None),
@@ -312,7 +320,7 @@ async fn only_the_owner_manages_links() {
         ("GET", "/api/v1/shares", None),
     ] {
         let (status, _, _) = call(&v, method, path, Some(&v.reader), &[], body).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
     }
     let (status, _, _) = call(
         &v,
@@ -500,12 +508,12 @@ async fn sharing_that_waits_past_expiry_makes_a_new_link() {
 async fn an_expiry_change_never_makes_a_link() {
     let v = setup().await;
     let link = share(&v, "1d").await;
-    let patch = async |bearer: &str, link: &str, expires: &str| {
+    let patch = async |credential: &str, link: &str, expires: &str| {
         call(
             &v,
             "PATCH",
             "/api/v1/entries/cedar/share",
-            Some(bearer),
+            Some(credential),
             &[],
             Some(json!({"expires": expires, "token": token(link)})),
         )
@@ -517,7 +525,10 @@ async fn an_expiry_change_never_makes_a_link() {
     let saved = json(&body);
     assert_eq!(saved["url"], format!("{ORIGIN}{link}"));
     assert_eq!(saved["expires_at"], Value::Null);
-    assert_eq!(patch(&v.reader, &link, "7d").await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        patch(&v.reader, &link, "7d").await.0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         patch(&v.owner, &link, "forever").await.0,
         StatusCode::BAD_REQUEST

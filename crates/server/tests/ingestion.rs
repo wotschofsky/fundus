@@ -21,10 +21,11 @@ async fn setup() -> (tempfile::TempDir, App, axum::Router, String, String) {
     auth::init_owner(&app, "synthetic-test-password")
         .await
         .unwrap();
-    let upload = auth::issue(&app, "test uploader", "upload").await.unwrap();
-    let read = auth::issue(&app, "test reader", "read").await.unwrap();
+    // A native app's owner grant, and a chat app's MCP read grant.
+    let owner = common::grant(&app, "vault:owner").await;
+    let read = common::grant(&app, "mcp:read").await;
     let r = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
-    (dir, app, r, upload, read)
+    (dir, app, r, owner, read)
 }
 async fn call(
     r: &axum::Router,
@@ -52,43 +53,127 @@ async fn call(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+/// The status of a request from the vault's own pages, with `headers`.
+async fn browser(
+    r: &axum::Router,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> StatusCode {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("Origin", "http://localhost:3000");
+    for (name, value) in headers {
+        b = b.header(*name, *value);
+    }
+    r.clone()
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
 #[tokio::test]
-async fn scopes_enforced_and_revocation_immediate() {
-    let (_dir, app, r, u, read) = setup().await;
+async fn a_session_lasts_until_sign_out_or_expiry() {
+    let (_dir, app, r, _, _) = setup().await;
     assert_eq!(
-        call(&r, "GET", "/api/v1/entries", None, json!(null))
-            .await
-            .0,
+        browser(&r, "GET", "/api/v1/entries", &[]).await,
         StatusCode::UNAUTHORIZED
     );
+    let expiring = format!("vault_session={}", auth::session(&app).await.unwrap());
     assert_eq!(
-        call(&r, "GET", "/api/v1/entries", Some(&u), json!(null))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        call(&r, "POST", "/api/v1/imports", Some(&read), json!({}))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        call(&r, "GET", "/api/v1/entries", Some(&read), json!(null))
-            .await
-            .0,
+        browser(&r, "GET", "/api/v1/entries", &[("Cookie", &expiring)]).await,
         StatusCode::OK
     );
-    sqlx::query("DELETE FROM credentials WHERE hash=?")
-        .bind(auth::hash(&read))
+    sqlx::query("UPDATE credentials SET expires_at='2000-01-01T00:00:00.000Z'")
         .execute(&app.db)
         .await
         .unwrap();
     assert_eq!(
-        call(&r, "GET", "/api/v1/entries", Some(&read), json!(null))
-            .await
-            .0,
+        browser(&r, "GET", "/api/v1/entries", &[("Cookie", &expiring)]).await,
         StatusCode::UNAUTHORIZED
+    );
+    let cookie = format!("vault_session={}", auth::session(&app).await.unwrap());
+    assert_eq!(
+        browser(&r, "POST", "/api/v1/logout", &[("Cookie", &cookie)]).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        browser(&r, "GET", "/api/v1/entries", &[("Cookie", &cookie)]).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+/// Static tokens are gone: a row one left behind opens nothing, and a browser route answers any
+/// `Authorization` header with 401, even next to the owner's own session.
+#[tokio::test]
+async fn leftover_tokens_and_authorization_headers_open_nothing() {
+    let (_dir, app, r, owner, read) = setup().await;
+    let session = format!("vault_session={}", auth::session(&app).await.unwrap());
+    for scope in ["upload", "read", "admin"] {
+        let token = common::leftover_token(&app, scope).await;
+        let cookie = format!("vault_session={token}");
+        let bearer = format!("Bearer {token}");
+        assert_eq!(
+            browser(&r, "GET", "/api/v1/entries", &[("Cookie", &cookie)]).await,
+            StatusCode::UNAUTHORIZED,
+            "{scope} as a session"
+        );
+        for path in ["/api/v1/entries", "/api/native/v1/entries"] {
+            assert_eq!(
+                call(&r, "GET", path, Some(&token), json!(null)).await.0,
+                StatusCode::UNAUTHORIZED,
+                "{scope} on {path}"
+            );
+        }
+        let (status, _) = call(&r, "POST", "/mcp", Some(&token), json!({})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{scope} on MCP");
+        assert_eq!(
+            browser(
+                &r,
+                "GET",
+                "/api/v1/entries",
+                &[("Cookie", &session), ("Authorization", &bearer)]
+            )
+            .await,
+            StatusCode::UNAUTHORIZED,
+            "{scope} beside a session"
+        );
+    }
+    for authorization in [
+        format!("Bearer {owner}"),
+        format!("Bearer {read}"),
+        "Bearer invalid".into(),
+        "Basic b3duZXI6cGFzc3dvcmQ=".into(),
+    ] {
+        for (method, path) in [("GET", "/api/v1/me"), ("POST", "/api/web/v1/imports")] {
+            assert_eq!(
+                browser(
+                    &r,
+                    method,
+                    path,
+                    &[("Cookie", &session), ("Authorization", &authorization)]
+                )
+                .await,
+                StatusCode::UNAUTHORIZED,
+                "{authorization} on {path}"
+            );
+        }
+    }
+    // MCP takes no session either.
+    assert_eq!(
+        browser(&r, "POST", "/mcp", &[("Cookie", &session)]).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // Nothing makes a token any more.
+    for (method, path) in [("GET", "/api/v1/tokens"), ("POST", "/api/v1/tokens")] {
+        assert_eq!(
+            browser(&r, method, path, &[("Cookie", &session)]).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        browser(&r, "GET", "/api/v1/me", &[("Cookie", &session)]).await,
+        StatusCode::OK
     );
 }
 #[tokio::test]
@@ -97,7 +182,7 @@ async fn tus_offsets_survive_restart_and_finalization_is_idempotent() {
     let (_, batch) = call(
         &r,
         "POST",
-        "/api/v1/imports",
+        "/api/native/v1/imports",
         Some(&u),
         json!({"recorder_timezone":"UTC"}),
     )
@@ -107,7 +192,7 @@ async fn tus_offsets_survive_restart_and_finalization_is_idempotent() {
     let encode = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
     let request = Request::builder()
         .method("POST")
-        .uri("/api/v1/uploads")
+        .uri("/api/native/v1/uploads")
         .header("Authorization", format!("Bearer {u}"))
         .header("Tus-Resumable", "1.0.0")
         .header("Upload-Length", "6")
@@ -124,6 +209,7 @@ async fn tus_offsets_survive_restart_and_finalization_is_idempotent() {
     let response = r.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let path = response.headers()["location"].to_str().unwrap().to_string();
+    assert!(path.starts_with("/api/native/v1/uploads/"), "{path}");
     for (offset, data, expected) in [
         (0, "abc", StatusCode::NO_CONTENT),
         (0, "def", StatusCode::CONFLICT),
@@ -166,7 +252,7 @@ async fn tus_offsets_survive_restart_and_finalization_is_idempotent() {
             call(
                 &r,
                 "POST",
-                &format!("/api/v1/imports/{batch}/complete"),
+                &format!("/api/native/v1/imports/{batch}/complete"),
                 Some(&u),
                 json!({})
             )
@@ -209,13 +295,11 @@ async fn browser_mutations_require_same_origin() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/tokens")
+                .uri("/api/v1/people")
                 .header("Cookie", cookie)
                 .header("Content-Type", "application/json")
                 .header("Origin", "https://foreign.example")
-                .body(Body::from(
-                    json!({"name":"test","scope":"read"}).to_string(),
-                ))
+                .body(Body::from(json!({"name":"Synthetic person"}).to_string()))
                 .unwrap(),
         )
         .await
@@ -273,12 +357,12 @@ async fn mcp_lists_real_read_only_tools() {
 
 #[tokio::test]
 async fn numeric_search_filters_deserialize() {
-    let (_d, _app, r, _u, read) = setup().await;
+    let (_d, _app, r, owner, _) = setup().await;
     let (status, _) = call(
         &r,
         "GET",
-        "/api/v1/search?q=synthetic&limit=2&cursor=0",
-        Some(&read),
+        "/api/native/v1/search?q=synthetic&limit=2&cursor=0",
+        Some(&owner),
         json!(null),
     )
     .await;
@@ -286,7 +370,7 @@ async fn numeric_search_filters_deserialize() {
 }
 
 #[tokio::test]
-async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
+async fn proxy_auth_trusts_only_browser_routes() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env().unwrap();
     config.data = dir.path().into();
@@ -294,11 +378,10 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     common::proxy(&mut config);
     let app = App::new(config).await.unwrap();
     // Proxy mode has no initialized owner account or browser session.
-    let upload = auth::issue(&app, "uploader", "upload").await.unwrap();
-    let read = auth::issue(&app, "reader", "read").await.unwrap();
-    let session = auth::issue(&app, "old browser session", "session")
-        .await
-        .unwrap();
+    let owner = common::grant(&app, "vault:owner").await;
+    let read = common::grant(&app, "mcp:read").await;
+    let leftover = common::leftover_token(&app, "admin").await;
+    let session = auth::session(&app).await.unwrap();
     let r = common::signed_in(
         &app,
         fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
@@ -307,16 +390,13 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["auth_mode"], "proxy");
     assert_eq!(me["scope"], "admin");
-    assert_eq!(
-        call(&r, "GET", "/api/v1/tokens", None, json!(null)).await.0,
-        StatusCode::OK
-    );
+    // Access's sign-in is for browser routes only.
     for (method, path) in [
         ("POST", "/mcp"),
-        ("POST", "/api/v1/imports"),
-        ("OPTIONS", "/api/v1/uploads"),
-        ("HEAD", "/api/v1/uploads/missing"),
-        ("GET", "/api/v1/imports/missing"),
+        ("POST", "/api/native/v1/imports"),
+        ("OPTIONS", "/api/native/v1/uploads"),
+        ("HEAD", "/api/native/v1/uploads/missing"),
+        ("GET", "/api/native/v1/imports/missing"),
     ] {
         assert_eq!(
             call(&r, method, path, None, json!({})).await.0,
@@ -325,35 +405,27 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
         );
     }
     assert_eq!(
-        call(&r, "OPTIONS", "/api/v1/uploads", Some(&upload), json!(null))
-            .await
-            .0,
+        call(
+            &r,
+            "OPTIONS",
+            "/api/native/v1/uploads",
+            Some(&owner),
+            json!(null)
+        )
+        .await
+        .0,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(
-        call(&r, "GET", "/api/v1/tokens", Some(&upload), json!(null))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        call(&r, "GET", "/api/v1/tokens", Some(&read), json!(null))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        call(&r, "GET", "/api/v1/tokens", Some("invalid"), json!(null))
-            .await
-            .0,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        call(&r, "POST", "/api/v1/imports", Some(&read), json!({}))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
+    // A request with its own credential is not taken for the owner's browser, though Access's
+    // token comes along: no grant, leftover token or session counts there.
+    for token in [owner.as_str(), &read, &leftover, &session, "invalid"] {
+        assert_eq!(
+            call(&r, "GET", "/api/v1/me", Some(token), json!(null))
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
     assert_eq!(
         call(&r, "POST", "/api/login", None, json!({"password":"unused"}))
             .await
@@ -367,7 +439,7 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     ] {
         let mut req = Request::builder()
             .method("POST")
-            .uri("/api/v1/tokens")
+            .uri("/api/v1/people")
             .header("Content-Type", "application/json");
         if let Some(origin) = origin {
             req = req.header("Origin", origin);
@@ -375,7 +447,7 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
         let response = r
             .clone()
             .oneshot(
-                req.body(Body::from(r#"{"name":"browser-created","scope":"read"}"#))
+                req.body(Body::from(r#"{"name":"Synthetic person"}"#))
                     .unwrap(),
             )
             .await
@@ -389,11 +461,12 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
             }
         );
     }
+    // A session cookie means nothing in proxy mode, and nothing to the native routes.
     let response = r
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/imports")
+                .uri("/api/native/v1/imports")
                 .header("Cookie", format!("vault_session={session}"))
                 .header("Origin", "https://vault.example.com")
                 .header("Content-Type", "application/json")
@@ -465,7 +538,7 @@ async fn the_web_library_uploads_with_its_proxy_session_and_same_origin_only() {
         .unwrap();
     let response = r.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    // The upload continues where it was created, behind the proxy, not on the token route.
+    // The upload continues where it was created, behind the proxy, not on the native route.
     let location = response.headers()["location"].to_str().unwrap().to_string();
     assert!(location.starts_with("/api/web/v1/uploads/"), "{location}");
     let request = Request::builder()
@@ -497,7 +570,7 @@ async fn uploads_stop_short_of_the_disk_reserve() {
         config
     };
     let roomy = App::new(config(0)).await.unwrap();
-    let token = auth::issue(&roomy, "uploader", "upload").await.unwrap();
+    let token = common::grant(&roomy, "vault:owner").await;
     // The same vault once its disk is full: the reserve is more than the free space.
     let full = App::new(config(u64::MAX / 2)).await.unwrap();
     let router =
@@ -505,7 +578,7 @@ async fn uploads_stop_short_of_the_disk_reserve() {
     let (status, import) = call(
         &router(&roomy),
         "POST",
-        "/api/v1/imports",
+        "/api/native/v1/imports",
         Some(&token),
         json!({}),
     )
@@ -539,7 +612,7 @@ async fn uploads_stop_short_of_the_disk_reserve() {
         ),
     ];
     // Created while there was room, then the disk filled: no chunk is written below the reserve.
-    let created = send(&roomy, "POST", "/api/v1/uploads", &create, "").await;
+    let created = send(&roomy, "POST", "/api/native/v1/uploads", &create, "").await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let location = created.headers()["location"].to_str().unwrap().to_string();
     let chunk = [
@@ -554,7 +627,7 @@ async fn uploads_stop_short_of_the_disk_reserve() {
     let head = send(&roomy, "HEAD", &location, &[], "").await;
     assert_eq!(head.headers()["upload-offset"], "0");
     // And no new upload starts.
-    let refused = send(&full, "POST", "/api/v1/uploads", &create, "").await;
+    let refused = send(&full, "POST", "/api/native/v1/uploads", &create, "").await;
     assert_eq!(refused.status(), StatusCode::INSUFFICIENT_STORAGE);
     // An interrupted chunk leaves bytes past the offset. They are the upload's own, so the next
     // chunk gets their space back instead of being refused for it.

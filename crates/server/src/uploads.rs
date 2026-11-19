@@ -34,7 +34,7 @@ pub async fn create_import(
     Extension(access): Extension<Access>,
     Json(body): Json<NewImport>,
 ) -> Result<Json<Value>> {
-    access.upload()?;
+    access.admin()?;
     if let Some(sessions) = &body.sessions {
         grouping::validate_plan(sessions).map_err(|error| Error::bad(error.to_string()))?;
     }
@@ -65,7 +65,7 @@ pub async fn status(
     Extension(access): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    access.upload()?;
+    access.admin()?;
     let row = sqlx::query!("SELECT id AS \"id!\", state, recorder_timezone, created_at, session_plan FROM imports WHERE id=?", id)
         .fetch_optional(&app.db)
         .await?
@@ -137,7 +137,7 @@ pub async fn create(
     OriginalUri(uri): OriginalUri,
     h: HeaderMap,
 ) -> Result<Response> {
-    access.upload()?;
+    access.admin()?;
     version(&h)?;
     let length = h
         .get("upload-length")
@@ -239,7 +239,7 @@ pub async fn head(
     Path(id): Path<String>,
     h: HeaderMap,
 ) -> Result<Response> {
-    access.upload()?;
+    access.admin()?;
     version(&h)?;
     let r = sqlx::query!("SELECT offset,length FROM uploads WHERE id=?", id)
         .fetch_optional(&app.db)
@@ -259,7 +259,7 @@ pub async fn patch(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Response> {
-    access.upload()?;
+    access.admin()?;
     version(request.headers())?;
     if request
         .headers()
@@ -341,7 +341,7 @@ pub async fn terminate(
     Path(id): Path<String>,
     h: HeaderMap,
 ) -> Result<Response> {
-    access.upload()?;
+    access.admin()?;
     version(&h)?;
     let lock = upload_lock(&app, &id).await;
     let _upload_guard = lock.lock().await;
@@ -368,7 +368,7 @@ pub async fn complete(
     Extension(access): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    access.upload()?;
+    access.admin()?;
     let _guard = app.mutations.lock().await;
     let state: Option<String> = sqlx::query_scalar!("SELECT state FROM imports WHERE id=?", id)
         .fetch_optional(&app.db)

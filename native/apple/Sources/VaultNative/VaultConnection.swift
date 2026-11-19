@@ -1,31 +1,11 @@
 import Foundation
-import Security
 
-#if os(macOS)
-/// The Mac's legacy upload token. The iPhone app signs in with owner OAuth instead.
-public enum VaultCredentials {
-    // Preserve the original fallback service so saved upload tokens remain available to Fundus.
-    private static var service: String { (Bundle.main.bundleIdentifier ?? "dev.wsky.transcript-vault") + ".upload" }
-    public static func save(_ token: String) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "token"]
-        SecItemDelete(query as CFDictionary)
-        let attributes = query.merging([kSecValueData as String: Data(token.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]) { _, value in value }
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
-    }
-    public static func read() -> String? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "token", kSecReturnData as String: true]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-}
-#endif
+/// A signed-in vault: requests go to its owner API for native apps (`/api/native/v1`) with an OAuth
+/// access token.
 public struct VaultConnection: Sendable {
     public let base: URL
     public let token: String
-    public let nativeOwner: Bool
-    public init(server: String, token: String, nativeOwner: Bool = false) throws {
+    public init(server: String, token: String) throws {
         guard !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw Self.invalidConnection("Enter your vault’s server address, for example https://vault.example.com.")
         }
@@ -38,17 +18,15 @@ public struct VaultConnection: Sendable {
             throw Self.invalidConnection("Use only your vault’s server address, without a page path, query, or login details.")
         }
         guard url.scheme == "https" || ["localhost", "127.0.0.1", "::1"].contains(host) else { throw NSError(domain: "Vault", code: 1, userInfo: [NSLocalizedDescriptionKey: "Use your external HTTPS server address. HTTP is allowed only for local development."]) }
-        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw Self.invalidConnection("Enter an upload token. You can create one in your vault’s Settings.")
-        }
-        self.base = url; self.token = token; self.nativeOwner = nativeOwner
+        self.base = url; self.token = token
     }
     private static func invalidConnection(_ message: String) -> NSError {
         NSError(domain: "VaultConnection", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
     public func request(_ path: String, method: String = "GET", json: [String: Any]? = nil) throws -> URLRequest {
         guard var url = URL(string: path, relativeTo: base)?.absoluteURL, url.host == base.host, url.scheme == base.scheme, url.port == base.port else { throw URLError(.badURL) }
-        if nativeOwner, url.path == "/api/v1" || url.path.hasPrefix("/api/v1/") {
+        // Callers name the shared `/api/v1` paths; native apps are served the same under `/api/native`.
+        if url.path == "/api/v1" || url.path.hasPrefix("/api/v1/") {
             var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
             components.path = "/api/native" + url.path.dropFirst(4)
             guard let nativeURL = components.url else { throw URLError(.badURL) }

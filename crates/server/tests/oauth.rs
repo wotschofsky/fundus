@@ -233,7 +233,14 @@ async fn discovery_and_complete_pkce_flow_are_mcp_only_and_revocable() {
     let auth = format!("Bearer {access}");
     let (status,_,_)=call(&r,"POST","/mcp",Some(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}).to_string()),"application/json",&[("Authorization",&auth),("Accept","application/json, text/event-stream")]).await;
     assert_eq!(status, StatusCode::OK);
-    for path in ["/api/v1/me", "/api/v1/tokens", "/api/v1/entries"] {
+    // A read grant is for MCP only: no browser or native route takes it, even beside Access's
+    // sign-in (the router adds the owner's to every request).
+    for path in [
+        "/api/v1/me",
+        "/api/v1/entries",
+        "/api/native/v1/me",
+        "/api/native/v1/entries",
+    ] {
         assert_eq!(
             call(&r, "GET", path, None, "", &[("Authorization", &auth)])
                 .await
@@ -241,23 +248,21 @@ async fn discovery_and_complete_pkce_flow_are_mcp_only_and_revocable() {
             StatusCode::UNAUTHORIZED
         );
     }
-    assert_eq!(
-        json_call(&r, "/api/v1/imports", json!({}), None).await.0,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        call(
-            &r,
-            "POST",
-            "/api/v1/imports",
-            Some("{}".into()),
-            "application/json",
-            &[("Authorization", &auth)]
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
+    for path in ["/api/web/v1/imports", "/api/native/v1/imports"] {
+        assert_eq!(
+            call(
+                &r,
+                "POST",
+                path,
+                Some("{}".into()),
+                "application/json",
+                &[("Authorization", &auth), ("Origin", ORIGIN)]
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
     assert_eq!(
         redeem(&r, &client, &code, VERIFIER, RESOURCE).await.0,
         StatusCode::BAD_REQUEST
@@ -604,72 +609,6 @@ async fn expired_codes_and_tokens_are_rejected_but_access_expiry_allows_refresh(
             .await
             .0,
         StatusCode::BAD_REQUEST
-    );
-}
-
-#[tokio::test]
-async fn access_tokens_report_only_authenticated_usage() {
-    let (_dir, app, r) = setup().await;
-    let read = fundus::auth::issue(&app, "Reader", "read").await.unwrap();
-    let unused = fundus::auth::issue(&app, "Unused", "upload").await.unwrap();
-    let read_hash = fundus::auth::hash(&read);
-    let unused_hash = fundus::auth::hash(&unused);
-    let (_, _, before) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
-    assert!(
-        before["tokens"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| t["last_used_at"].is_null())
-    );
-    let bearer = format!("Bearer {read}");
-    assert_eq!(
-        call(
-            &r,
-            "GET",
-            "/api/v1/entries",
-            None,
-            "",
-            &[("Authorization", &bearer)]
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    let (_, _, after) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
-    let tokens = after["tokens"].as_array().unwrap();
-    let used = tokens.iter().find(|t| t["id"] == read_hash).unwrap()["last_used_at"]
-        .as_str()
-        .unwrap();
-    chrono::DateTime::parse_from_rfc3339(used).unwrap();
-    assert!(tokens.iter().find(|t| t["id"] == unused_hash).unwrap()["last_used_at"].is_null());
-    sqlx::query("UPDATE credentials SET expires_at='2000-01-01T00:00:00.000Z',last_used_at='2000-01-01T00:00:00.000Z' WHERE hash=?")
-        .bind(&read_hash)
-        .execute(&app.db)
-        .await
-        .unwrap();
-    assert_eq!(
-        call(
-            &r,
-            "GET",
-            "/api/v1/entries",
-            None,
-            "",
-            &[("Authorization", &bearer)]
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
-    let (_, _, expired) = call(&r, "GET", "/api/v1/tokens", None, "", &[]).await;
-    assert_eq!(
-        expired["tokens"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["id"] == read_hash)
-            .unwrap()["last_used_at"],
-        "2000-01-01T00:00:00.000Z"
     );
 }
 

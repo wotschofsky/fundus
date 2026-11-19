@@ -282,3 +282,78 @@ pub fn signed_in(app: &App, router: Router) -> Router {
         },
     ))
 }
+/// `router` as the owner's browser uses it in password mode: every request carries a fresh session
+/// cookie and comes from the vault's own pages, unless it sets its own.
+pub async fn with_session(app: &App, router: Router) -> Router {
+    let cookie = format!(
+        "vault_session={}",
+        fundus::auth::session(app).await.unwrap()
+    );
+    let origin = app.config.public_url.origin().ascii_serialization();
+    router.layer(axum::middleware::map_request(
+        move |mut request: axum::extract::Request| {
+            let (cookie, origin) = (cookie.clone(), origin.clone());
+            async move {
+                let headers = request.headers_mut();
+                headers
+                    .entry(axum::http::header::COOKIE)
+                    .or_insert(cookie.parse().unwrap());
+                headers
+                    .entry(axum::http::header::ORIGIN)
+                    .or_insert(origin.parse().unwrap());
+                request
+            }
+        },
+    ))
+}
+/// An OAuth access token for `scope`: "mcp:read" for MCP, "vault:owner" for the native API. As if
+/// the owner had approved a client in the browser; `tests/oauth.rs` runs that flow itself.
+pub async fn grant(app: &App, scope: &str) -> String {
+    let resource = if scope == "vault:owner" {
+        fundus::oauth::native_resource(app)
+    } else {
+        fundus::oauth::resource(app)
+    };
+    let (client, grant) = (fundus::auth::secret(), fundus::auth::secret());
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES(?,'Test client','[]','none',unixepoch(),?)")
+        .bind(&client)
+        .bind(scope)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oauth_grants(id,client_id,scope,resource,created_at,expires_at) VALUES(?,?,?,?,unixepoch(),unixepoch() + 3600)")
+        .bind(&grant)
+        .bind(&client)
+        .bind(scope)
+        .bind(resource)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let token = format!("oa_{}", fundus::auth::secret());
+    sqlx::query(
+        "INSERT INTO oauth_access(hash,grant_id,expires_at) VALUES(?,?,unixepoch() + 3600)",
+    )
+    .bind(fundus::auth::hash(&token))
+    .bind(&grant)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    token
+}
+/// A row the removed static tokens left in `credentials` (`scope`: "upload", "read" or "admin"),
+/// as before the migration that deletes them; its value. Tokens never expired; this one expires
+/// in a day, so only its scope keeps it from passing for a browser session.
+pub async fn leftover_token(app: &App, scope: &str) -> String {
+    let value = fundus::auth::secret();
+    sqlx::query("INSERT INTO credentials(hash,name,scope,created_at,expires_at) VALUES(?,'Leftover',?,'2026-01-01T00:00:00.000Z',?)")
+        .bind(fundus::auth::hash(&value))
+        .bind(scope)
+        .bind(
+            (chrono::Utc::now() + chrono::Duration::days(1))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
+        .execute(&app.db)
+        .await
+        .unwrap();
+    value
+}

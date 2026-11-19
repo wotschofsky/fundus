@@ -91,7 +91,7 @@ Add your server’s MCP endpoint to a compatible chat app:
 https://your-vault.example/mcp
 ```
 
-Sign in through your browser and approve read access. Fundus exposes five tools:
+Sign in through your browser and approve read access; the app must support OAuth. Fundus exposes five tools:
 
 | Tool | What it gives your AI |
 | :--- | :--- |
@@ -101,7 +101,7 @@ Sign in through your browser and approve read access. Fundus exposes five tools:
 | `read_transcript` | Paginated transcript text with timestamps and speaker attribution |
 | `list_labels` | Available labels and recording counts |
 
-MCP connections are read-only. They cannot upload, edit, delete, or administer your archive. Revoke a connection at any time in Settings. [OAuth details and older clients →](docs/guide.md#mcp)
+MCP connections are read-only. They cannot upload, edit, delete, or administer your archive. Revoke a connection at any time in Settings. [OAuth details →](docs/guide.md#mcp)
 
 ## Your archive, your server
 

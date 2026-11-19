@@ -169,31 +169,35 @@ def exercise(restarted=False, proxy=False):
                 time.sleep(1)
     _, page = call("/")
     assert b'<div id="root">' in page, "Web bundle is missing"
+    refused = [
+        # The browser's sign-in opens neither the native apps' routes nor MCP (both take OAuth
+        # only), and a bearer credential never stands in for the browser's own.
+        ("/api/native/v1/uploads", "OPTIONS", None, {}, 401),
+        ("/mcp", "POST", {}, {}, 401),
+        ("/api/v1/me", "GET", None, {"Authorization": "Bearer synthetic"}, 401),
+        ("/api/v1/people", "POST", {"name": "blocked"}, {"Origin": "https://other.example"}, 403),
+    ]
     if proxy:
         _, me = call("/api/v1/me")
         assert me["auth_mode"] == "proxy" and me["scope"] == "admin"
-        for path, method, body, headers, expected in [
+        refused += [
             # What reaches the server without Access's token for it is not the owner's.
             ("/api/v1/me", "GET", None, {"Cf-Access-Jwt-Assertion": None}, 401),
             ("/api/login", "POST", {"password": PASSWORD}, {}, 403),
-            ("/api/v1/uploads", "OPTIONS", None, {}, 401),
-            ("/mcp", "POST", {}, {}, 401),
-            ("/api/v1/tokens", "POST", {"name": "blocked", "scope": "read"},
-             {"Origin": "https://other.example"}, 403),
-        ]:
-            try:
-                call(path, method, body, headers)
-            except urllib.error.HTTPError as error:
-                assert error.code == expected, (path, error.code)
-            else:
-                raise AssertionError("Authentication check unexpectedly passed: " + path)
+        ]
     else:
         call("/api/login", "POST", {"password": PASSWORD})
+    for path, method, body, headers, expected in refused:
+        try:
+            call(path, method, body, headers)
+        except urllib.error.HTTPError as error:
+            assert error.code == expected, (path, error.code)
+        else:
+            raise AssertionError("Authentication check unexpectedly passed: " + path)
 
     if not restarted:
-        _, credential = call("/api/v1/tokens", "POST", {"name": "Fixture", "scope": "upload"})
-        auth = {"Authorization": "Bearer " + credential["token"]}
-        _, batch = call("/api/v1/imports", "POST", {"recorder_timezone": "UTC"}, auth)
+        # The web library's own upload route, with the browser's sign-in.
+        _, batch = call("/api/web/v1/imports", "POST", {"recorder_timezone": "UTC"})
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as audio_file:
             audio_file.setnchannels(1)
@@ -204,19 +208,19 @@ def exercise(restarted=False, proxy=False):
         audio = buffer.getvalue()
         metadata = {"import_id": batch["id"], "filename": "synthetic.wav",
                     "original_name": "synthetic.wav"}
-        response, _ = call("/api/v1/uploads", "POST", headers={
-            **auth, "Tus-Resumable": "1.0.0", "Upload-Length": str(len(audio)),
+        response, _ = call("/api/web/v1/uploads", "POST", headers={
+            "Tus-Resumable": "1.0.0", "Upload-Length": str(len(audio)),
             "Upload-Metadata": ",".join(k + " " + base64.b64encode(v.encode()).decode()
                                         for k, v in metadata.items()),
         })
         location = response.headers["Location"]
         middle = len(audio) // 2
         for offset, data in [(0, audio[:middle]), (middle, audio[middle:])]:
-            head, _ = call(location, "HEAD", headers={**auth, "Tus-Resumable": "1.0.0"})
+            head, _ = call(location, "HEAD", headers={"Tus-Resumable": "1.0.0"})
             assert int(head.headers["Upload-Offset"]) == offset
-            call(location, "PATCH", data, {**auth, "Tus-Resumable": "1.0.0",
+            call(location, "PATCH", data, {"Tus-Resumable": "1.0.0",
                  "Upload-Offset": str(offset), "Content-Type": "application/offset+octet-stream"})
-        call("/api/v1/imports/" + batch["id"] + "/complete", "POST", headers=auth)
+        call("/api/web/v1/imports/" + batch["id"] + "/complete", "POST")
 
     entry = None
     for _ in range(120):

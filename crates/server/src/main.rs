@@ -18,15 +18,7 @@ struct Cli {
 enum Cmd {
     Serve,
     Init,
-    Token {
-        #[arg(long)]
-        name: String,
-        #[arg(long,default_value="read",value_parser=["upload","read"])]
-        scope: String,
-    },
-    Backup {
-        destination: std::path::PathBuf,
-    },
+    Backup { destination: std::path::PathBuf },
     Healthcheck,
 }
 #[tokio::main]
@@ -88,12 +80,6 @@ async fn main() -> Result<()> {
             auth::init_owner(&app, &password).await?;
             eprintln!("Owner initialized. Sign in through the web library.");
         }
-        Cmd::Token { name, scope } => println!(
-            "{}",
-            auth::issue(&app, &name, &scope)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.1))?
-        ),
         Cmd::Backup { destination } => {
             anyhow::ensure!(!destination.exists(), "Backup destination already exists");
             tokio::fs::create_dir_all(&destination).await?;

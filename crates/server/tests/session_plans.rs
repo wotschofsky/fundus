@@ -2,7 +2,6 @@ mod common;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
 use fundus::{
-    auth,
     config::{App, Config, now},
     grouping::{self, SessionPlan},
     pipeline,
@@ -267,7 +266,7 @@ async fn request(
 #[tokio::test]
 async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let (_dir, app) = setup().await;
-    let token = auth::issue(&app, "test uploader", "upload").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let router = common::signed_in(
         &app,
         fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
@@ -275,7 +274,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let bad = request(
         &router,
         "POST",
-        "/api/v1/imports",
+        "/api/native/v1/imports",
         &token,
         json!({"sessions":[{"source_ids":["same"]},{"source_ids":["same"]}]}),
         None,
@@ -285,7 +284,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let response = request(
         &router,
         "POST",
-        "/api/v1/imports",
+        "/api/native/v1/imports",
         &token,
         json!({"sessions":[{"source_ids":["source"]}]}),
         None,
@@ -315,7 +314,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let unknown = request(
         &router,
         "POST",
-        "/api/v1/uploads",
+        "/api/native/v1/uploads",
         &token,
         Value::Null,
         Some(metadata("wrong")),
@@ -325,7 +324,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let first = request(
         &router,
         "POST",
-        "/api/v1/uploads",
+        "/api/native/v1/uploads",
         &token,
         Value::Null,
         Some(metadata("source")),
@@ -336,7 +335,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let repeated = request(
         &router,
         "POST",
-        "/api/v1/uploads",
+        "/api/native/v1/uploads",
         &token,
         Value::Null,
         Some(metadata("source")),
@@ -352,7 +351,7 @@ async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let missing = request(
         &router,
         "POST",
-        &format!("/api/v1/imports/{batch}/complete"),
+        &format!("/api/native/v1/imports/{batch}/complete"),
         &token,
         json!({}),
         None,
@@ -400,8 +399,8 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     .execute(&app.db)
     .await
     .unwrap();
-    let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
-    let read = auth::issue(&app, "test reader", "read").await.unwrap();
+    let admin = common::grant(&app, "vault:owner").await;
+    let read = common::grant(&app, "mcp:read").await;
     let router = common::signed_in(
         &app,
         fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
@@ -409,8 +408,8 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     let history = request(
         &router,
         "GET",
-        "/api/v1/source-history",
-        &read,
+        "/api/native/v1/source-history",
+        &admin,
         Value::Null,
         None,
     )
@@ -420,7 +419,7 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
         serde_json::from_slice(&history.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(data["entries"][0]["source_ids"], json!(["opaque-source"]));
     assert_eq!(data["entries"][0]["id"], entry);
-    let endpoint = format!("/api/v1/entries/{entry}/speakers/0:A");
+    let endpoint = format!("/api/native/v1/entries/{entry}/speakers/0:A");
     let locked = request(
         &router,
         "PATCH",
@@ -472,7 +471,7 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     let removed = request(
         &router,
         "DELETE",
-        "/api/v1/people/person/voice",
+        "/api/native/v1/people/person/voice",
         &admin,
         Value::Null,
         None,
@@ -499,7 +498,7 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     let deleted = request(
         &router,
         "DELETE",
-        "/api/v1/people/person",
+        "/api/native/v1/people/person",
         &admin,
         Value::Null,
         None,
@@ -524,19 +523,20 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     let rejected = request(
         &router,
         "POST",
-        &format!("/api/v1/entries/{entry}/reanalyze"),
+        &format!("/api/native/v1/entries/{entry}/reanalyze"),
         &read,
         json!({}),
         None,
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
-    // Old API credentials never gain the native owner's OAuth audience.
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    // A token left from the removed static tokens never gains the native owner's audience.
+    let leftover = common::leftover_token(&app, "admin").await;
     let native = request(
         &router,
         "GET",
         "/api/native/v1/source-history",
-        &admin,
+        &leftover,
         Value::Null,
         None,
     )
@@ -546,7 +546,7 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
         &router,
         "GET",
         "/api/native/unknown-route",
-        &admin,
+        &leftover,
         Value::Null,
         None,
     )
@@ -598,7 +598,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     .execute(&app.db)
     .await
     .unwrap();
-    let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
+    let admin = common::grant(&app, "vault:owner").await;
     let router = common::signed_in(
         &app,
         fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
@@ -606,7 +606,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let trash = request(
         &router,
         "POST",
-        &format!("/api/v1/entries/{entry}/trash"),
+        &format!("/api/native/v1/entries/{entry}/trash"),
         &admin,
         json!({}),
         None,
@@ -638,7 +638,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let blocked = request(
         &router,
         "GET",
-        &format!("/api/v1/entries/{entry}/audio"),
+        &format!("/api/native/v1/entries/{entry}/audio"),
         &admin,
         Value::Null,
         None,
@@ -648,7 +648,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let history = request(
         &router,
         "GET",
-        "/api/v1/source-history",
+        "/api/native/v1/source-history",
         &admin,
         Value::Null,
         None,
@@ -660,7 +660,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let restored = request(
         &router,
         "POST",
-        &format!("/api/v1/entries/{entry}/restore"),
+        &format!("/api/native/v1/entries/{entry}/restore"),
         &admin,
         json!({}),
         None,
@@ -671,7 +671,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let _ = request(
         &router,
         "POST",
-        &format!("/api/v1/entries/{entry}/trash"),
+        &format!("/api/native/v1/entries/{entry}/trash"),
         &admin,
         json!({}),
         None,
@@ -692,7 +692,7 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     let history = request(
         &router,
         "GET",
-        "/api/v1/source-history",
+        "/api/native/v1/source-history",
         &admin,
         Value::Null,
         None,
@@ -709,25 +709,33 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
 #[tokio::test]
 async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let (_dir, mut app) = setup().await;
-    let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
-    let read = auth::issue(&app, "test reader", "read").await.unwrap();
+    let admin = common::grant(&app, "vault:owner").await;
+    let read = common::grant(&app, "mcp:read").await;
     let router = common::signed_in(
         &app,
         fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
     );
-    let blocked = request(&router, "GET", "/api/v1/settings", &read, Value::Null, None).await;
-    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+    let blocked = request(
+        &router,
+        "GET",
+        "/api/native/v1/settings",
+        &read,
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(blocked.status(), StatusCode::UNAUTHORIZED);
     let bad = request(
         &router,
         "PATCH",
-        "/api/v1/settings",
+        "/api/native/v1/settings",
         &admin,
         json!({"voice_thresholds":{"strong":1.5,"margin":0.1}}),
         None,
     )
     .await;
     assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
-    let good=request(&router,"PATCH","/api/v1/settings",&admin,json!({"recording_context":"Synthetic vocabulary context","voice_thresholds":{"strong":0.9,"margin":0.2}}),None).await;
+    let good=request(&router,"PATCH","/api/native/v1/settings",&admin,json!({"recording_context":"Synthetic vocabulary context","voice_thresholds":{"strong":0.9,"margin":0.2}}),None).await;
     assert_eq!(good.status(), StatusCode::OK);
     let reloaded = App::new((*app.config).clone()).await.unwrap();
     let saved = fundus::settings::load(&reloaded).await.unwrap();

@@ -27,7 +27,6 @@ struct SettingsView: View {
 private struct VaultSettings: View {
     @Environment(AppModel.self) private var app
     @State private var address = ""
-    @State private var uploadToken = ""
     @State private var isWorking = false
     @State private var message: String?
     @State private var error: String?
@@ -81,18 +80,6 @@ private struct VaultSettings: View {
             if let feedback = error ?? message {
                 Section { Feedback(feedback, isError: error != nil) }
             }
-            Section {
-                DisclosureGroup("Upload with a token") {
-                    SecureField("Upload token", text: $uploadToken, prompt: Text("Paste an upload token"))
-                    HStack {
-                        Spacer()
-                        Button("Save Upload Connection", action: saveToken)
-                            .disabled(!canChangeVault || uploadToken.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-            } footer: {
-                Footnote("For older servers without browser sign-in. A token can upload recordings but cannot open the library.")
-            }
         }
         .formStyle(.grouped)
         .onAppear { address = app.server.isEmpty ? app.transfer.server : app.server }
@@ -125,16 +112,6 @@ private struct VaultSettings: View {
             try await app.queue.configureNative(server: app.native.server, timezone: app.transfer.timezone)
             app.profiles.remember(app.native.server)
             message = "Connected"
-        }
-    }
-
-    private func saveToken() {
-        run {
-            let server = address.trimmingCharacters(in: .whitespacesAndNewlines)
-            try app.queue.configure(server: server, token: uploadToken.trimmingCharacters(in: .whitespacesAndNewlines), timezone: app.transfer.timezone)
-            app.profiles.remember(app.transfer.server)
-            uploadToken = ""
-            message = "Upload connection saved"
         }
     }
 
@@ -287,8 +264,6 @@ private struct TranscriptionSettings: View {
     private func saveRecorderClock(_ zone: String) async throws {
         if app.isConnected, app.native.server == app.transfer.server {
             try await app.queue.configureNative(server: app.native.server, timezone: zone)
-        } else if !app.transfer.server.isEmpty, let token = VaultCredentials.read() {
-            try app.queue.configure(server: app.transfer.server, token: token, timezone: zone)
         } else {
             try app.queue.configureTimezone(zone)
         }

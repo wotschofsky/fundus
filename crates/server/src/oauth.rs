@@ -760,14 +760,15 @@ pub async fn disconnect(
     .await?;
     Ok(response(json!({"ok":true})))
 }
+/// MCP takes only an OAuth read grant for its own audience, which can search and read, never more.
 pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Next) -> Response {
     let bearer = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    let had_bearer = bearer.is_some();
-    let result = if let Some(token) = bearer.filter(|s| s.starts_with("oa_")) {
+    let token = bearer.filter(|s| s.starts_with("oa_") && s.len() <= 256);
+    if let Some(token) = token {
         let token_hash = auth::hash(token);
         let row=sqlx::query!("SELECT a.grant_id,g.scope,g.resource,g.revoked_at,a.expires_at,g.expires_at AS grant_expiry FROM oauth_access a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.hash=?", token_hash).fetch_optional(&app.db).await;
         match row {
@@ -784,41 +785,31 @@ pub async fn require_mcp(State(app): State<App>, mut request: Request, next: Nex
                 request.extensions_mut().insert(Access {
                     scope: "read".into(),
                 });
-                next.run(request).await
+                return next.run(request).await;
             }
-            Ok(_) => Error(
-                StatusCode::UNAUTHORIZED,
-                "OAuth access token is invalid or expired".into(),
-            )
-            .into_response(),
-            Err(error) => Error::from(error).into_response(),
+            Err(error) => return Error::from(error).into_response(),
+            _ => {}
         }
-    } else {
-        auth::require(State(app.clone()), request, next).await
-    };
-    let mut result = result;
-    if matches!(
-        result.status(),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-    ) {
-        let error = if result.status() == StatusCode::FORBIDDEN {
-            ", error=\"insufficient_scope\""
-        } else if had_bearer {
-            ", error=\"invalid_token\""
-        } else {
-            ""
-        };
-        let value = format!(
-            "Bearer resource_metadata=\"{}\", scope=\"{}\"{}",
-            endpoint(&app, ".well-known/oauth-protected-resource/mcp"),
-            SCOPE,
-            error
-        );
-        result
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, value.parse().unwrap());
     }
-    result
+    let (message, invalid) = if bearer.is_some() {
+        (
+            "OAuth access token is invalid or expired",
+            ", error=\"invalid_token\"",
+        )
+    } else {
+        ("Sign in to continue", "")
+    };
+    let mut response = Error(StatusCode::UNAUTHORIZED, message.into()).into_response();
+    let challenge = format!(
+        "Bearer resource_metadata=\"{}\", scope=\"{}\"{}",
+        endpoint(&app, ".well-known/oauth-protected-resource/mcp"),
+        SCOPE,
+        invalid
+    );
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, challenge.parse().unwrap());
+    response
 }
 
 /// The native API is public at the reverse proxy but never trusts upstream

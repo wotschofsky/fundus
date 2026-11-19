@@ -1,7 +1,6 @@
-//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request without an
-//! `Authorization` header (which `auth::require` checks instead) is the owner's only when it
-//! carries a valid `Cf-Access-Jwt-Assertion`: the token Access adds to every request it has
-//! signed in. A request that reached the server another way (a path the proxy lets through
+//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request is the owner's only
+//! when it carries a valid `Cf-Access-Jwt-Assertion` (and no `Authorization` header, `auth.rs`):
+//! the token Access adds to every request it has signed in. A request that reached the server another way (a path the proxy lets through
 //! without sign-in, however that path was spelled on its way in, or a direct hit on the origin)
 //! carries none of its own. The token is a bearer credential, at most until it expires (plus
 //! `LEEWAY`): whoever holds the owner's is let in, wherever the request comes from.

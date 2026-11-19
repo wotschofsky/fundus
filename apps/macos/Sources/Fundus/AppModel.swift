@@ -90,7 +90,7 @@ final class AppModel {
         sources.start(timezone: transfer.timezone)
         guard !transfer.server.isEmpty else { return }
         profiles.remember(transfer.server)
-        // The session restores the last vault by itself; only an upload-token setup needs selecting.
+        // Uploads go to the queue's vault: open that one if the session restored another, or none.
         if !(native.isConnected && native.server == transfer.server) { try? await native.use(server: transfer.server) }
     }
 
