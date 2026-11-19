@@ -159,14 +159,18 @@ test('following the transcript leaves the page still while a dialog is open', ()
     playback.active = 0;
     flush();
     assert.deepEqual(scrolled, ['a']);
-    dialog = {};
+    dialog = new EventTarget();
     playback.active = 1;
     flush();
     assert.deepEqual(scrolled, ['a']);
+    // Closing the dialog catches up with the turn now playing.
+    const open = dialog;
     dialog = null;
+    open.dispatchEvent(new Event('close'));
+    assert.deepEqual(scrolled, ['a', 'b']);
     playback.active = 2;
     flush();
-    assert.deepEqual(scrolled, ['a', 'c']);
+    assert.deepEqual(scrolled, ['a', 'b', 'c']);
   } finally {
     stop();
     delete globalThis.document;
@@ -180,9 +184,10 @@ test('revealing a linked passage leaves the page still while a dialog is open', 
     { id: 'b', start_ms: 1000, end_ms: 2000 },
   ];
   const scrolled = [];
+  let dialog = new EventTarget();
   globalThis.document = {
     getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
-    querySelector: (selector) => (selector === 'dialog:modal' ? {} : null),
+    querySelector: (selector) => (selector === 'dialog:modal' ? dialog : null),
   };
   globalThis.requestAnimationFrame = (frame) => frame();
   let playback;
@@ -196,6 +201,11 @@ test('revealing a linked passage leaves the page still while a dialog is open', 
     flush();
     assert.equal(playback.active, 1);
     assert.deepEqual(scrolled, []);
+    // Closing the dialog reveals the passage after all.
+    const open = dialog;
+    dialog = null;
+    open.dispatchEvent(new Event('close'));
+    assert.deepEqual(scrolled, ['b']);
   } finally {
     stop();
     delete globalThis.document;

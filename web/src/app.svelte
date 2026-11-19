@@ -50,6 +50,8 @@
     const target = event.target as HTMLElement;
     if (event.key !== '/' || event.metaKey || event.ctrlKey) return;
     if (target.closest('input, textarea, select, [contenteditable]')) return;
+    // Not from an open dialog, which closes only through its own controls.
+    if (document.querySelector('dialog:modal')) return;
     event.preventDefault();
     const input = document.getElementById('search-input');
     if (input) input.focus();

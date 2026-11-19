@@ -18,6 +18,13 @@ export function activeIndex(rows: Segment[], ms: number) {
  * playback touches two transcript rows, not all of them, however long the recording is.
  * Create it while a component initializes: it registers effects.
  */
+/** Scrolls the page now, or once the open dialog closes: the page behind a dialog stays put. */
+function behindDialogs(scroll: () => void) {
+  const dialog = document.querySelector('dialog:modal');
+  if (dialog) dialog.addEventListener('close', () => behindDialogs(scroll), { once: true });
+  else scroll();
+}
+
 export class Playback {
   /** The audio or video player. */
   media = $state<HTMLMediaElement>();
@@ -56,24 +63,24 @@ export class Playback {
       this.#revealed = start;
       const index = activeIndex(list, start);
       this.active = index;
-      // A frame later, so the router restoring a Back position does not scroll it away again;
-      // not while a dialog is open, as the page behind it stays put.
+      // A frame later, so the router restoring a Back position does not scroll it away again.
       const id = list[index]?.id;
       if (id)
-        requestAnimationFrame(() => {
-          if (!document.querySelector('dialog:modal'))
-            document.getElementById(id)?.scrollIntoView({ block: 'center' });
-        });
+        requestAnimationFrame(() =>
+          behindDialogs(() => document.getElementById(id)?.scrollIntoView({ block: 'center' })),
+        );
     });
 
     $effect(() => {
       if (!this.follow || !this.playing || this.active < 0) return;
-      // Not while a dialog is open: the page behind it stays put.
-      if (document.querySelector('dialog:modal')) return;
-      const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      document
-        .getElementById(rows()[this.active]?.id)
-        ?.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      behindDialogs(() => {
+        // The turn playing by now, once a dialog that held this back has closed.
+        if (!this.follow || this.active < 0) return;
+        const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        document
+          .getElementById(rows()[this.active]?.id)
+          ?.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      });
     });
 
     // Space toggles playback unless a control has focus; Shift+Space still scrolls up.
