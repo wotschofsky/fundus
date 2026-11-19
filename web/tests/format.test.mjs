@@ -31,4 +31,6 @@ test('a link to a moment starts there only for a time a player can seek to', () 
   assert.equal(startAt('Infinity'), 0);
   assert.equal(startAt('-5'), 0);
   assert.equal(startAt('soon'), 0);
+  // Finite in seconds, but not in milliseconds.
+  assert.equal(startAt('1e308'), 0);
 });
