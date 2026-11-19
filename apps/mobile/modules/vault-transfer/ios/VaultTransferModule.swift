@@ -8,6 +8,7 @@ public class VaultTransferModule: Module {
         // Opens the vault's sign-in page; the owner connection stays in Keychain, never in JS.
         AsyncFunction("signIn") { (server: String, timezone: String) in try await TransferQueue.shared.signIn(server: server, timezone: timezone) }
         AsyncFunction("signOut") { try await TransferQueue.shared.signOut() }
+        AsyncFunction("cancelSignIn") { await MainActor.run { NativeVaultSession.shared.cancelSignIn() } }
         AsyncFunction("enqueue") { (files: [[String: String]]) in
             let urls = files.compactMap { URL(string: $0["uri"] ?? "") }
             try await TransferQueue.shared.enqueue(urls)

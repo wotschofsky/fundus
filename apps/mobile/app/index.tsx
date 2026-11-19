@@ -113,7 +113,14 @@ export default function UploadScreen() {
                   }
                 />
               ) : null}
-              <Button label="Cancel" variant="text" onPress={() => setSettings(false)} />
+              <Button
+                label="Cancel"
+                variant="text"
+                onPress={() => {
+                  if (busy) void transfer.cancelSignIn();
+                  setSettings(false);
+                }}
+              />
             </Column>
           ) : (
             <>

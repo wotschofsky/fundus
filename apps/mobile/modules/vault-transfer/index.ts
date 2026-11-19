@@ -20,6 +20,8 @@ export const transfer = {
   signIn: (server: string, timezone: string): Promise<void> => native.signIn(server, timezone),
   /** Revokes this iPhone's access; refused while an import is unfinished. */
   signOut: (): Promise<void> => native.signOut(),
+  /** Stops a sign-in still under way; the browser sheet does not open afterwards. */
+  cancelSignIn: (): Promise<void> => native.cancelSignIn(),
   enqueue: (files: { uri: string; name: string }[]): Promise<void> => native.enqueue(files),
   resume: (): Promise<void> => native.resume(),
   pause: (): Promise<void> => native.pause(),
