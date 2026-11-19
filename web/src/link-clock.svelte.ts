@@ -1,14 +1,15 @@
 import { SvelteMap } from 'svelte/reactivity';
 
-/** Links taken for gone, by URL, with when (`moment`): this page stopped them or moved their
- * recording to Trash, the server answered 404 for them, or a read no longer returned them. A
+/** Links taken for gone, by URL, with a `moment`: when this page stopped them or moved their
+ * recording to Trash, or the server answered 404 for them (`forget`), or when the read that no
+ * longer returned them left (`missing`). A
  * token never works again once it is gone, so no page offers these, even before it hears what
  * (if anything) replaced them; `confirm` corrects one a racing read took for gone. */
 const dead = new SvelteMap<string, number>();
 /** This page's share events, in order: each link taken for gone and each read or change that
  * leaves. */
 let moment = 0;
-/** This link is gone (stopped, deleted by Trash, answered 404, or no longer read back). */
+/** This link is gone, as of now: stopped, deleted by Trash, or answered 404. */
 export const forget = (url: string) => {
   dead.set(url, ++moment);
 };
