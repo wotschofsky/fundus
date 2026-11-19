@@ -207,8 +207,8 @@ function forgetMissing(known: Share[], answered: Set<string>, since: number) {
  * grows: a list dropped from memory and read afresh counts on from here, unlike the cache's own
  * per-query counts. */
 let landed = 0;
-/** How many share reads and changes had ended as a change went out, for `keepAnswer`: each
- * counts, even two in one millisecond. */
+/** How many share reads had landed and changes had ended as a change went out, for
+ * `keepAnswer`: each counts, even two in one millisecond. */
 export const sentAt = () => landed;
 /** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
  * cache, unless a read of the link or of Settings' list landed, or another change ended, after

@@ -162,13 +162,13 @@
           await api(`/v1/entries/${id}/trash`, send('POST'));
           // Gone for every reader, Settings' list too.
           for (const link of deleted) forget(link.url);
-          await refresh();
         } finally {
-          // Asked again rather than dropped, whether or not it worked: a read may already have a
-          // link made since, and a Trash that failed may have gone through. Not waited for, so a
-          // failure shows without waiting on reads that may fail too.
+          // Asked again rather than dropped, as soon as Trash answers and whether or not it worked:
+          // a read may already have a link made since, and a Trash that failed may have gone
+          // through. Not waited for, so a failure shows without waiting on reads that may fail too.
           void rereadLinks(qc, id);
         }
+        await refresh();
         router.navigate('/');
       },
     });
@@ -244,7 +244,9 @@
         aria-haspopup="dialog"
         title={offered
           ? 'Anyone with the link can open this recording'
-          : 'Only you can open this recording'}
+          : share.data === undefined
+            ? 'Share this recording'
+            : 'Only you can open this recording'}
         onclick={() => (sharing = true)}
       >
         {#if offered}

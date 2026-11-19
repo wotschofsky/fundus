@@ -106,7 +106,10 @@
   /** A change is being saved: the dialog stays open until it lands, so reopening it cannot drop
    * one change's result while another (such as Stop sharing) goes ahead. */
   const saving = $derived(save.isPending || extend.isPending || stop.isPending);
-  const busy = $derived(share.isPending || saving);
+  /** The server has said whether the recording is shared: until then (or if it could not be
+   * read) the dialog claims neither, and nothing can be changed. */
+  const known = $derived(share.data !== undefined);
+  const busy = $derived(!known || saving);
 
   $effect(() => {
     if (open && !dialog.open) {
@@ -163,16 +166,23 @@
   <h3>General access</h3>
   <div class={['access', access === 'link' && 'shared']}>
     <span class="access-icon" aria-hidden="true">
-      {#if access === 'link'}<Globe size={16} />{:else}<Lock size={16} />{/if}
+      {#if access === 'link'}
+        <Globe size={16} />
+      {:else if known}
+        <Lock size={16} />
+      {:else}
+        <Link size={16} />
+      {/if}
     </span>
     <div class="access-body">
       <span class="quiet-select">
         <select
           aria-label="Who can open this recording"
-          value={access}
+          value={known ? access : ''}
           disabled={busy || confirming}
           onchange={(event) => choose(event.currentTarget.value)}
         >
+          {#if !known}<option value="">Not known yet</option>{/if}
           <option value="private">Only you</option>
           <option value="link">Anyone with the link</option>
         </select>
@@ -183,6 +193,8 @@
           Anyone who has the link loses access right away. Sharing again makes a new link.
         {:else if access === 'link'}
           Anyone with the link can play it and read its summary and transcript, without signing in.
+        {:else if !known}
+          {share.isPending ? 'Checking who can open it…' : 'Who can open it could not be checked.'}
         {:else}
           Only you can open it, signed in to your library.
         {/if}
