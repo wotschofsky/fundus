@@ -4,8 +4,7 @@
 //! signed in. A request that reached the server another way (a path the proxy lets through
 //! without sign-in, however that path was spelled on its way in, or a direct hit on the origin)
 //! carries none of its own. The token is a bearer credential, at most until it expires (plus
-//! `LEEWAY`) or Access retires the key that signed it: whoever holds the owner's is let in,
-//! wherever the request comes from.
+//! `LEEWAY`): whoever holds the owner's is let in, wherever the request comes from.
 use crate::{
     config::App,
     error::{Error, Result},
