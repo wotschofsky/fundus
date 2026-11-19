@@ -88,6 +88,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private let storage: any NativeCredentialStorage
     private let session: URLSession
     private let preferences: UserDefaults
+    /// Refreshes under way, by the refresh token each redeems.
     private var refreshes: [String: Task<NativeOAuthCredentials, Error>] = [:]
     /// Keychain reads are slow enough to matter on every request; the stored item stays the source of truth.
     private var cached: [String: NativeOAuthCredentials] = [:]
@@ -275,34 +276,33 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         return try VaultConnection(server: origin, token: current.accessToken, nativeOwner: true)
     }
     private func refresh(_ credentials: NativeOAuthCredentials) async throws -> NativeOAuthCredentials {
-        // A sign-in while this refresh was under way stored a newer grant: that one stands, whether
-        // this refresh of the old grant succeeds or is refused, checked again as each caller resumes.
-        let newer = { [self] in (try? stored(credentials.server)).flatMap { $0.refreshToken == credentials.refreshToken ? nil : $0 } }
-        let task = refreshes[credentials.server] ?? Task { () throws -> NativeOAuthCredentials in
+        // One refresh per refresh token: every caller holding that token waits on it, so it is
+        // redeemed once, and a caller holding a newer grant never waits on an older grant's refresh.
+        let key = credentials.refreshToken
+        let task = refreshes[key] ?? Task { () throws -> NativeOAuthCredentials in
             let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
                 "grant_type": "refresh_token", "client_id": credentials.clientID,
                 "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
             ])
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
-            if let current = newer() { return current }
+            // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.
+            guard (try? stored(credentials.server))?.refreshToken == credentials.refreshToken else { return updated }
             try store(updated)
             return updated
         }
-        refreshes[credentials.server] = task
-        defer { if refreshes[credentials.server] == task { refreshes[credentials.server] = nil } }
-        do {
-            let updated = try await task.value
+        refreshes[key] = task
+        defer { if refreshes[key] == task { refreshes[key] = nil } }
+        let outcome = await task.result
+        // The connection is what is stored once this caller resumes: this refresh's rotation, or a
+        // grant a sign-in stored while it ran. Only with neither has this caller's refresh failed.
+        if let current = try? stored(credentials.server), current.refreshToken != credentials.refreshToken {
             if server == credentials.server { isConnected = true; lastError = nil }
-            return updated
-        } catch {
-            if let current = newer() {
-                if server == credentials.server { isConnected = true; lastError = nil }
-                return current
-            }
-            if server == credentials.server { isConnected = false }
-            throw error
+            return current
         }
+        if server == credentials.server { isConnected = false }
+        if case .failure(let error) = outcome { throw error }
+        throw NativeOAuthFailure.message("Connect this app to your vault first.")
     }
 
     public func request(_ path: String, method: String = "GET", json: [String: Any]? = nil) async throws -> URLRequest {
@@ -337,8 +337,10 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         // Forgotten here before the revoke request: a sign-in finishing while it is under way keeps
         // the grant it stored.
         let credentials = try? stored(origin)
-        refreshes[origin]?.cancel()
-        refreshes[origin] = nil
+        if let credentials {
+            refreshes[credentials.refreshToken]?.cancel()
+            refreshes[credentials.refreshToken] = nil
+        }
         try? storage.remove(server: origin)
         cached[origin] = nil
         if selected {

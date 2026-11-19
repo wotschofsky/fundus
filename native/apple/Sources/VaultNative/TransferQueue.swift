@@ -660,10 +660,11 @@ public struct QueueState: Codable, Sendable {
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
             #if os(iOS)
-            // A chunk Pause or Clear cancelled is not the queue's to act on (after a force quit, the
-            // relaunch restarts the queue). After a relaunch nothing was sent by this process, so a
-            // chunk that finished is the queue's.
-            if (error as? URLError)?.code == .cancelled { return }
+            // A chunk this app cancelled (Pause, then Resume before this arrives) is not the queue's
+            // to act on. One iOS cancelled (no background updates, low resources, force quit) carries
+            // a reason and fails the queue below, resumably. After a relaunch nothing was sent by this
+            // process, so a chunk that finished is the queue's.
+            if let cancelled = error as? URLError, cancelled.code == .cancelled, cancelled.backgroundTaskCancelledReason == nil { return }
             if let sent = self.sentChunk, sent != taskID { return }
             #endif
             let batch = self.snapshot.importID
@@ -693,7 +694,9 @@ public struct QueueState: Codable, Sendable {
                 // Paused, or another batch or chunk sent, while refreshing.
                 guard self.snapshot.state == "uploading", self.snapshot.importID == batch else { return }
                 #if os(iOS)
+                // A resumed runner is already at work: it, not this older chunk, decides the outcome.
                 if let sent = self.sentChunk, sent != taskID { return }
+                if self.runner != nil { return }
                 #endif
                 self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save()
             }
