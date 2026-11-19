@@ -13,11 +13,6 @@ export function activeIndex(rows: Segment[], ms: number) {
   return low - 1;
 }
 
-/**
- * Transcript-linked playback. `active` changes only when the spoken segment changes, so
- * playback touches two transcript rows, not all of them, however long the recording is.
- * Create it while a component initializes: it registers effects.
- */
 /** Scrolls the page now, or once the open dialog closes: the page behind a dialog stays put. */
 function behindDialogs(scroll: () => void) {
   const dialog = document.querySelector('dialog:modal');
@@ -25,6 +20,11 @@ function behindDialogs(scroll: () => void) {
   else scroll();
 }
 
+/**
+ * Transcript-linked playback. `active` changes only when the spoken segment changes, so
+ * playback touches two transcript rows, not all of them, however long the recording is.
+ * Create it while a component initializes: it registers effects.
+ */
 export class Playback {
   /** The audio or video player. */
   media = $state<HTMLMediaElement>();
@@ -75,7 +75,7 @@ export class Playback {
       if (!this.follow || !this.playing || this.active < 0) return;
       behindDialogs(() => {
         // The turn playing by now, once a dialog that held this back has closed.
-        if (!this.follow || this.active < 0) return;
+        if (!this.follow || !this.playing || this.active < 0) return;
         const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
         document
           .getElementById(rows()[this.active]?.id)
