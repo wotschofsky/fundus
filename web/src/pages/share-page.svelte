@@ -111,9 +111,10 @@
     </div>
     <ErrorNotice error={segments.error} />
     {#if rows.length === 0 && !segments.error}
-      <!-- Says there is no transcript only once this stage's read has answered: a first read paused
-           offline is not fetching, and the previous stage's rows stand in while it reads. -->
-      {#if !segments.isSuccess || segments.isPlaceholderData || segments.isFetching}
+      <!-- Says there is no transcript only once this stage's read has answered: neither while a read
+           is under way (paused offline too), nor while the previous stage's rows stand in for it, nor
+           from an earlier visit to this stage that is being read again. -->
+      {#if !segments.isSuccess || segments.isPlaceholderData || segments.fetchStatus !== 'idle'}
         <LoadingState label="Loading transcript…" />
       {:else}
         <p class="muted">
