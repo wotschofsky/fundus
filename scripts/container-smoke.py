@@ -156,6 +156,17 @@ def exercise(restarted=False, proxy=False):
             if attempt == 59:
                 raise
             time.sleep(1)
+    if proxy:
+        # The server reads the Access keys from the mock at the first signed request; a mock not
+        # listening yet would be answered 503 for the next 30 s.
+        for attempt in range(60):
+            try:
+                urllib.request.urlopen(ACCESS_TEAM + "/cdn-cgi/access/certs", timeout=5).read()
+                break
+            except (OSError, urllib.error.URLError):
+                if attempt == 59:
+                    raise
+                time.sleep(1)
     _, page = call("/")
     assert b'<div id="root">' in page, "Web bundle is missing"
     if proxy:

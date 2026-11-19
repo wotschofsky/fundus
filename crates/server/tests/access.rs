@@ -185,3 +185,48 @@ async fn a_sign_in_that_cannot_be_checked_is_answered_as_unavailable() {
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
+
+#[tokio::test]
+async fn a_key_read_finishes_even_when_the_request_that_started_it_goes_away() {
+    // The team answers a key read only when released, so the request can be dropped meanwhile.
+    let reads = Arc::new(AtomicUsize::new(0));
+    let asked = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (counted, started, held_back) = (reads.clone(), asked.clone(), release.clone());
+    let keys = access_jwks();
+    let team = Router::new().route(
+        "/cdn-cgi/access/certs",
+        get(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (keys, started, held_back) = (keys.clone(), started.clone(), held_back.clone());
+            async move {
+                started.notify_one();
+                held_back.notified().await;
+                Json(keys)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, team).await.unwrap() });
+    let (_dir, _app, router) = proxied(Some(Settings::new(&issuer, ACCESS_AUD).unwrap())).await;
+
+    // Anyone can start the read with a made-up key ID; then their client goes away.
+    let made_up = access_token_with(
+        json!({"alg": "RS256", "kid": "made-up"}),
+        owner_with(json!({"iss": issuer})),
+    );
+    let dropped = {
+        let router = router.clone();
+        tokio::spawn(async move { status(&router, Some(&made_up)).await })
+    };
+    asked.notified().await;
+    dropped.abort();
+    let _ = dropped.await;
+    release.notify_one();
+
+    // The read still finished: the owner is let in, and the keys were read only once.
+    let owner = access_token(owner_with(json!({"iss": issuer})));
+    assert_eq!(status(&router, Some(&owner)).await, StatusCode::OK);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+}

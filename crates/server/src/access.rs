@@ -1,8 +1,10 @@
-//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request is the owner's only
-//! when it carries a valid `Cf-Access-Jwt-Assertion`: the token Access adds to every request it
-//! has signed in. A request that reached the server another way has none: a path the proxy lets
-//! through without sign-in (however that path was spelled on its way in), or a direct hit on the
-//! origin.
+//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request without an
+//! `Authorization` header (which `auth::require` checks instead) is the owner's only when it
+//! carries a valid `Cf-Access-Jwt-Assertion`: the token Access adds to every request it has
+//! signed in. A request that reached the server another way (a path the proxy lets through
+//! without sign-in, however that path was spelled on its way in, or a direct hit on the origin)
+//! carries none of its own. The token is a bearer credential until it expires: whoever holds the
+//! owner's is let in, wherever the request comes from.
 use crate::{
     config::App,
     error::{Error, Result},
@@ -34,20 +36,24 @@ pub struct Settings {
     /// name theirs instead.
     pub audience: String,
 }
+/// What `fundus serve` says when proxy mode has no Access settings.
+pub const MISSING: &str = "VAULT_AUTH_MODE=proxy needs VAULT_ACCESS_TEAM_DOMAIN \
+     (<team>.cloudflareaccess.com) and VAULT_ACCESS_AUD (the Access application's Audience tag)";
 impl Settings {
-    pub fn from_env() -> anyhow::Result<Self> {
+    /// From `VAULT_ACCESS_TEAM_DOMAIN` and `VAULT_ACCESS_AUD`; none when neither is set, so
+    /// commands that never check a sign-in (`token`, `backup`) run without them.
+    pub fn from_env() -> anyhow::Result<Option<Self>> {
         let team = std::env::var("VAULT_ACCESS_TEAM_DOMAIN").unwrap_or_default();
         let audience = std::env::var("VAULT_ACCESS_AUD").unwrap_or_default();
-        Self::new(&team, &audience)
+        if team.trim().is_empty() && audience.trim().is_empty() {
+            return Ok(None);
+        }
+        Self::new(&team, &audience).map(Some)
     }
     /// `team` is the team domain (`<team>.cloudflareaccess.com`), or an origin with its scheme.
     pub fn new(team: &str, audience: &str) -> anyhow::Result<Self> {
         let (team, audience) = (team.trim().trim_end_matches('/'), audience.trim());
-        anyhow::ensure!(
-            !team.is_empty() && !audience.is_empty(),
-            "VAULT_AUTH_MODE=proxy needs VAULT_ACCESS_TEAM_DOMAIN (<team>.cloudflareaccess.com) and \
-             VAULT_ACCESS_AUD (the Access application's Audience tag)"
-        );
+        anyhow::ensure!(!team.is_empty() && !audience.is_empty(), MISSING);
         let origin = if team.contains("://") {
             team.to_string()
         } else {
@@ -76,7 +82,7 @@ type KeySet = HashMap<String, (Vec<u8>, Vec<u8>)>;
 
 /// The team's signing keys, as last read.
 #[derive(Default)]
-pub struct Keys(tokio::sync::Mutex<Held>);
+pub struct Keys(std::sync::Arc<tokio::sync::Mutex<Held>>);
 #[derive(Default)]
 struct Held {
     keys: KeySet,
@@ -104,26 +110,30 @@ impl Keys {
         Ok(())
     }
     async fn get(&self, app: &App, settings: &Settings, kid: &str) -> Result<(Vec<u8>, Vec<u8>)> {
-        let mut held = self.0.lock().await;
+        let mut held = self.0.clone().lock_owned().await;
         let stale = held.read.is_none_or(|t| t.elapsed() > REFRESH);
         if (stale || !held.keys.contains_key(kid)) && held.asked.is_none_or(|t| t.elapsed() > RETRY)
         {
             held.asked = Some(Instant::now());
-            match fetch(app, settings).await {
-                Ok(keys) => {
-                    held.keys = keys;
-                    held.read = Some(Instant::now());
+            let (client, settings) = (app.client.clone(), settings.clone());
+            // Read in a task of its own, holding the keys: a request dropped meanwhile (its client
+            // gone) must not abandon the read, leaving it asked for but never read until RETRY.
+            let read = tokio::spawn(async move {
+                match fetch(&client, &settings).await {
+                    Ok(keys) => {
+                        held.keys = keys;
+                        held.read = Some(Instant::now());
+                    }
+                    // Keys already held stay in use: Access keeps a replaced key valid for days.
+                    Err(error) => tracing::warn!(%error, "could not read the Access signing keys"),
                 }
-                // Keys already held stay in use: Access keeps a replaced key valid for days.
-                Err(error) => tracing::warn!(%error, "could not read the Access signing keys"),
-            }
+                held
+            });
+            held = read.await.map_err(|_| unavailable())?;
         }
         match held.keys.get(kid) {
             Some(key) => Ok(key.clone()),
-            None if held.read.is_none() => Err(Error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Could not check your sign-in with Cloudflare Access; try again shortly".into(),
-            )),
+            None if held.read.is_none() => Err(unavailable()),
             None => Err(denied()),
         }
     }
@@ -141,9 +151,14 @@ fn parse(jwks: &[u8]) -> anyhow::Result<KeySet> {
     }
     Ok(keys)
 }
-async fn fetch(app: &App, settings: &Settings) -> anyhow::Result<KeySet> {
-    let body = app
-        .client
+fn unavailable() -> Error {
+    Error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Could not check your sign-in with Cloudflare Access; try again shortly".into(),
+    )
+}
+async fn fetch(client: &reqwest::Client, settings: &Settings) -> anyhow::Result<KeySet> {
+    let body = client
         .get(format!("{}/cdn-cgi/access/certs", settings.issuer))
         .timeout(Duration::from_secs(10))
         .send()
@@ -182,7 +197,7 @@ fn decode<T: serde::de::DeserializeOwned>(part: &str) -> Result<T> {
 
 /// Accepts `token` only if the configured Access application signed it in and it is still valid.
 pub async fn verify(app: &App, token: &str) -> Result<()> {
-    // Proxy mode without Access settings (only a test can build one) trusts no one.
+    // Proxy mode without Access settings (`fundus serve` refuses to start so) trusts no one.
     let Some(settings) = &app.config.access else {
         return Err(denied());
     };
