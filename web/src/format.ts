@@ -18,17 +18,18 @@ export const stageName = (e: Pick<Entry, 'stage' | 'pause_requested'>) =>
 export function speakerNames(
   speakers: Pick<Speaker, 'label' | 'name'>[] = [],
   /** Turns of the transcript: what they were read with decides a speaker's name, as it matches
-   * them; no name there means none, so the speaker is numbered. One the recording does not list
-   * yet (its transcript saved after it was read) takes the next number as it first speaks, named
-   * or not, so the others keep theirs once the recording lists it. */
+   * them; no name there means none, so the speaker is numbered. Those the recording does not list
+   * yet (its transcript saved after it was read) are numbered after those it does, named or not,
+   * in label order as the server lists speakers, so the numbers stay put once it lists them too
+   * (as long as their labels sort after the listed ones, as new speakers' labels do). */
   turns: Pick<Segment, 'speaker' | 'speaker_name'>[] = [],
 ): Map<string, string> {
   const numbered = new Map(speakers.map((s, i) => [s.label, `Speaker ${i + 1}`]));
+  const unlisted = [...new Set(turns.map((turn) => turn.speaker))].filter((l) => !numbered.has(l));
+  for (const label of unlisted.sort()) numbered.set(label, `Speaker ${numbered.size + 1}`);
   const names = new Map(speakers.map((s) => [s.label, s.name ?? numbered.get(s.label)!]));
-  for (const turn of turns) {
-    if (!numbered.has(turn.speaker)) numbered.set(turn.speaker, `Speaker ${numbered.size + 1}`);
+  for (const turn of turns)
     names.set(turn.speaker, turn.speaker_name ?? numbered.get(turn.speaker)!);
-  }
   return names;
 }
 
