@@ -40,7 +40,7 @@ registerHooks({
   },
 });
 globalThis.document ??= new EventTarget();
-const { keepAnswer, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
+const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
 const { LinkClock, forget, leaving } = await import('../src/link-clock.svelte.ts');
 
 /** What the share dialog takes as a change goes out. */
@@ -388,4 +388,35 @@ test('after a change, Settings reads its list afresh even if its first read was 
   stop();
   client.clear();
   assert.equal(listReads, 2);
+});
+
+test("a change that failed still counts, so an earlier change's answer arriving after it is not shown", async () => {
+  const client = new QueryClient();
+  const shared = link();
+  answer(shared);
+  await client.fetchQuery(shareQuery('cedar'));
+  const first = sending(); // Seven days, answered late.
+  // A one-day change committed but its answer was lost: the page asks again.
+  await rereadLinks(client, 'cedar');
+  const sevenDays = { ...shared, expires_at: new Date(Date.now() + 7 * 86_400_000).toISOString() };
+  await keepAnswer(client, 'cedar', sevenDays, first.sent, first.since);
+  assert.notDeepEqual(client.getQueryData(['share', 'cedar']), sevenDays);
+});
+
+test("after a change, Settings' list is read again even while Settings is not shown", async () => {
+  const client = new QueryClient();
+  const before = link();
+  answer({ shares: [before] });
+  await client.fetchQuery(sharesQuery);
+  let listReads = 0;
+  const changed = { ...before, expires_at: new Date(Date.now() + 86_400_000).toISOString() };
+  globalThis.fetch = async (url) => {
+    if (!String(url).endsWith('/v1/shares')) return Response.json(changed);
+    listReads++;
+    return Response.json({ shares: [changed] });
+  };
+  const { sent, since } = sending();
+  await keepAnswer(client, 'cedar', changed, sent, since);
+  assert.equal(listReads, 1);
+  assert.deepEqual(client.getQueryData(['shares']), { shares: [changed] });
 });

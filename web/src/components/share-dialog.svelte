@@ -244,12 +244,13 @@
       />
     </label>
   {/if}
-  <!-- A link gone meanwhile is not an error: the dialog asks again and shows what is there. -->
+  <!-- A link gone meanwhile is not an error: the dialog asks again and shows what is there. The
+       latest change's error comes first, as it answers what the owner just did. -->
   <ErrorNotice
-    error={share.error ??
-      (latest === 'save' ? save.error : null) ??
+    error={(latest === 'save' ? save.error : null) ??
       (latest === 'extend' && !gone(extend.error) ? extend.error : null) ??
-      (latest === 'stop' && !gone(stop.error) ? stop.error : null)}
+      (latest === 'stop' && !gone(stop.error) ? stop.error : null) ??
+      share.error}
   />
   <div class="dialog-actions share-actions">
     <button type="button" disabled={!link || confirming} onclick={copy}>

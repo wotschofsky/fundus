@@ -199,17 +199,17 @@ function forgetMissing(known: Share[], answered: Set<string>, since: number) {
   for (const link of known)
     if (!answered.has(link.url) && !lapsedUrls.has(link.url)) missing(link.url, since);
 }
-/** Share reads (of a recording's link or of Settings' list) and change answers that have landed
- * on this page. It only grows: a list dropped from memory and read afresh counts on from here,
- * unlike the cache's own per-query counts. */
+/** Share reads (of a recording's link or of Settings' list) and changes that have ended on this
+ * page, answered or failed (a failed one may have gone through). It only grows: a list dropped
+ * from memory and read afresh counts on from here, unlike the cache's own per-query counts. */
 let landed = 0;
-/** How many share reads and answers had landed as a change went out, for `keepAnswer`: each
+/** How many share reads and changes had ended as a change went out, for `keepAnswer`: each
  * counts, even two in one millisecond. */
 export const sentAt = () => landed;
 /** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
- * cache, unless a read of the link or of Settings' list, or another change's answer, landed after
+ * cache, unless a read of the link or of Settings' list landed, or another change ended, after
  * the change was sent: that may be newer than this answer (another tab shared again, or a later
- * change answered first), so the page asks again instead of overwriting it.
+ * change committed first, answered or not), so the page asks again instead of overwriting it.
  *
  * ponytail: tabs do not tell each other what they changed; each page reconciles with the server
  * when it reads, so another tab's change shows here at this page's next read (offline, not until
@@ -227,24 +227,28 @@ export async function keepAnswer(
   if (value) confirm(value.url, since);
   // A read still under way would land after this and bring back what was just changed.
   await client.cancelQueries({ queryKey: ['share', id] });
-  // Every answer counts as it lands, shown or not: another change's answer, sent before this one
-  // landed, may be the older one at the server.
-  const fresh = landed === sent;
-  landed++;
-  if (fresh) client.setQueryData(['share', id], value);
+  if (landed === sent) client.setQueryData(['share', id], value);
   // Shown at once if nothing newer landed, and read again either way: another change may have
   // committed after this one.
   return rereadLinks(client, id);
 }
-/** Reads the recording's link and Settings' list again after a change to the recording's links,
- * whether or not it worked: one that failed may have gone through before its answer was lost. A
- * read still under way may have been answered before the change committed, so it is cancelled
- * rather than kept: the cache would wait for a first read (one with no answer yet) instead of
- * reading again. */
+/** A change to the recording's links has ended, whether or not it worked (one that failed may
+ * have gone through before its answer was lost): it counts as landed, shown or not, so an
+ * answer sent before it, which may be the older one at the server, is not shown over it; and
+ * the recording's link and Settings' list are read again. A read still under way may have been
+ * answered before the change committed, so it is cancelled rather than kept: the cache would
+ * wait for a first read (one with no answer yet) instead of reading again. Settings' list is
+ * read even while Settings is not shown, as changes are made from a recording's page; a stop
+ * from Settings already takes the link for gone wherever it shows. */
 export async function rereadLinks(client: QueryClient, id: string) {
-  const keys = [['share', id], ['shares']];
-  await Promise.all(keys.map((queryKey) => client.cancelQueries({ queryKey })));
-  await Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })));
+  landed++;
+  await Promise.all(
+    [['share', id], ['shares']].map((queryKey) => client.cancelQueries({ queryKey })),
+  );
+  await Promise.all([
+    client.invalidateQueries({ queryKey: ['share', id] }),
+    client.invalidateQueries({ queryKey: ['shares'], refetchType: 'all' }),
+  ]);
 }
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */
 export const linkToken = (share: Pick<Share, 'url'>) =>
