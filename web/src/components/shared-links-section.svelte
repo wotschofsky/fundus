@@ -2,7 +2,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api, gone, linkToken, send, type SharedLink } from '../api';
-  import { LinkClock } from '../link-clock.svelte';
+  import { LinkClock, forget } from '../link-clock.svelte';
   import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
   import ErrorNotice from './error-notice.svelte';
@@ -18,9 +18,7 @@
     () => shares.refetch(),
   );
   /** The links that work by this page's clock: one drops out of the list as it expires. */
-  const working = $derived(
-    shares.data?.shares.filter((link) => clock.works(link.expires_at)) ?? [],
-  );
+  const working = $derived(shares.data?.shares.filter((link) => clock.offered(link)) ?? []);
   const stop = (link: SharedLink) =>
     (confirming = {
       title: `Stop sharing “${link.title}”?`,
@@ -33,6 +31,8 @@
         await api(`/v1/entries/${link.entry_id}/share?${named}`, send('DELETE')).catch((error) => {
           if (!gone(error)) throw error;
         });
+        // Stopped, here or before: it leaves the list now, even if the refresh below fails.
+        forget(link.url);
         qc.removeQueries({ queryKey: ['share', link.entry_id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });
       },

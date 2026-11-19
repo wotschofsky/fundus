@@ -18,7 +18,7 @@ registerHooks({
 });
 // The page listens for being shown again; Node has no document.
 globalThis.document ??= new EventTarget();
-const { LinkClock } = await import('../src/link-clock.svelte.ts');
+const { LinkClock, forget } = await import('../src/link-clock.svelte.ts');
 
 const expiring = (ms) => {
   const expires_at = ms === null ? null : new Date(Date.now() + ms).toISOString();
@@ -153,6 +153,23 @@ test('a list of links drops each one as it expires and asks again each time', as
     assert.equal(clock.offered(second), null);
     assert.equal(clock.offered(lasting), lasting);
     assert.equal(asked.count, 2);
+  } finally {
+    stop();
+  }
+});
+
+test('a link the server answered 404 for is not offered again, on any page', () => {
+  const gone = { ...expiring(null), url: 'https://vault.example.com/s/gone' };
+  const other = expiring(null);
+  const { clock, stop } = page(gone, other);
+  try {
+    forget(gone.url);
+    assert.equal(clock.offered(gone), null);
+    assert.equal(clock.offered(other), other);
+    // Another page (the dialog, Settings, the page opened again) knows it too.
+    const second = page(gone);
+    assert.equal(second.clock.offered(gone), null);
+    second.stop();
   } finally {
     stop();
   }

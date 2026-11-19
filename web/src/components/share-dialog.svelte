@@ -6,7 +6,7 @@
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
   import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
   import { date } from '../format';
-  import { LinkClock } from '../link-clock.svelte';
+  import { LinkClock, forget } from '../link-clock.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {
@@ -32,14 +32,9 @@
     () => [share.data?.expires_at],
     () => share.refetch(),
   );
-  /** A link the server answered 404 for. Its token never works again, so it is not offered even
-   * while the page asks what is there instead. */
-  let dropped = $state<string | null>(null);
-  /** The saved link while it works by this page's clock: never offered once it has expired. */
-  const link = $derived.by(() => {
-    const current = clock.offered(share.data);
-    return current && current.url !== dropped ? current : null;
-  });
+  /** The saved link while it works by this page's clock: never offered once it has expired, or
+   * once the server has said it is gone. */
+  const link = $derived(clock.offered(share.data));
   const saved = async (value: Share | null) => {
     // A read still under way would land after this and bring back what was just changed.
     await qc.cancelQueries({ queryKey: ['share', id] });
@@ -55,7 +50,7 @@
    * again. */
   const reread = (error: Error, url: string) => {
     if (!gone(error)) return;
-    dropped = url;
+    forget(url);
     qc.invalidateQueries({ queryKey: ['shares'] });
     return qc.invalidateQueries({ queryKey: ['share', id] });
   };

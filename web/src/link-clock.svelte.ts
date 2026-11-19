@@ -4,6 +4,16 @@
  * hidden page's timers run late. When a link lapses the page asks the server again (`lapsed`),
  * which may have extended or replaced it. The server decides; this clock can differ from its by
  * their skew. */
+import { SvelteSet } from 'svelte/reactivity';
+
+/** URLs the server answered 404 for. A token never works again once it is gone, so no page
+ * offers these again, even before it hears what (if anything) replaced them. */
+const dead = new SvelteSet<string>();
+/** The server answered 404 for this link. */
+export const forget = (url: string) => {
+  dead.add(url);
+};
+
 export class LinkClock {
   #now = $state(Date.now());
 
@@ -39,9 +49,11 @@ export class LinkClock {
     return !at || Date.parse(at) > this.#now;
   }
 
-  /** `link` while it works by the page's clock, or null. */
-  offered<T extends { expires_at: string | null }>(link: T | null | undefined): T | null {
-    return link && this.works(link.expires_at) ? link : null;
+  /** `link` while it works by the page's clock and the server has not said it is gone, or null. */
+  offered<T extends { url: string; expires_at: string | null }>(
+    link: T | null | undefined,
+  ): T | null {
+    return link && !dead.has(link.url) && this.works(link.expires_at) ? link : null;
   }
 
   /** Moves the page's clock to now. */
