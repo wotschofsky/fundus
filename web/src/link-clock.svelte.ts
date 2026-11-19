@@ -8,6 +8,11 @@ const dead = new SvelteSet<string>();
 export const forget = (url: string) => {
   dead.add(url);
 };
+/** The server answered `next` where it had answered `previous`: a link it no longer answers with
+ * was stopped, expired or replaced, and is gone. */
+export function settle(previous: { url: string } | null | undefined, next: { url: string } | null) {
+  if (previous && previous.url !== next?.url) forget(previous.url);
+}
 
 /** The owner's pages decide by their own clock whether a share link still works, so an expired
  * link is never offered or handed out. The clock moves on when a link expires, when the page is
@@ -21,6 +26,8 @@ export class LinkClock {
    * reruns what reads the links, so this outlives those reruns: a lapsed link is asked about
    * once, not again on each failed answer. */
   #asked = new Set<number>();
+  /** The running check, while the page shows a link that expires. */
+  #tick: (() => void) | undefined;
 
   /** `expiries`: when each link the page shows stops working (null: never). */
   constructor(expiries: () => (string | null | undefined)[], lapsed: () => unknown) {
@@ -39,11 +46,13 @@ export class LinkClock {
         // A timer waits at most about 24 days; a link further out is checked again then.
         if (next < Infinity) timer = setTimeout(tick, Math.min(next - now, 2 ** 31 - 1));
       };
+      this.#tick = tick;
       tick();
       document.addEventListener('visibilitychange', tick);
       return () => {
         clearTimeout(timer);
         document.removeEventListener('visibilitychange', tick);
+        if (this.#tick === tick) this.#tick = undefined;
       };
     });
   }
@@ -60,8 +69,9 @@ export class LinkClock {
     return link && !dead.has(link.url) && this.works(link.expires_at) ? link : null;
   }
 
-  /** Moves the page's clock to now. */
+  /** Moves the page's clock to now, asking the server if a link has lapsed meanwhile. */
   check() {
-    this.#now = Date.now();
+    if (this.#tick) this.#tick();
+    else this.#now = Date.now();
   }
 }

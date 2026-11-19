@@ -18,7 +18,7 @@ registerHooks({
 });
 // The page listens for being shown again; Node has no document.
 globalThis.document ??= new EventTarget();
-const { LinkClock, forget } = await import('../src/link-clock.svelte.ts');
+const { LinkClock, forget, settle } = await import('../src/link-clock.svelte.ts');
 
 const expiring = (ms) => {
   const expires_at = ms === null ? null : new Date(Date.now() + ms).toISOString();
@@ -198,6 +198,38 @@ test('a lapsed link is asked about once, however often the page reads it again',
     }
     assert.equal(asked, 1);
     assert.equal(clock.offered(share), null);
+  } finally {
+    stop();
+  }
+});
+
+test('a check that finds a link lapsed asks the server, without waiting for the timer', () => {
+  const share = expiring(60_000);
+  const { clock, asked, stop } = page(share);
+  const now = Date.now;
+  try {
+    // A minute on, before the timer has run: Copy link checks the clock.
+    Date.now = () => now() + 61_000;
+    clock.check();
+    assert.equal(clock.offered(share), null);
+    assert.equal(asked.count, 1);
+  } finally {
+    Date.now = now;
+    stop();
+  }
+});
+
+test('a link the server no longer answers with is gone', () => {
+  const old = { ...expiring(null), url: 'https://vault.example.com/s/old' };
+  const kept = { ...expiring(null), url: 'https://vault.example.com/s/kept' };
+  const { clock, stop } = page(old, kept);
+  try {
+    settle(kept, kept);
+    assert.equal(clock.offered(kept), kept);
+    settle(old, null);
+    assert.equal(clock.offered(old), null);
+    settle(kept, { ...kept, url: 'https://vault.example.com/s/new' });
+    assert.equal(clock.offered(kept), null);
   } finally {
     stop();
   }

@@ -1,4 +1,5 @@
 import { queryOptions } from '@tanstack/svelte-query';
+import { forget, settle } from './link-clock.svelte';
 
 export class ApiError extends Error {
   constructor(
@@ -150,8 +151,25 @@ export type Expiry = '1d' | '7d' | '30d' | 'never';
 export const shareQuery = (id: string) =>
   queryOptions({
     queryKey: ['share', id],
-    queryFn: () => api<Share | null>(`/v1/entries/${id}/share`),
+    queryFn: async ({ client, queryKey }) => {
+      const next = await api<Share | null>(`/v1/entries/${id}/share`);
+      // A link the server no longer answers with is gone for every reader, Settings too.
+      settle(client.getQueryData<Share | null>(queryKey), next);
+      return next;
+    },
   });
+/** Every link that works (Settings → Shared links). One the server no longer lists is gone for
+ * every reader, the recording's own page too. */
+export const sharesQuery = queryOptions({
+  queryKey: ['shares'],
+  queryFn: async ({ client, queryKey }) => {
+    const next = await api<{ shares: SharedLink[] }>('/v1/shares');
+    const listed = new Set(next.shares.map((link) => link.url));
+    for (const link of client.getQueryData<{ shares: SharedLink[] }>(queryKey)?.shares ?? [])
+      if (!listed.has(link.url)) forget(link.url);
+    return next;
+  },
+});
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */
 export const linkToken = (share: Pick<Share, 'url'>) =>
   share.url.slice(share.url.lastIndexOf('/') + 1);

@@ -21,6 +21,7 @@
     type Entry,
     type Person,
     type Segment,
+    type SharedLink,
   } from '../api';
   import { dateTime, downloadTranscript, duration, speakerNames, startAt } from '../format';
   import { Playback } from '../playback.svelte';
@@ -77,7 +78,8 @@
   const share = createQuery(() => shareQuery(id));
   const clock = new LinkClock(
     () => [share.data?.expires_at],
-    () => share.refetch(),
+    // The dialog tracks the same deadline: one request between them.
+    () => share.refetch({ cancelRefetch: false }),
   );
   // Shared only while the link works by this page's clock, so an expired one is never offered.
   const offered = $derived(clock.offered(share.data));
@@ -153,8 +155,11 @@
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
-        // Trash deleted the link: gone for every reader, Settings' list too.
+        // Trash deleted the link: gone for every reader, Settings' list too, whatever this page
+        // or Settings last read of it.
         if (share.data) forget(share.data.url);
+        for (const link of qc.getQueryData<{ shares: SharedLink[] }>(['shares'])?.shares ?? [])
+          if (link.entry_id === id) forget(link.url);
         await refresh();
         qc.removeQueries({ queryKey: ['share', id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });

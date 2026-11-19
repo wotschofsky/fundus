@@ -1,7 +1,7 @@
 <!-- Every recording shared by link, so a link that never expires is not forgotten. -->
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { api, gone, linkToken, send, type SharedLink } from '../api';
+  import { api, gone, linkToken, send, type SharedLink, sharesQuery } from '../api';
   import { LinkClock, forget } from '../link-clock.svelte';
   import { date, dateTime } from '../format';
   import ConfirmDialog, { type ConfirmRequest } from './confirm-dialog.svelte';
@@ -9,13 +9,10 @@
 
   const qc = useQueryClient();
   let confirming: ConfirmRequest | null = $state(null);
-  const shares = createQuery(() => ({
-    queryKey: ['shares'],
-    queryFn: () => api<{ shares: SharedLink[] }>('/v1/shares'),
-  }));
+  const shares = createQuery(() => sharesQuery);
   const clock = new LinkClock(
     () => shares.data?.shares.map((link) => link.expires_at) ?? [],
-    () => shares.refetch(),
+    () => shares.refetch({ cancelRefetch: false }),
   );
   /** The links that work by this page's clock: one drops out of the list as it expires. */
   const working = $derived(shares.data?.shares.filter((link) => clock.offered(link)) ?? []);

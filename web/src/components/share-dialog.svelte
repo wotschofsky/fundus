@@ -30,7 +30,7 @@
   const share = createQuery(() => shareQuery(id));
   const clock = new LinkClock(
     () => [share.data?.expires_at],
-    () => share.refetch(),
+    () => share.refetch({ cancelRefetch: false }),
   );
   /** The saved link while it works by this page's clock: never offered once it has expired, or
    * once the server has said it is gone. */
