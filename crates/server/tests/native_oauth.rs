@@ -488,3 +488,34 @@ async fn owner_access_returns_only_to_the_device_that_signed_in() {
         assert_eq!(s, StatusCode::BAD_REQUEST, "{client}");
     }
 }
+
+#[tokio::test]
+async fn an_owner_request_opened_before_the_check_still_cannot_send_its_code_to_a_website() {
+    let (_dir, app, r) = setup().await;
+    // Stored, and its consent page opened, before owner access was held to the device.
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES('stored','Fundus','[\"https://evil.example/callback\"]','none',unixepoch(),'vault:owner')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,'stored','https://evil.example/callback','challenge','vault:owner',?,NULL,unixepoch() + 600)")
+        .bind(auth::hash("opened-before"))
+        .bind(NATIVE)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let (s, v) = call(
+        &r,
+        "POST",
+        "/api/v1/oauth/authorize",
+        Some(json!({"request_id":"opened-before","approve":true}).to_string()),
+        "application/json",
+        &[("Origin", ORIGIN)],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let codes: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_codes")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(codes, 0);
+}

@@ -764,3 +764,71 @@ async fn registering_stores_nothing_so_no_one_can_use_registration_up() {
     approve(&r, &client).await;
     assert_eq!(stored().await, 1);
 }
+
+#[tokio::test]
+async fn a_client_stored_long_ago_and_never_used_can_still_open_its_consent_page() {
+    let (_dir, app, r) = setup().await;
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES('old','Chat client',?,'none',unixepoch() - 8 * 86400,'mcp:read')")
+        .bind(json!([REDIRECT]).to_string())
+        .execute(&app.db)
+        .await
+        .unwrap();
+    // Clearing unused clients must not clear the one being opened.
+    pending(&r, "old").await;
+}
+
+#[tokio::test]
+async fn only_the_id_registration_issued_is_accepted_and_only_a_valid_request_stores_it() {
+    let (_dir, app, r) = setup().await;
+    let client = register(&r).await;
+    let stored = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_clients")
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+    };
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(VERIFIER.as_bytes()));
+    let open = |client: String, redirect: &'static str| {
+        let query = form(&[
+            ("client_id", &client),
+            ("redirect_uri", redirect),
+            ("response_type", "code"),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "mcp:read"),
+            ("resource", RESOURCE),
+        ]);
+        let r = r.clone();
+        async move {
+            call(
+                &r,
+                "GET",
+                &format!("/api/v1/oauth/authorize?{query}"),
+                None,
+                "",
+                &[],
+            )
+            .await
+            .0
+        }
+    };
+    // The same registration spelled differently (here padded out) is not one registration issued.
+    let decoded: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&client)
+            .unwrap(),
+    )
+    .unwrap();
+    let padded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_string_pretty(&decoded).unwrap());
+    assert_eq!(open(padded, REDIRECT).await, StatusCode::BAD_REQUEST);
+    // A request that is refused stores nothing.
+    assert_eq!(
+        open(client.clone(), "https://chat.example.com/elsewhere").await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(stored().await, 0);
+    assert_eq!(open(client, REDIRECT).await, StatusCode::OK);
+    assert_eq!(stored().await, 1);
+}

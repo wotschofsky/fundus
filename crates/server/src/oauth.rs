@@ -203,16 +203,19 @@ fn loopback(url: &url::Url) -> bool {
         )
 }
 /// Owner access is sent only back to the device that signed in (a loopback address, or an app's
-/// own scheme), never to a website: approving a client someone else registered cannot hand them
-/// the library.
+/// own reverse-domain scheme), never to a website: a phished approval cannot send it to someone
+/// else's site. An app on the device that receives the callback is trusted as the device.
 fn on_device(redirect: &str) -> bool {
     url::Url::parse(redirect).is_ok_and(|url| url.scheme().contains('.') || loopback(&url))
 }
-const OWNER_REDIRECT: &str = "Owner access returns only to a loopback address or an app scheme";
+const OWNER_REDIRECT: &str =
+    "Owner access returns only to a loopback address or a reverse-domain app scheme";
 
+/// The ID travels in the consent address.
+const MAX_ID: usize = 4096;
 /// A registered client, carried in its own ID. Registering stores nothing, so however many
-/// registrations anyone makes, none crowds out the owner's: a client is stored only once the
-/// owner opens its consent page (`authorization`).
+/// registrations anyone makes, none crowds out the owner's: a client is stored only with the
+/// first valid consent request the owner opens for it (`authorization`).
 #[derive(Serialize, Deserialize)]
 struct Client {
     name: String,
@@ -228,10 +231,14 @@ impl Client {
     fn id(&self) -> String {
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).unwrap())
     }
-    /// Anyone can register any client, so an ID needs no signature: only the same checks.
+    /// Anyone can register any client, so an ID needs no signature: only the same checks, and
+    /// exactly the spelling registration issues.
     fn from_id(id: &str) -> Option<Self> {
+        if id.len() > MAX_ID {
+            return None;
+        }
         let client: Self = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(id).ok()?).ok()?;
-        client.check().ok().map(|()| client)
+        (client.id() == id && client.check().is_ok()).then_some(client)
     }
     fn check(&self) -> Result<()> {
         let bad = |message| Err(OAuthError::bad("invalid_client_metadata", message));
@@ -257,8 +264,7 @@ impl Client {
         if self.scope == NATIVE_SCOPE && !self.redirect_uris.iter().all(|s| on_device(s)) {
             return bad(OWNER_REDIRECT);
         }
-        // The ID travels in the authorization address.
-        if self.id().len() > 4096 {
+        if self.id().len() > MAX_ID {
             return bad("The client name and redirect addresses are too long");
         }
         Ok(())
@@ -336,24 +342,33 @@ pub async fn authorization(
             "Owner access required".into(),
         )
     })?;
-    if let Some(client) = Client::from_id(&query.client_id) {
-        let redirects = serde_json::to_string(&client.redirect_uris).unwrap();
-        sqlx::query!("INSERT OR IGNORE INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", query.client_id, client.name, redirects, client.auth_method, client.secret_hash, client.scope).execute(&app.db).await?;
-    }
-    let client = sqlx::query!(
+    // Not stored yet: stored below with its first valid request.
+    let unstored = Client::from_id(&query.client_id);
+    let stored = sqlx::query!(
         "SELECT name,redirect_uris,allowed_scope FROM oauth_clients WHERE id=?",
         query.client_id
     )
     .fetch_optional(&app.db)
-    .await?
-    .ok_or_else(|| {
-        OAuthError::bad(
-            "invalid_request",
-            "Unknown OAuth client; register the client first",
-        )
-    })?;
-    let redirects: Vec<String> =
-        serde_json::from_str(&client.redirect_uris).map_err(OAuthError::internal)?;
+    .await?;
+    let (name, redirects, allowed_scope) = match (stored, &unstored) {
+        (Some(row), _) => (
+            row.name,
+            serde_json::from_str::<Vec<String>>(&row.redirect_uris)
+                .map_err(OAuthError::internal)?,
+            row.allowed_scope,
+        ),
+        (None, Some(client)) => (
+            client.name.clone(),
+            client.redirect_uris.clone(),
+            client.scope.clone(),
+        ),
+        (None, None) => {
+            return Err(OAuthError::bad(
+                "invalid_request",
+                "Unknown OAuth client; register the client first",
+            ));
+        }
+    };
     if !redirects.contains(&query.redirect_uri) {
         return Err(OAuthError::bad(
             "invalid_request",
@@ -361,7 +376,7 @@ pub async fn authorization(
         ));
     }
     // Also for clients registered before `Client::check` refused such addresses.
-    if client.allowed_scope == NATIVE_SCOPE && !on_device(&query.redirect_uri) {
+    if allowed_scope == NATIVE_SCOPE && !on_device(&query.redirect_uri) {
         return Err(OAuthError::bad("invalid_request", OWNER_REDIRECT));
     }
     if query.response_type != "code"
@@ -375,8 +390,7 @@ pub async fn authorization(
     }
     let (scope, requested_resource) = resource_scope(&app, &query.resource)
         .ok_or_else(|| OAuthError::bad("invalid_target", "Unknown resource"))?;
-    let registered_scope: String = client.allowed_scope.clone();
-    if registered_scope != scope || query.scope.as_deref().unwrap_or(SCOPE) != scope {
+    if allowed_scope != scope || query.scope.as_deref().unwrap_or(SCOPE) != scope {
         return Err(OAuthError::bad(
             "invalid_scope",
             "The requested scope must match this registered client and resource",
@@ -392,11 +406,17 @@ pub async fn authorization(
     sqlx::query!("DELETE FROM oauth_codes WHERE expires_at<unixepoch()")
         .execute(&app.db)
         .await?;
-    sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id)").execute(&app.db).await?;
+    sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id) AND id<>?", query.client_id).execute(&app.db).await?;
     let request_hash = auth::hash(&request_id);
-    sqlx::query!("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,?,?,?,?,?,?,unixepoch() + 600)", request_hash, query.client_id, query.redirect_uri, query.code_challenge, scope, requested_resource, query.state).execute(&app.db).await?;
+    let mut tx = app.db.begin().await?;
+    if let Some(client) = unstored {
+        let redirects = serde_json::to_string(&client.redirect_uris).unwrap();
+        sqlx::query!("INSERT OR IGNORE INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", query.client_id, client.name, redirects, client.auth_method, client.secret_hash, client.scope).execute(&mut *tx).await?;
+    }
+    sqlx::query!("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,?,?,?,?,?,?,unixepoch() + 600)", request_hash, query.client_id, query.redirect_uri, query.code_challenge, scope, requested_resource, query.state).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(response(
-        json!({"request_id":request_id,"client_name":client.name.clone(),"redirect_uri":query.redirect_uri,"scope":scope,"resource":requested_resource}),
+        json!({"request_id":request_id,"client_name":name,"redirect_uri":query.redirect_uri,"scope":scope,"resource":requested_resource}),
     ))
 }
 #[derive(Deserialize)]
@@ -431,6 +451,10 @@ pub async fn consent(
             "This approval request expired; reconnect from your MCP client",
         )
     })?;
+    // Also for a request opened before `authorization` refused such addresses.
+    if row.scope == NATIVE_SCOPE && !on_device(&row.redirect_uri) {
+        return Err(OAuthError::bad("invalid_request", OWNER_REDIRECT));
+    }
     let mut callback = url::Url::parse(&row.redirect_uri).map_err(OAuthError::internal)?;
     if body.approve {
         let code = auth::secret();
@@ -518,7 +542,8 @@ async fn authenticate(
     .fetch_optional(&app.db)
     .await?
     .map(|row| (row.auth_method, row.secret_hash))
-    // Registered, but not yet stored: its consent page was never opened.
+    // Not stored: a client is stored with its first valid consent request, and cleared after a
+    // week unused.
     .or_else(|| Client::from_id(&client_id).map(|c| (c.auth_method, c.secret_hash)));
     let valid = row.is_some_and(|(expected, secret_hash)| {
         expected == method
