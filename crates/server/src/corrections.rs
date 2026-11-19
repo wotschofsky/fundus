@@ -168,12 +168,8 @@ async fn undo_available(
     Ok(fingerprint(&capture(db, entry).await?)? == expected)
 }
 
-pub async fn undo_status(
-    State(app): State<App>,
-    Extension(access): Extension<Access>,
-    Path(entry): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    access.admin()?;
+/// Whether the recording's last speaker correction can be undone now.
+pub async fn undo_ready(app: &App, entry: &str) -> Result<bool> {
     let mut tx = app.db.begin().await?;
     let saved = sqlx::query!(
         "SELECT after_snapshot,revision FROM speaker_correction_history WHERE entry_id=?",
@@ -182,12 +178,12 @@ pub async fn undo_status(
     .fetch_optional(&mut *tx)
     .await?;
     let available = if let Some(saved) = saved {
-        undo_available(&mut tx, &entry, &saved.after_snapshot, saved.revision).await?
+        undo_available(&mut tx, entry, &saved.after_snapshot, saved.revision).await?
     } else {
         false
     };
     tx.commit().await?;
-    Ok(Json(serde_json::json!({"available":available})))
+    Ok(available)
 }
 
 pub async fn undo(
@@ -1024,11 +1020,7 @@ mod tests {
         undo(State(app.clone()), owner(), Path("e".into())).await
     }
     async fn available(app: &App) -> bool {
-        undo_status(State(app.clone()), owner(), Path("e".into()))
-            .await
-            .unwrap()
-            .0["available"]
-            == true
+        undo_ready(app, "e").await.unwrap()
     }
     #[tokio::test]
     async fn undo_restores_the_previous_recording_state_and_survives_reload() {
@@ -1081,13 +1073,6 @@ mod tests {
             };
             assert_eq!(
                 undo(State(app.clone()), access(), Path("e".into()))
-                    .await
-                    .unwrap_err()
-                    .0,
-                StatusCode::FORBIDDEN
-            );
-            assert_eq!(
-                undo_status(State(app.clone()), access(), Path("e".into()))
                     .await
                     .unwrap_err()
                     .0,

@@ -154,11 +154,13 @@ async fn a_link_opens_one_recording_without_signing_in() {
             "audio_available",
             "duration_ms",
             "recorded_at",
+            "segments",
             "speakers",
             "stage",
             "summary",
             "summary_manual",
             "title",
+            "transcript_key",
             "video"
         ]
     );
@@ -172,11 +174,11 @@ async fn a_link_opens_one_recording_without_signing_in() {
         json!({"state":"ready","width":1280,"height":720})
     );
 
-    // The transcript, with positions for ids; a query cannot pick another recording.
+    // The transcript comes with it, with positions for ids; a query cannot pick another recording.
     let (status, headers, body) = call(
         &v,
         "GET",
-        &format!("{link}/transcript?entry_id=other&cursor=0&limit=2000"),
+        &format!("{link}/entry?entry_id=other"),
         None,
         &[],
         None,
@@ -185,7 +187,6 @@ async fn a_link_opens_one_recording_without_signing_in() {
     assert_eq!(status, StatusCode::OK);
     private(&headers);
     let page = json(&body);
-    assert_eq!(page["next_cursor"], Value::Null);
     assert_eq!(
         page["segments"][0],
         json!({"id":"0","position":0,"speaker":"A","speaker_name":"Morgan","start_ms":0,"end_ms":5000,"text":"The cedar launch is on Tuesday."})
@@ -550,8 +551,8 @@ async fn an_expiry_change_never_makes_a_link() {
     );
 }
 
-/// A link reads the whole transcript at once, so a correction the owner makes meanwhile cannot
-/// land between two pages of it and mix speaker assignments from before and after.
+/// A link reads the whole transcript with the recording, so a correction the owner makes meanwhile
+/// cannot land between two pages of it and mix speaker assignments from before and after.
 #[tokio::test]
 async fn a_link_reads_the_whole_transcript_at_once() {
     let v = setup().await;
@@ -564,20 +565,24 @@ async fn a_link_reads_the_whole_transcript_at_once() {
     .await
     .unwrap();
     let link = share(&v, "1d").await;
-    let (status, _, body) = call(
-        &v,
-        "GET",
-        &format!("{link}/transcript?limit=2000&cursor=0"),
-        None,
-        &[],
-        None,
-    )
-    .await;
+    let (status, _, body) = call(&v, "GET", &format!("{link}/entry"), None, &[], None).await;
     assert_eq!(status, StatusCode::OK);
     let page = json(&body);
     assert_eq!(page["segments"].as_array().unwrap().len(), 2102);
-    assert_eq!(page["next_cursor"], Value::Null);
-    assert_eq!(page["truncated"], false);
+
+    // A reader holding these segments is not sent them again, until one changes.
+    let key = page["transcript_key"].as_str().unwrap().to_owned();
+    let held = format!("{link}/entry?transcript_key={key}");
+    let (_, _, body) = call(&v, "GET", &held, None, &[], None).await;
+    assert_eq!(json(&body)["segments"], Value::Null);
+    sqlx::query("UPDATE segments SET text='Changed.' WHERE id='cedar:2'")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    let (_, _, body) = call(&v, "GET", &held, None, &[], None).await;
+    let page = json(&body);
+    assert_eq!(page["segments"][2]["text"], "Changed.");
+    assert_ne!(page["transcript_key"], key);
 }
 
 /// Changing or stopping a link names it, so a dialog still showing a link that was stopped and

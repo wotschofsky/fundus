@@ -207,7 +207,6 @@ pub fn public(page: MethodRouter<App>) -> Router<App> {
     Router::new()
         .route("/{token}", page)
         .route("/{token}/entry", get(entry))
-        .route("/{token}/transcript", get(transcript))
         .route("/{token}/audio", get(audio).head(audio))
         .route("/{token}/video", get(video).head(video))
         .fallback(|| async { Error::not_found() })
@@ -249,9 +248,21 @@ async fn shared(app: &App, token: &str) -> Result<String> {
     .ok_or_else(Error::not_found)
 }
 
-async fn entry(State(app): State<App>, Path(token): Path<String>) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+struct EntryQuery {
+    /// The `transcript_key` of the segments the reader holds: unchanged, they are not sent again.
+    transcript_key: Option<String>,
+}
+
+/// The recording and its whole transcript in one read, so neither waits for the other.
+async fn entry(
+    State(app): State<App>,
+    Path(token): Path<String>,
+    Query(q): Query<EntryQuery>,
+) -> Result<Json<Value>> {
     let id = shared(&app, &token).await?;
     let e = retrieval::get(&app, &id).await?;
+    let (segments, key) = retrieval::segments(&app, &e, &id).await?;
     // Copied field by field: what else the owner's entry holds stays with the owner.
     let speakers: Vec<Value> = e["speakers"]
         .as_array()
@@ -262,29 +273,8 @@ async fn entry(State(app): State<App>, Path(token): Path<String>) -> Result<Json
     let video = e["video"]
         .as_object()
         .map(|v| json!({"state":v["state"],"width":v["width"],"height":v["height"]}));
-    Ok(Json(json!({
-        "title":e["title"],"recorded_at":e["recorded_at"],"duration_ms":e["duration_ms"],
-        "stage":e["stage"],"summary":e["summary"],"summary_manual":e["summary_manual"],
-        "audio_available":e["audio_available"],"video":video,"speakers":speakers,
-    })))
-}
-
-/// The whole transcript in one read, so a correction the owner makes meanwhile cannot fall
-/// between two pages of it (paging parameters are ignored).
-// ponytail: one response holds the whole transcript (a few MB for a very long recording); read
-// pages in one snapshot transaction instead if that ever matters.
-async fn transcript(State(app): State<App>, Path(token): Path<String>) -> Result<Json<Value>> {
-    let entry_id = shared(&app, &token).await?;
-    let read = retrieval::Read {
-        entry_id,
-        from_ms: None,
-        to_ms: None,
-        cursor: None,
-        limit: Some(u32::MAX),
-    };
-    let page = retrieval::transcript(&app, read, u32::MAX).await?;
     // Positions stand in for segment ids, which contain the recording's id.
-    let segments: Vec<Value> = page["segments"]
+    let segments: Vec<Value> = segments
         .as_array()
         .into_iter()
         .flatten()
@@ -293,9 +283,13 @@ async fn transcript(State(app): State<App>, Path(token): Path<String>) -> Result
                 "speaker_name":s["speaker_name"],"start_ms":s["start_ms"],"end_ms":s["end_ms"],"text":s["text"]})
         })
         .collect();
-    Ok(Json(
-        json!({"segments":segments,"truncated":page["truncated"],"next_cursor":page["next_cursor"]}),
-    ))
+    let mut v = json!({
+        "title":e["title"],"recorded_at":e["recorded_at"],"duration_ms":e["duration_ms"],
+        "stage":e["stage"],"summary":e["summary"],"summary_manual":e["summary_manual"],
+        "audio_available":e["audio_available"],"video":video,"speakers":speakers,
+    });
+    retrieval::attach(&mut v, json!(segments), key, q.transcript_key.as_deref());
+    Ok(Json(v))
 }
 
 async fn audio(

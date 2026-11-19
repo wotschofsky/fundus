@@ -11,6 +11,22 @@ struct TranscriptRow: Identifiable, Equatable, Sendable {
     let text: String
 }
 
+/// A recording read with its transcript; `segments` is left out when the key the reader sent still holds.
+private struct Detail: Decodable {
+    let entry: Entry
+    let segments: [Segment]?
+    let transcriptKey: String
+
+    private enum CodingKeys: String, CodingKey { case segments, transcriptKey }
+
+    init(from decoder: Decoder) throws {
+        entry = try Entry(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        segments = try container.decodeIfPresent([Segment].self, forKey: .segments)
+        transcriptKey = try container.decode(String.self, forKey: .transcriptKey)
+    }
+}
+
 /// A recording opened from the vault: transcript rows, speakers, streamed playback, edits.
 @MainActor
 @Observable
@@ -29,7 +45,8 @@ final class TranscriptModel {
     @ObservationIgnored private let library: Library
     @ObservationIgnored private var audio: VaultAudioLoader?
     @ObservationIgnored private var timeline = SessionTimeline(chunks: [], timeZone: .current)
-    @ObservationIgnored private var rowsStage: String?
+    /// The vault's key for the segments `rows` were made from; sent back, unchanged ones are not resent.
+    @ObservationIgnored private var rowsKey: String?
 
     init(entryID: String, library: Library) {
         self.entryID = entryID
@@ -68,17 +85,20 @@ final class TranscriptModel {
 
     func refresh() async {
         do {
-            let detail = try await VaultAPI.get(VaultAPI.entryPath(entryID), as: Entry.self)
-            entry = detail
-            timeline = Self.timeline(for: detail)
-            loadError = nil
-            // Segments are written once per processing step; reread them only when the stage moves on
-            // (or the recording time changed, which moves every clock time).
-            let stage = "\(detail.stage)|\(detail.activeStage ?? "")|\(detail.recordedAt?.timeIntervalSince1970 ?? 0)"
-            if stage != rowsStage {
-                rows = try await Self.rows(entryID, timeline: timeline, dated: detail.recordedAt != nil)
-                rowsStage = stage
+            // The recording and its transcript in one read: neither waits for the other.
+            let held = rowsKey.map { "?transcript_key=\(VaultAPI.component($0))" } ?? ""
+            let read = try await VaultAPI.get(VaultAPI.entryPath(entryID, held), as: Detail.self)
+            let detail = read.entry
+            let timeline = Self.timeline(for: detail)
+            // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            if let segments = read.segments {
+                rows = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
             }
+            rowsKey = read.transcriptKey
+            // Set with the rows, in one update: the recording shows once its transcript is in, not before.
+            entry = detail
+            self.timeline = timeline
+            loadError = nil
             if detail.audioAvailable && audio == nil { loadAudio(detail) }
         } catch is CancellationError {
         } catch {
@@ -92,15 +112,7 @@ final class TranscriptModel {
         player.load(AVPlayerItem(asset: asset), duration: entry.duration)
     }
 
-    private static func rows(_ id: String, timeline: SessionTimeline, dated: Bool) async throws -> [TranscriptRow] {
-        var segments: [Segment] = []
-        var cursor = 0
-        while true {
-            let page = try await VaultAPI.get(VaultAPI.entryPath(id, "/transcript?limit=2000&cursor=\(cursor)"), as: Page<Segment>.self)
-            segments += page.items
-            guard let next = page.nextCursor, next > cursor else { break }
-            cursor = next
-        }
+    private static func rows(_ segments: [Segment], timeline: SessionTimeline, dated: Bool) async -> [TranscriptRow] {
         // Clock strings for thousands of rows: off the main actor.
         return await Task.detached(priority: .userInitiated) {
             segments.map { segment in

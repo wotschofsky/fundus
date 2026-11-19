@@ -111,7 +111,6 @@ fn library_routes(prefix: &str) -> Router<App> {
             &at("/entries/{id}"),
             get(entry).patch(update_entry).delete(delete_entry),
         )
-        .route(&at("/entries/{id}/transcript"), get(read))
         .route(&at("/entries/{id}/audio"), get(audio_file).head(audio_file))
         .route(&at("/entries/{id}/video"), get(video_file).head(video_file))
         .route(&at("/entries/{id}/video/retry"), post(retry_video))
@@ -140,7 +139,7 @@ fn library_routes(prefix: &str) -> Router<App> {
         )
         .route(
             &at("/entries/{id}/speaker-splits/undo"),
-            get(corrections::undo_status).post(corrections::undo),
+            post(corrections::undo),
         )
         .route(
             &at("/entries/{id}/speaker-splits/{review}/apply"),
@@ -293,42 +292,27 @@ async fn entries(
     }
     Ok(Json(retrieval::list(&app, f).await?))
 }
+#[derive(Deserialize)]
+struct EntryQuery {
+    /// The `transcript_key` of the segments the reader holds: unchanged, they are not sent again.
+    transcript_key: Option<String>,
+}
+/// A recording's page in one read: the entry, its transcript and, for the owner, whether the
+/// last speaker correction can be undone. Nothing on the page waits for another read's answer.
 async fn entry(
     State(app): State<App>,
     Extension(a): Extension<Access>,
     Path(id): Path<String>,
+    Query(q): Query<EntryQuery>,
 ) -> Result<Json<Value>> {
     a.read()?;
-    Ok(Json(retrieval::get(&app, &id).await?))
-}
-#[derive(Deserialize, Default)]
-struct ReadQuery {
-    from_ms: Option<i64>,
-    to_ms: Option<i64>,
-    cursor: Option<u32>,
-    limit: Option<u32>,
-}
-async fn read(
-    State(app): State<App>,
-    Extension(a): Extension<Access>,
-    Path(id): Path<String>,
-    Query(p): Query<ReadQuery>,
-) -> Result<Json<Value>> {
-    a.read()?;
-    Ok(Json(
-        retrieval::transcript(
-            &app,
-            retrieval::Read {
-                entry_id: id,
-                from_ms: p.from_ms,
-                to_ms: p.to_ms,
-                cursor: p.cursor,
-                limit: p.limit,
-            },
-            2000,
-        )
-        .await?,
-    ))
+    let mut v = retrieval::get(&app, &id).await?;
+    let (segments, key) = retrieval::segments(&app, &v, &id).await?;
+    retrieval::attach(&mut v, segments, key, q.transcript_key.as_deref());
+    if a.admin().is_ok() {
+        v["correction_undo"] = json!(corrections::undo_ready(&app, &id).await?);
+    }
+    Ok(Json(v))
 }
 async fn labels(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
     a.read()?;

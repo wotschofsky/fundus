@@ -11,15 +11,15 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.net.URLEncoder
 
-/** A typed owner API read; decoding runs off the main thread. */
-suspend inline fun <reified T> Vault.get(path: String): T {
-    val text = request(path)
-    return withContext(Dispatchers.Default) {
-        try {
-            VaultJson.decodeFromString<T>(text)
-        } catch (_: IllegalArgumentException) {
-            throw VaultError("The vault sent a response this app could not read. Update the server or the app.")
-        }
+/** A typed owner API read. */
+suspend inline fun <reified T> Vault.get(path: String): T = decode(request(path))
+
+/** An owner API answer, decoded off the main thread. */
+suspend inline fun <reified T> decode(text: String): T = withContext(Dispatchers.Default) {
+    try {
+        VaultJson.decodeFromString<T>(text)
+    } catch (_: IllegalArgumentException) {
+        throw VaultError("The vault sent a response this app could not read. Update the server or the app.")
     }
 }
 

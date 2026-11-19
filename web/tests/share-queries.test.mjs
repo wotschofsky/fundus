@@ -40,7 +40,9 @@ registerHooks({
   },
 });
 globalThis.document ??= new EventTarget();
-const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
+const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery, withTranscript } =
+  await import('../src/api.ts');
+const { start, take } = await import('../src/early.ts');
 const { LinkClock, forget, leaving } = await import('../src/link-clock.svelte.ts');
 
 /** What the share dialog takes as a change goes out. */
@@ -469,4 +471,31 @@ test("a change's answer is kept without waiting for the read after it, which may
   stop();
   client.clear();
   assert.equal(result, 'kept');
+});
+
+test('a page read sends the key of the transcript it holds and keeps it when left out', async () => {
+  const asked = [];
+  const read = (answer) => async (query) => (asked.push(query), answer);
+  const first = await withTranscript(
+    read({ stage: 'complete', segments: [1], transcript_key: 'k' }),
+  );
+  assert.deepEqual(first.segments, [1]);
+  const same = await withTranscript(read({ stage: 'complete', transcript_key: 'k' }), first);
+  assert.deepEqual(same.segments, [1]);
+  const moved = await withTranscript(read({ segments: [2], transcript_key: 'j' }), same);
+  assert.deepEqual(moved.segments, [2]);
+  assert.deepEqual(asked, ['', '?transcript_key=k', '?transcript_key=k']);
+});
+
+test('an early read is handed out once, and a failed one not at all', async () => {
+  const fetched = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response('{}', { status: url === '/ok' ? 200 : 401 });
+  try {
+    start(['/ok', '/denied']);
+    assert.equal((await take('/ok'))?.status, 200);
+    assert.equal(await take('/ok'), undefined);
+    assert.equal(await take('/denied'), undefined);
+  } finally {
+    globalThis.fetch = fetched;
+  }
 });

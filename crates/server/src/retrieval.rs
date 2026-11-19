@@ -150,6 +150,32 @@ async fn get_entry(app: &App, id: &str, include_trash: bool) -> Result<Value> {
     v["url"] = json!(format!("{}entries/{id}", app.config.public_url));
     Ok(v)
 }
+/// The whole transcript of `entry` (as `get` read it) and its key, which changes with any segment
+/// or with the recording's clock (the time and zone its rows are shown in). Read after the entry,
+/// so the segments are never older than the stage it reports.
+// ponytail: one response holds the whole transcript (a few MB for a very long recording); read
+// pages in one snapshot transaction instead if that ever matters.
+pub async fn segments(app: &App, entry: &Value, id: &str) -> Result<(Value, String)> {
+    let read = Read {
+        entry_id: id.into(),
+        from_ms: None,
+        to_ms: None,
+        cursor: None,
+        limit: Some(u32::MAX),
+    };
+    let segments = transcript(app, read, u32::MAX).await?["segments"].take();
+    let key =
+        crate::auth::hash(&json!([segments, entry["recorded_at"], entry["timezone"]]).to_string());
+    Ok((segments, key))
+}
+/// Adds `segments` to a recording read, unless the reader already `held` them by this key;
+/// `transcript_key` always.
+pub fn attach(v: &mut Value, segments: Value, key: String, held: Option<&str>) {
+    if held != Some(key.as_str()) {
+        v["segments"] = segments;
+    }
+    v["transcript_key"] = json!(key);
+}
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct Read {
     pub entry_id: String,

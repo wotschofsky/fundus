@@ -160,8 +160,7 @@ fun TranscriptScreen(
             ) {
                 Text("Transcript unavailable", style = MaterialTheme.typography.titleMedium)
                 Text(state.loadError.orEmpty(), textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                val scope = rememberCoroutineScope()
-                Button(onClick = { scope.launch { model.refresh() } }) { Text("Try again") }
+                Button(onClick = model::load) { Text("Try again") }
             }
             entry == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { DelayedLoadingIndicator() }
             else -> TranscriptContent(entry, state, model, list, padding, onSpeaker = { speakerSheet = it })
@@ -270,9 +269,7 @@ private fun TranscriptContent(
             }
         }
         item("transcript") { Section("Transcript") }
-        if (!state.rowsLoaded) {
-            item("rows-loading") { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DelayedLoadingIndicator() } }
-        } else if (state.rows.isEmpty()) {
+        if (state.rows.isEmpty()) {
             item("no-rows") {
                 Text(
                     if (entry.isProcessing) "The transcript appears here when it is ready." else "No speech was found.",

@@ -126,7 +126,8 @@ data class Person(val id: String, val name: String, val samples: Int = 0)
 data class EntryPage(val entries: List<Entry> = emptyList(), val nextCursor: Int? = null)
 
 @Serializable
-data class SegmentPage(val segments: List<Segment> = emptyList(), val nextCursor: Int? = null)
+/** The transcript a recording's read brings with it: `segments` is left out when the key sent still holds. */
+data class TranscriptPart(val segments: List<Segment>? = null, val transcriptKey: String)
 
 @Serializable
 data class PeoplePage(val people: List<Person> = emptyList())

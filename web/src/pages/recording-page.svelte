@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import {
     Download,
     FileAudio,
@@ -19,8 +19,8 @@
     rereadLinks,
     send,
     shareQuery,
-    transcript,
-    type Entry,
+    withTranscript,
+    type EntryDetail,
     type Person,
     type Segment,
   } from '../api';
@@ -54,29 +54,24 @@
   let correctionReceipt: CorrectionReceipt | null = $state(null);
   let notThisSpeaker = $state(false);
 
+  // The recording, its transcript and its undo state in one read; the link and people are read
+  // beside it, so nothing waits for another answer.
   const entry = createQuery(() => ({
     queryKey: ['entry', id],
-    queryFn: () => api<Entry>(`/v1/entries/${id}`),
+    queryFn: ({ client, signal }) =>
+      withTranscript<EntryDetail>(
+        (query) => api(`/v1/entries/${id}${query}`, { signal }),
+        client.getQueryData(['entry', id]),
+      ),
     // Also while the video is being prepared, which goes on after the transcript is done.
     refetchInterval: ({ state: { data } }) =>
       data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
   }));
-  const stage = $derived(entry.data?.stage);
-  // Segments only change when processing moves on, so the stage is part of the key.
-  const segments = createQuery(() => ({
-    queryKey: ['transcript', id, stage],
-    queryFn: ({ signal }) => transcript(id, signal),
-    enabled: !!stage,
-    placeholderData: keepPreviousData,
-  }));
-  const undo = createQuery(() => ({
-    queryKey: ['correction-undo', id, stage],
-    queryFn: () => api<{ available: boolean }>(`/v1/entries/${id}/speaker-splits/undo`),
-    enabled: !!entry.data,
-    staleTime: 0,
-  }));
   const people = createQuery(() => peopleQuery);
   const share = createQuery(() => shareQuery(id));
+  // The page shows once all it holds has been read, not in a second step: the Share button and
+  // speakers' names read the link and people. Each keeps its answer through later reads.
+  const loading = $derived([entry, share, people].some((q) => q.isPending) && !entry.error);
   const clock = new LinkClock(
     () => [share.data?.expires_at],
     // A fresh read: one already under way may have left before the link lapsed.
@@ -84,7 +79,7 @@
   );
   // Shared only while the link works by this page's clock, so an expired one is never offered.
   const offered = $derived(clock.offered(share.data));
-  const rows = $derived(segments.data ?? []);
+  const rows = $derived(entry.data?.segments ?? []);
   const firstAppearances = $derived.by(() => {
     const first = new Map<string, Segment>();
     for (const row of rows) {
@@ -101,10 +96,8 @@
 
   const refresh = () =>
     Promise.all(
-      ['entry', 'entries', 'labels', 'search', 'correction-undo'].map((key) =>
-        qc.invalidateQueries({
-          queryKey: ['entry', 'correction-undo'].includes(key) ? [key, id] : [key],
-        }),
+      [['entry', id], ['entries'], ['labels'], ['search']].map((queryKey) =>
+        qc.invalidateQueries({ queryKey }),
       ),
     );
   async function act(work: () => Promise<unknown>) {
@@ -148,7 +141,7 @@
     );
     // Summaries show speaker names too, also in the recordings list.
     await Promise.all(
-      [['entry', id], ['entries'], ['people'], ['correction-undo', id]].map((queryKey) =>
+      [['entry', id], ['entries'], ['people']].map((queryKey) =>
         qc.invalidateQueries({ queryKey }),
       ),
     );
@@ -182,14 +175,9 @@
   }
   async function refreshCorrectionData() {
     await Promise.all(
-      [
-        ['entry', id],
-        ['transcript', id],
-        ['people'],
-        ['entries'],
-        ['search'],
-        ['correction-undo', id],
-      ].map((queryKey) => qc.invalidateQueries({ queryKey }, { throwOnError: true })),
+      [['entry', id], ['people'], ['entries'], ['search']].map((queryKey) =>
+        qc.invalidateQueries({ queryKey }, { throwOnError: true }),
+      ),
     );
   }
   async function correctionApplied(receipt: CorrectionReceipt) {
@@ -206,7 +194,7 @@
     });
 </script>
 
-{#if entry.isPending}
+{#if loading}
   <LoadingState label="Loading recording…" />
 {:else if !entry.data}
   <BackLink />
@@ -290,7 +278,7 @@
   {/if}
   <ShareDialog {id} title={e.title} {clock} bind:open={sharing} />
   <ErrorNotice error={actionError} />
-  {#if correctionNotice || undo.data?.available}
+  {#if correctionNotice || e.correction_undo}
     <div class="notice correction-notice" role="status">
       <span
         >{correctionNotice === 'undone'
@@ -303,7 +291,7 @@
         {#if correctionNotice === 'saved' && correctionReceipt && !correctionReceipt.summary_refresh}
           Automatic summaries aren’t configured.{/if}
       </span>
-      {#if undo.data?.available}<button class="text-button" disabled={busy} onclick={undoCorrection}
+      {#if e.correction_undo}<button class="text-button" disabled={busy} onclick={undoCorrection}
           >Undo</button
         >{/if}
     </div>
@@ -339,17 +327,12 @@
           <h2 id="transcript-heading">Transcript</h2>
           {#if rows.length > 0 && e.audio_available}<span>Select a time to listen</span>{/if}
         </div>
-        <ErrorNotice error={segments.error} />
-        {#if rows.length === 0 && !segments.error}
-          {#if segments.isFetching}
-            <LoadingState label="Loading transcript…" />
-          {:else}
-            <p class="muted">
-              {processing
-                ? 'The transcript appears here when transcription finishes.'
-                : 'No speech was transcribed for this recording.'}
-            </p>
-          {/if}
+        {#if rows.length === 0}
+          <p class="muted">
+            {processing
+              ? 'The transcript appears here when transcription finishes.'
+              : 'No speech was transcribed for this recording.'}
+          </p>
         {/if}
         {#each rows as r, i (r.id)}
           <TranscriptTurn
