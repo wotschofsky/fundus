@@ -67,8 +67,10 @@
         `/v1/entries/${id}/share?token=${encodeURIComponent(linkToken({ url }))}`,
         send('DELETE'),
       ),
-    onSuccess: () => {
+    onSuccess: (_, url) => {
       stopping = null;
+      // Gone for every reader, Settings' list too, even before it refreshes.
+      forget(url);
       return saved(null);
     },
     onError: (error, url) => {

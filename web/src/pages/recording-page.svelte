@@ -38,7 +38,7 @@
     type CorrectionReceipt,
   } from '../components/speaker-correction.svelte';
   import TranscriptTurn from '../components/transcript-turn.svelte';
-  import { LinkClock } from '../link-clock.svelte';
+  import { LinkClock, forget } from '../link-clock.svelte';
 
   let { id }: { id: string } = $props();
   const qc = useQueryClient();
@@ -153,6 +153,8 @@
       action: 'Move to Trash',
       run: async () => {
         await api(`/v1/entries/${id}/trash`, send('POST'));
+        // Trash deleted the link: gone for every reader, Settings' list too.
+        if (share.data) forget(share.data.url);
         await refresh();
         qc.removeQueries({ queryKey: ['share', id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });

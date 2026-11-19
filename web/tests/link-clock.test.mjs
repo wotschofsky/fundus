@@ -5,7 +5,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { compileModule } from 'svelte/compiler';
 // Svelte's client runtime, as the compiled module uses it (see playback.test.mjs).
-import { effect_root, flush } from 'svelte/internal/client';
+import { effect_root, flush, get, set, state } from 'svelte/internal/client';
 
 // A `.svelte.ts` module uses runes, so it is compiled as Vite would before it is imported.
 registerHooks({
@@ -171,6 +171,33 @@ test('a link the server answered 404 for is not offered again, on any page', () 
     const second = page(gone);
     assert.equal(second.clock.offered(gone), null);
     second.stop();
+  } finally {
+    stop();
+  }
+});
+
+test('a lapsed link is asked about once, however often the page reads it again', async () => {
+  const share = expiring(100);
+  // Each answer from the server, even a failed one, reruns what reads the link.
+  const answers = state(0);
+  let clock;
+  let asked = 0;
+  const stop = effect_root(() => {
+    clock = new LinkClock(
+      () => (get(answers), [share.expires_at]),
+      () => asked++,
+    );
+  });
+  flush();
+  try {
+    await delay(200);
+    assert.equal(asked, 1);
+    for (let answer = 1; answer <= 3; answer++) {
+      set(answers, answer);
+      flush();
+    }
+    assert.equal(asked, 1);
+    assert.equal(clock.offered(share), null);
   } finally {
     stop();
   }

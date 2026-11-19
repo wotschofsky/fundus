@@ -17,6 +17,10 @@ export const forget = (url: string) => {
  * their skew. */
 export class LinkClock {
   #now = $state(Date.now());
+  /** Deadlines the page has already asked the server about. Every answer, a failed one too,
+   * reruns what reads the links, so this outlives those reruns: a lapsed link is asked about
+   * once, not again on each failed answer. */
+  #asked = new Set<number>();
 
   /** `expiries`: when each link the page shows stops working (null: never). */
   constructor(expiries: () => (string | null | undefined)[], lapsed: () => unknown) {
@@ -24,14 +28,13 @@ export class LinkClock {
       const deadlines = expiries().flatMap((at) => (at ? [Date.parse(at)] : []));
       if (!deadlines.length) return;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let gone = 0;
       const tick = () => {
         clearTimeout(timer);
         // One reading decides what works, whether a link lapsed, and when to look again.
         const now = (this.#now = Date.now());
-        const passed = deadlines.filter((deadline) => deadline <= now).length;
-        if (passed > gone) lapsed();
-        gone = passed;
+        const lapsedNow = deadlines.filter((d) => d <= now && !this.#asked.has(d));
+        for (const deadline of lapsedNow) this.#asked.add(deadline);
+        if (lapsedNow.length) lapsed();
         const next = Math.min(...deadlines.filter((deadline) => deadline > now));
         // A timer waits at most about 24 days; a link further out is checked again then.
         if (next < Infinity) timer = setTimeout(tick, Math.min(next - now, 2 ** 31 - 1));
