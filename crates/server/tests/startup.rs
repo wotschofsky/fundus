@@ -18,3 +18,36 @@ fn server_rejects_missing_and_blank_api_key_before_touching_storage() {
         assert!(!data.exists());
     }
 }
+
+#[test]
+fn proxy_mode_serves_only_with_access_settings_but_other_commands_run_without_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let web = dir.path().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "page").unwrap();
+    let command = |data: &std::path::Path, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fundus"));
+        command
+            .args(args)
+            .env("VAULT_DATA_DIR", data)
+            .env("VAULT_WEB_DIR", &web)
+            .env("VAULT_AUTH_MODE", "proxy")
+            .env("ASSEMBLYAI_API_KEY", "synthetic")
+            .env_remove("VAULT_ACCESS_TEAM_DOMAIN")
+            .env_remove("VAULT_ACCESS_AUD");
+        command.output().unwrap()
+    };
+    let unserved = dir.path().join("must-not-be-created");
+    let output = command(&unserved, &["serve"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("VAULT_ACCESS_TEAM_DOMAIN") && stderr.contains("VAULT_ACCESS_AUD"));
+    assert!(!unserved.exists());
+    // Making a token checks no sign-in, so it needs no Access settings, e.g. while upgrading.
+    let output = command(&dir.path().join("data"), &["token", "--name", "reader"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

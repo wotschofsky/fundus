@@ -16,7 +16,7 @@ async fn setup() -> (tempfile::TempDir, App) {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env().unwrap();
     config.data = dir.path().join("vault");
-    config.proxy_auth = true;
+    common::proxy(&mut config);
     config.public_url = "http://localhost:3000".parse().unwrap();
     config.voice_model = None;
     let app = App::new(config).await.unwrap();
@@ -268,7 +268,10 @@ async fn request(
 async fn manifest_http_validation_and_tus_creation_are_resumable() {
     let (_dir, app) = setup().await;
     let token = auth::issue(&app, "test uploader", "upload").await.unwrap();
-    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let bad = request(
         &router,
         "POST",
@@ -399,7 +402,10 @@ async fn imported_history_and_identity_controls_preserve_their_distinctions() {
     .unwrap();
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
-    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let history = request(
         &router,
         "GET",
@@ -593,7 +599,10 @@ async fn trash_is_recoverable_hidden_by_default_and_reimport_restores_it() {
     .await
     .unwrap();
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
-    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let trash = request(
         &router,
         "POST",
@@ -702,7 +711,10 @@ async fn settings_are_validated_persisted_and_sent_as_background_context() {
     let (_dir, mut app) = setup().await;
     let admin = auth::issue(&app, "test owner", "admin").await.unwrap();
     let read = auth::issue(&app, "test reader", "read").await.unwrap();
-    let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let blocked = request(&router, "GET", "/api/v1/settings", &read, Value::Null, None).await;
     assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
     let bad = request(

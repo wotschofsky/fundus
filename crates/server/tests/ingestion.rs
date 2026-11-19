@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -290,7 +291,7 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     let mut config = Config::from_env().unwrap();
     config.data = dir.path().into();
     config.public_url = "https://vault.example.com".parse().unwrap();
-    config.proxy_auth = true;
+    common::proxy(&mut config);
     let app = App::new(config).await.unwrap();
     // Proxy mode has no initialized owner account or browser session.
     let upload = auth::issue(&app, "uploader", "upload").await.unwrap();
@@ -298,7 +299,10 @@ async fn proxy_auth_trusts_only_browser_routes_and_keeps_tokens_scoped() {
     let session = auth::issue(&app, "old browser session", "session")
         .await
         .unwrap();
-    let r = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let r = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let (status, me) = call(&r, "GET", "/api/v1/me", None, json!(null)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["auth_mode"], "proxy");
@@ -407,9 +411,12 @@ async fn the_web_library_uploads_with_its_proxy_session_and_same_origin_only() {
     let mut config = Config::from_env().unwrap();
     config.data = dir.path().into();
     config.public_url = "https://vault.example.com".parse().unwrap();
-    config.proxy_auth = true;
+    common::proxy(&mut config);
     let app = App::new(config).await.unwrap();
-    let r = fundus::api::router(app, tokio_util::sync::CancellationToken::new());
+    let r = common::signed_in(
+        &app,
+        fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    );
     let send = |method: &str, uri: &str, origin: &str, body: Body| {
         let r = r.clone();
         let request = Request::builder()

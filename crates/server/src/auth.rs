@@ -91,9 +91,21 @@ fn check_origin(app: &App, request: &Request) -> Result<()> {
     Ok(())
 }
 
-/// Applied only to browser routes, never to the public upload/MCP routers.
+/// Applied only to browser routes, never to the public upload/MCP routers. In proxy mode a request
+/// without an `Authorization` header is the owner's only with Cloudflare Access's token for it:
+/// one that slipped past the proxy's sign-in gets nothing (`access.rs`).
 pub async fn require_browser(State(app): State<App>, mut request: Request, next: Next) -> Response {
     if app.config.proxy_auth && !request.headers().contains_key(header::AUTHORIZATION) {
+        let token = request
+            .headers()
+            .get(crate::access::HEADER)
+            .and_then(|v| v.to_str().ok());
+        let Some(token) = token else {
+            return Error(StatusCode::UNAUTHORIZED, "Sign in to continue".into()).into_response();
+        };
+        if let Err(error) = crate::access::verify(&app, token).await {
+            return error.into_response();
+        }
         if let Err(error) = check_origin(&app, &request) {
             return error.into_response();
         }

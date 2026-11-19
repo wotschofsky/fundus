@@ -1,5 +1,6 @@
 //! Share links: a link opens one recording read-only, without signing in, until it expires, the
 //! owner stops sharing, or the recording goes to Trash.
+mod common;
 use axum::{
     Router,
     body::Body,
@@ -27,8 +28,9 @@ struct Vault {
 async fn setup() -> Vault {
     vault(false).await
 }
-/// With `proxy_auth`, the owner's browser requests are trusted as they arrive and write nothing
-/// before the handler runs (a session token records when it was last used).
+/// With `proxy_auth`, requests come signed in by Cloudflare Access as the owner (unless they carry
+/// a token of their own) and write nothing before the handler runs (a session token records when
+/// it was last used). Without, password mode, whatever the environment says.
 async fn vault(proxy_auth: bool) -> Vault {
     let dir = tempfile::tempdir().unwrap();
     let web = dir.path().join("web");
@@ -38,7 +40,11 @@ async fn vault(proxy_auth: bool) -> Vault {
     c.data = dir.path().join("data");
     c.web = web;
     c.public_url = format!("{ORIGIN}/").parse().unwrap();
-    c.proxy_auth = proxy_auth;
+    c.proxy_auth = false;
+    c.access = None;
+    if proxy_auth {
+        common::proxy(&mut c);
+    }
     let app = App::new(c).await.unwrap();
     let owner = auth::issue(&app, "Web session", "session").await.unwrap();
     let reader = auth::issue(&app, "test reader", "read").await.unwrap();
@@ -60,6 +66,11 @@ async fn vault(proxy_auth: bool) -> Vault {
     std::fs::write(app.entry_dir(ID).join("playback.m4a"), "0123456789").unwrap();
     std::fs::write(app.entry_dir(ID).join("video.mp4"), "videobytes").unwrap();
     let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new());
+    let router = if proxy_auth {
+        common::signed_in(&app, router)
+    } else {
+        router
+    };
     Vault {
         _dir: dir,
         app,
@@ -120,9 +131,11 @@ async fn share(v: &Vault, expires: &str) -> String {
 fn token(link: &str) -> &str {
     link.strip_prefix("/s/").unwrap()
 }
-/// The status of an anonymous GET.
+/// The status of an anonymous GET: no bearer token, and an empty Access token (so a proxy-mode
+/// vault adds none of the owner's).
 async fn anonymous(v: &Vault, path: &str) -> StatusCode {
-    call(v, "GET", path, None, &[], None).await.0
+    let nobody = [(fundus::access::HEADER, "")];
+    call(v, "GET", path, None, &nobody, None).await.0
 }
 fn private(headers: &HeaderMap) {
     assert_eq!(headers["cache-control"], "no-store");
