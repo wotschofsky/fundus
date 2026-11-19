@@ -52,10 +52,6 @@ pub struct Config {
 impl Config {
     pub fn validate_for_serve(&self) -> Result<()> {
         anyhow::ensure!(
-            !self.proxy_auth || self.access.is_some(),
-            crate::access::MISSING
-        );
-        anyhow::ensure!(
             !self.assemblyai_key.is_empty(),
             "ASSEMBLYAI_API_KEY is required to start the server"
         );
@@ -63,6 +59,10 @@ impl Config {
             self.web.join("index.html").is_file(),
             "No web app in {}: run pnpm build or set VAULT_WEB_DIR",
             self.web.display()
+        );
+        anyhow::ensure!(
+            !self.proxy_auth || self.access.is_some(),
+            crate::access::MISSING
         );
         if self.openai_key.is_empty() {
             tracing::warn!(

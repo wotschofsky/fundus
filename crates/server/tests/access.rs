@@ -220,7 +220,10 @@ async fn a_key_read_finishes_even_when_the_request_that_started_it_goes_away() {
         let router = router.clone();
         tokio::spawn(async move { status(&router, Some(&made_up)).await })
     };
-    asked.notified().await;
+    // Bounded, so a read that never reaches the team fails the test instead of hanging it.
+    tokio::time::timeout(std::time::Duration::from_secs(10), asked.notified())
+        .await
+        .expect("the key read never reached the team");
     dropped.abort();
     let _ = dropped.await;
     release.notify_one();
