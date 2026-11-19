@@ -63,8 +63,10 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
-/// Registration and code exchange answer at once; a refresh answers only after a delay.
+/// Registration and code exchange answer at once; a refresh answers only after a delay, and
+/// refuses the old grant while `failRefresh` is set.
 private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
+    static let failRefresh = Mutex(false)
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -79,9 +81,10 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         let reply = url.path == "/oauth/register" ? #"{"client_id":"synthetic-new-client"}"#
             : refresh ? #"{"access_token":"oa_synthetic-old-rotated","refresh_token":"synthetic-old-rotated","expires_in":3600,"scope":"vault:owner"}"#
             : #"{"access_token":"oa_synthetic-new","refresh_token":"synthetic-new-refresh","expires_in":3600,"scope":"vault:owner"}"#
+        let refused = refresh && Self.failRefresh.withLock { $0 }
         let deliver = { [self] in
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data(reply.utf8))
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: refused ? 400 : 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data((refused ? #"{"error":"invalid_grant"}"# : reply).utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
         if refresh { DispatchQueue.global().asyncAfter(deadline: .now() + 0.15, execute: deliver) } else { deliver() }
@@ -200,6 +203,28 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh")
         let current = try await session.connection(for: origin)
         XCTAssertEqual(current.token, "oa_synthetic-new")
+    }
+    func testARefreshFailingAfterANewSignInKeepsTheNewGrantConnected() async throws {
+        ReconnectMockProtocol.failRefresh.withLock { $0 = true }
+        defer { ReconnectMockProtocol.failRefresh.withLock { $0 = false } }
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+        // The old grant's refresh is refused only after the owner has connected again.
+        async let refreshing = session.connection(for: origin)
+        try await Task.sleep(for: .milliseconds(30))
+        try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
+            URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
+        }
+        let connection = try await refreshing
+        XCTAssertEqual(connection.token, "oa_synthetic-new")
+        XCTAssertTrue(session.isConnected)
+        XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh")
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()

@@ -73,6 +73,9 @@ public struct QueueState: Codable, Sendable {
     #if os(iOS)
     /// The chunk (`upload@offset`) already given its one refresh and resend after a 401.
     private var retriedChunk: String?
+    /// The chunk upload this process sent last. An older one finishing late (paused, resumed,
+    /// or resent meanwhile) is no longer the queue's to act on.
+    private var sentChunk: Int?
     #endif
     private var responseData: [Int: Data] = [:]
     private lazy var session: URLSession = {
@@ -365,6 +368,9 @@ public struct QueueState: Codable, Sendable {
             snapshot.files[index].state = "uploading"; save()
             let task = session.uploadTask(with: request, fromFile: chunkURL)
             task.taskDescription = snapshot.files[index].id; task.resume()
+            #if os(iOS)
+            sentChunk = task.taskIdentifier
+            #endif
             return // The native session delegate schedules the next bounded chunk.
         }
         _ = try await sendJSON(connection, "/api/v1/imports/\(snapshot.importID!)/complete", method: "POST")
@@ -648,6 +654,10 @@ public struct QueueState: Codable, Sendable {
         Task { @MainActor in
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
+            #if os(iOS)
+            // After a relaunch nothing was sent by this process: the finished chunk is the queue's.
+            if let sent = self.sentChunk, sent != taskID { return }
+            #endif
             let batch = self.snapshot.importID
             do {
                 if let error { throw error }
@@ -662,7 +672,8 @@ public struct QueueState: Codable, Sendable {
                     defer { awake.end() }
                     // HEAD reconciles the offset, then the chunk goes out again with the refreshed token.
                     _ = try await self.connection(forceRefresh: true)
-                    guard self.snapshot.state == "uploading", self.snapshot.importID == batch else { return }
+                    guard self.snapshot.state == "uploading", self.snapshot.importID == batch,
+                          self.sentChunk == nil || self.sentChunk == taskID else { return }
                     self.start()
                     return
                 }
@@ -672,8 +683,11 @@ public struct QueueState: Codable, Sendable {
                 try? FileManager.default.removeItem(at: self.folder.appendingPathComponent("chunk-\(itemID)"))
                 self.start()
             } catch {
-                // Paused, or another batch started, while refreshing.
+                // Paused, or another batch or chunk sent, while refreshing.
                 guard self.snapshot.state == "uploading", self.snapshot.importID == batch else { return }
+                #if os(iOS)
+                if let sent = self.sentChunk, sent != taskID { return }
+                #endif
                 self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save()
             }
         }

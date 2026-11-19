@@ -276,17 +276,24 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     }
     private func refresh(_ credentials: NativeOAuthCredentials) async throws -> NativeOAuthCredentials {
         if let running = refreshes[credentials.server] { return try await running.value }
+        // A sign-in while this refresh was under way stored a newer grant: that one stands,
+        // whether this refresh of the old grant succeeds or is refused.
+        let newer = { [self] in (try? stored(credentials.server)).flatMap { $0.refreshToken == credentials.refreshToken ? nil : $0 } }
         let task = Task { () throws -> NativeOAuthCredentials in
-            let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
-                "grant_type": "refresh_token", "client_id": credentials.clientID,
-                "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
-            ])
-            let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
-            try Task.checkCancellation()
-            // A sign-in while this was under way stored a newer grant: keep that one.
-            if let current = try stored(credentials.server), current.refreshToken != credentials.refreshToken { return current }
-            try store(updated)
-            return updated
+            do {
+                let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
+                    "grant_type": "refresh_token", "client_id": credentials.clientID,
+                    "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
+                ])
+                let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
+                try Task.checkCancellation()
+                if let current = newer() { return current }
+                try store(updated)
+                return updated
+            } catch {
+                if let current = newer() { return current }
+                throw error
+            }
         }
         refreshes[credentials.server] = task
         defer { refreshes[credentials.server] = nil }
@@ -318,9 +325,13 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         try VaultConnection.check(result.1, result.0)
         return result.0
     }
-    /// Revokes and forgets the connection to `supplied`, or to the selected vault.
+    /// Revokes and forgets the connection to `supplied`, or, given none, to the selected vault.
     public func signOut(server supplied: String? = nil) async {
-        let origin = supplied.flatMap { try? Self.origin($0) } ?? server
+        let origin: String
+        if let supplied {
+            guard let parsed = try? Self.origin(supplied) else { return }
+            origin = parsed
+        } else { origin = server }
         let selected = origin == server
         if selected { cancelSignIn() }
         if let credentials = try? stored(origin) {
