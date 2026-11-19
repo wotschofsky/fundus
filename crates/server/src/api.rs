@@ -126,9 +126,13 @@ fn library_routes(prefix: &str) -> Router<App> {
             get(share::show)
                 .put(share::save)
                 .patch(share::extend)
-                .delete(share::stop),
+                .delete(share::stop)
+                .layer(middleware::from_fn(share::no_store)),
         )
-        .route(&at("/shares"), get(share::list))
+        .route(
+            &at("/shares"),
+            get(share::list).layer(middleware::from_fn(share::no_store)),
+        )
         .route(&at("/entries/{id}/speakers/{label}"), patch(assign_speaker))
         .route(
             &at("/entries/{id}/speaker-splits"),

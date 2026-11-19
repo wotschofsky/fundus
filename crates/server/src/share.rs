@@ -214,6 +214,15 @@ pub fn public(page: MethodRouter<App>) -> Router<App> {
         .layer(middleware::from_fn(headers))
 }
 
+/// No cache keeps an owner's answer that holds a link: its token is the secret, and a kept
+/// answer would hand the link out again after it was stopped.
+pub async fn no_store(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let h = response.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Neither caches nor search engines keep what a link reads, its 404s included.
 async fn headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;

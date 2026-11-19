@@ -692,3 +692,28 @@ async fn a_change_that_fails_to_commit_is_not_reported_as_saved() {
         .unwrap();
     assert!(expires.is_some());
 }
+
+#[tokio::test]
+async fn no_cache_keeps_an_owner_answer_that_holds_a_link() {
+    let v = setup().await;
+    let link = share(&v, "7d").await;
+    // Behind a caching proxy, a kept answer would hand out a link after it was stopped.
+    for (method, path, body) in [
+        (
+            "PUT",
+            "/api/v1/entries/cedar/share",
+            Some(json!({"expires":"7d"})),
+        ),
+        (
+            "PATCH",
+            "/api/v1/entries/cedar/share",
+            Some(json!({"expires":"30d","token":token(&link)})),
+        ),
+        ("GET", "/api/v1/entries/cedar/share", None),
+        ("GET", "/api/v1/shares", None),
+    ] {
+        let (status, headers, _) = call(&v, method, path, Some(&v.owner), &[], body).await;
+        assert_eq!(status, StatusCode::OK, "{method} {path}");
+        assert_eq!(headers["cache-control"], "no-store", "{method} {path}");
+    }
+}
