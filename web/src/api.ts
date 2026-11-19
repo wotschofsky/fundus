@@ -230,7 +230,10 @@ export async function keepAnswer(
   if (landed === sent) {
     landed++;
     client.setQueryData(['share', id], value);
-  } else await client.invalidateQueries({ queryKey: ['share', id] });
+  }
+  // Shown at once if nothing newer landed, and read again either way: another change may have
+  // committed after this one, or its own read have been cancelled just above.
+  await client.invalidateQueries({ queryKey: ['share', id] });
   return client.invalidateQueries({ queryKey: ['shares'] });
 }
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */

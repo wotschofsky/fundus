@@ -303,3 +303,16 @@ test('an older read missing a link does not mark it gone after a newer read retu
   await older;
   assert.equal(offered(held), true);
 });
+
+test("a change's answer is shown at once and then read again, so crossed answers settle", async () => {
+  const client = new QueryClient();
+  const shared = link();
+  answer(shared);
+  await client.fetchQuery(shareQuery('cedar'));
+  const { sent, since } = sending();
+  const sevenDays = { ...shared, expires_at: new Date(Date.now() + 7 * 86_400_000).toISOString() };
+  await keepAnswer(client, 'cedar', sevenDays, sent, since);
+  assert.deepEqual(client.getQueryData(['share', 'cedar']), sevenDays);
+  // Another change may have committed after this one: the next read settles it.
+  assert.equal(client.getQueryState(['share', 'cedar']).isInvalidated, true);
+});

@@ -161,7 +161,8 @@
         // Gone for every reader, Settings' list too.
         for (const link of deleted) forget(link.url);
         await refresh();
-        qc.removeQueries({ queryKey: ['share', id] });
+        // Asked again rather than dropped: a read may already have a link made since.
+        qc.invalidateQueries({ queryKey: ['share', id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });
         router.navigate('/');
       },
