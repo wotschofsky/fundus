@@ -21,7 +21,8 @@ export function speakerNames(
    * them; no name there means none, so the speaker is numbered. Those the recording does not list
    * yet (its transcript saved after it was read) are numbered after those it does, named or not,
    * in label order as the server lists speakers, so the numbers stay put once it lists them too
-   * (as long as their labels sort after the listed ones, as new speakers' labels do). */
+   * (as long as their labels sort after the listed ones, as transcription's letters do; a
+   * speaker split's random label may sort before an earlier split's). */
   turns: Pick<Segment, 'speaker' | 'speaker_name'>[] = [],
 ): Map<string, string> {
   const numbered = new Map(speakers.map((s, i) => [s.label, `Speaker ${i + 1}`]));
