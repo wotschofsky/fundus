@@ -78,8 +78,8 @@
   const share = createQuery(() => shareQuery(id));
   const clock = new LinkClock(
     () => [share.data?.expires_at],
-    // The dialog tracks the same deadline: one request between them.
-    () => share.refetch({ cancelRefetch: false }),
+    // A fresh read: one already under way may have left before the link lapsed.
+    () => share.refetch(),
   );
   // Shared only while the link works by this page's clock, so an expired one is never offered.
   const offered = $derived(clock.offered(share.data));
@@ -276,7 +276,7 @@
   {#if editing}
     <EditDetailsForm entry={e} onsave={save} oncancel={() => (editing = false)} />
   {/if}
-  <ShareDialog {id} title={e.title} bind:open={sharing} />
+  <ShareDialog {id} title={e.title} {clock} bind:open={sharing} />
   <ErrorNotice error={actionError} />
   {#if correctionNotice || undo.data?.available}
     <div class="notice correction-notice" role="status">

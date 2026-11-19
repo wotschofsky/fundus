@@ -8,11 +8,6 @@ const dead = new SvelteSet<string>();
 export const forget = (url: string) => {
   dead.add(url);
 };
-/** The server answered `next` where it had answered `previous`: a link it no longer answers with
- * was stopped, expired or replaced, and is gone. */
-export function settle(previous: { url: string } | null | undefined, next: { url: string } | null) {
-  if (previous && previous.url !== next?.url) forget(previous.url);
-}
 
 /** The owner's pages decide by their own clock whether a share link still works, so an expired
  * link is never offered or handed out. The clock moves on when a link expires, when the page is
@@ -69,9 +64,12 @@ export class LinkClock {
     return link && !dead.has(link.url) && this.works(link.expires_at) ? link : null;
   }
 
-  /** Moves the page's clock to now, asking the server if a link has lapsed meanwhile. */
+  /** Moves the page's clock to now, asking the server if a link has lapsed meanwhile; says
+   * whether it asked. */
   check() {
+    const asked = this.#asked.size;
     if (this.#tick) this.#tick();
     else this.#now = Date.now();
+    return this.#asked.size > asked;
   }
 }

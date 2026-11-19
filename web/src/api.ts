@@ -1,5 +1,5 @@
-import { queryOptions } from '@tanstack/svelte-query';
-import { forget, settle } from './link-clock.svelte';
+import { queryOptions, type QueryClient } from '@tanstack/svelte-query';
+import { forget } from './link-clock.svelte';
 
 export class ApiError extends Error {
   constructor(
@@ -151,25 +151,37 @@ export type Expiry = '1d' | '7d' | '30d' | 'never';
 export const shareQuery = (id: string) =>
   queryOptions({
     queryKey: ['share', id],
-    queryFn: async ({ client, queryKey }) => {
-      const next = await api<Share | null>(`/v1/entries/${id}/share`);
-      // A link the server no longer answers with is gone for every reader, Settings too.
-      settle(client.getQueryData<Share | null>(queryKey), next);
+    queryFn: async ({ client, signal }) => {
+      const known = cachedLinks(client, id);
+      const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
+      for (const url of known) if (url !== next?.url) forget(url);
       return next;
     },
   });
-/** Every link that works (Settings → Shared links). One the server no longer lists is gone for
- * every reader, the recording's own page too. */
+/** Every link that works (Settings → Shared links). */
 export const sharesQuery = queryOptions({
   queryKey: ['shares'],
-  queryFn: async ({ client, queryKey }) => {
-    const next = await api<{ shares: SharedLink[] }>('/v1/shares');
+  queryFn: async ({ client, signal }) => {
+    const known = cachedLinks(client);
+    const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
     const listed = new Set(next.shares.map((link) => link.url));
-    for (const link of client.getQueryData<{ shares: SharedLink[] }>(queryKey)?.shares ?? [])
-      if (!listed.has(link.url)) forget(link.url);
+    for (const url of known) if (!listed.has(url)) forget(url);
     return next;
   },
 });
+/** The URLs this page holds for a recording's link (`entry`), or for every recording's: from the
+ * recording's own read and from Settings' list. Taken before a read, so a URL the server no
+ * longer answers with is known to be gone (stopped, expired or replaced: its token never works
+ * again) for every reader, while a link made during the read, which the read may predate, is
+ * not in it. A read that was cancelled throws before it gets that far. */
+function cachedLinks(client: QueryClient, entry?: string): string[] {
+  const urls: string[] = [];
+  for (const [key, share] of client.getQueriesData<Share | null>({ queryKey: ['share'] }))
+    if (share && (entry === undefined || key[1] === entry)) urls.push(share.url);
+  for (const link of client.getQueryData<{ shares: SharedLink[] }>(['shares'])?.shares ?? [])
+    if (entry === undefined || link.entry_id === entry) urls.push(link.url);
+  return urls;
+}
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */
 export const linkToken = (share: Pick<Share, 'url'>) =>
   share.url.slice(share.url.lastIndexOf('/') + 1);

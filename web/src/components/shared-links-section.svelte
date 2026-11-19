@@ -12,7 +12,7 @@
   const shares = createQuery(() => sharesQuery);
   const clock = new LinkClock(
     () => shares.data?.shares.map((link) => link.expires_at) ?? [],
-    () => shares.refetch({ cancelRefetch: false }),
+    () => shares.refetch(),
   );
   /** The links that work by this page's clock: one drops out of the list as it expires. */
   const working = $derived(shares.data?.shares.filter((link) => clock.offered(link)) ?? []);

@@ -6,14 +6,21 @@
   import { Check, ChevronDown, Globe, Link, Lock } from '@lucide/svelte';
   import { api, gone, linkToken, send, shareQuery, type Expiry, type Share } from '../api';
   import { date } from '../format';
-  import { LinkClock, forget } from '../link-clock.svelte';
+  import { forget, type LinkClock } from '../link-clock.svelte';
   import ErrorNotice from './error-notice.svelte';
 
   let {
     id,
     title,
+    clock,
     open = $bindable(false),
-  }: { id: string; title: string; open: boolean } = $props();
+  }: {
+    id: string;
+    title: string;
+    /** The recording page's clock, which tracks this link's expiry for both. */
+    clock: LinkClock;
+    open: boolean;
+  } = $props();
   const qc = useQueryClient();
   let dialog: HTMLDialogElement;
   let done: HTMLButtonElement;
@@ -28,10 +35,6 @@
   ];
 
   const share = createQuery(() => shareQuery(id));
-  const clock = new LinkClock(
-    () => [share.data?.expires_at],
-    () => share.refetch({ cancelRefetch: false }),
-  );
   /** The saved link while it works by this page's clock: never offered once it has expired, or
    * once the server has said it is gone. */
   const link = $derived(clock.offered(share.data));
@@ -94,9 +97,9 @@
       save.reset();
       extend.reset();
       stop.reset();
-      // What the page has may be out of date: by its clock now, and from the server again.
-      clock.check();
-      share.refetch();
+      // What the page has may be out of date: by its clock now, and from the server again (which
+      // the clock has just done if the link lapsed).
+      if (!clock.check()) share.refetch();
       dialog.showModal();
       // Done, the safe default, rather than the access menu the dialog would otherwise focus.
       done.focus();
