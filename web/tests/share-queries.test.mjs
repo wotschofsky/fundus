@@ -286,3 +286,20 @@ test('an answer does not bring back a link stopped after the change was sent', a
   await keepAnswer(client, 'cedar', shared, sent, since);
   assert.equal(offered(shared), false);
 });
+
+test('an older read missing a link does not mark it gone after a newer read returned it', async () => {
+  const client = new QueryClient();
+  const held = link();
+  client.setQueryData(['share', 'cedar'], held);
+  // The recording's read leaves, and is slow; it raced a change and will answer no link.
+  const release = answerLater(null);
+  const older = client.fetchQuery(shareQuery('cedar'));
+  await delay(0);
+  // Settings reads after it and gets the link back working.
+  answer({ shares: [held] });
+  await client.fetchQuery(sharesQuery);
+  // The older read lands last.
+  release();
+  await older;
+  assert.equal(offered(held), true);
+});

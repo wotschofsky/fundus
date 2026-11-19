@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient } from '@tanstack/svelte-query';
-import { confirm, forget, leaving } from './link-clock.svelte';
+import { confirm, leaving, missing } from './link-clock.svelte';
 
 export class ApiError extends Error {
   constructor(
@@ -157,7 +157,7 @@ export const shareQuery = (id: string) =>
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
       landed++;
       if (next) confirm(next.url, since);
-      forgetMissing(known, new Set(next ? [next.url] : []));
+      forgetMissing(known, new Set(next ? [next.url] : []), since);
       return next;
     },
   });
@@ -170,7 +170,7 @@ export const sharesQuery = queryOptions({
     const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
     landed++;
     for (const link of next.shares) confirm(link.url, since);
-    forgetMissing(known, new Set(next.shares.map((link) => link.url)));
+    forgetMissing(known, new Set(next.shares.map((link) => link.url)), since);
     return next;
   },
 });
@@ -191,12 +191,13 @@ export function cachedLinks(client: QueryClient, entry?: string): Share[] {
  * the clock does, and the page clock already stops offering it, while taking it for gone would
  * hide an extension made at its deadline that a read could have just missed. */
 const lapsed = (link: Share) => !!link.expires_at && Date.parse(link.expires_at) <= Date.now();
-/** Takes for gone each held link a read no longer has, unless any copy the page holds of it has
- * merely lapsed (an older copy in the other view may not show the deadline it has since read). */
-function forgetMissing(known: Share[], answered: Set<string>) {
+/** Takes for gone each held link a read that left at `since` no longer has, unless any copy the
+ * page holds of it has merely lapsed (an older copy in the other view may not show the deadline
+ * it has since read), or a read or change that left later was answered with it (`missing`). */
+function forgetMissing(known: Share[], answered: Set<string>, since: number) {
   const lapsedUrls = new Set(known.filter(lapsed).map((link) => link.url));
   for (const link of known)
-    if (!answered.has(link.url) && !lapsedUrls.has(link.url)) forget(link.url);
+    if (!answered.has(link.url) && !lapsedUrls.has(link.url)) missing(link.url, since);
 }
 /** Share reads (of a recording's link or of Settings' list) and change answers that have landed
  * on this page. It only grows: a list dropped from memory and read afresh counts on from here,

@@ -18,8 +18,16 @@ export const leaving = () => ++moment;
  * extension at the deadline, say): the link works and is offered again. One taken for gone after
  * it left stays gone, as the answer may have been served before the link was stopped. */
 export function confirm(url: string, since: number) {
+  seen.set(url, Math.max(seen.get(url) ?? 0, since));
   const at = dead.get(url);
   if (at !== undefined && at < since) dead.delete(url);
+}
+/** For each link, when the latest read or change answered with it working left. */
+const seen = new Map<string, number>();
+/** A read that left at `since` no longer had this link: it is gone, unless a read or change that
+ * left after it was answered with the link working (this one, slower, raced that answer). */
+export function missing(url: string, since: number) {
+  if ((seen.get(url) ?? 0) < since) forget(url);
 }
 
 /** The owner's pages decide by their own clock whether a share link still works, so an expired
