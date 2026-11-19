@@ -585,6 +585,23 @@ async fn a_link_reads_the_whole_transcript_at_once() {
     assert_ne!(page["transcript_key"], key);
 }
 
+/// A link's `transcript_key` comes only from what the link shows: the recording's zone, which stays
+/// with the owner, cannot be found by trying zones against it (while there is no speech yet, say).
+#[tokio::test]
+async fn a_link_keys_its_transcript_only_by_what_it_shows() {
+    let v = setup().await;
+    let link = share(&v, "1d").await;
+    let entry = format!("{link}/entry");
+    let before = json(&call(&v, "GET", &entry, None, &[], None).await.2)["transcript_key"].clone();
+    sqlx::query("UPDATE entries SET timezone='Europe/Berlin' WHERE id='cedar'")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    let after = json(&call(&v, "GET", &entry, None, &[], None).await.2)["transcript_key"].clone();
+    assert!(before.is_string());
+    assert_eq!(after, before);
+}
+
 /// Changing or stopping a link names it, so a dialog still showing a link that was stopped and
 /// replaced meanwhile (from another tab, say) leaves the replacement as it is.
 #[tokio::test]

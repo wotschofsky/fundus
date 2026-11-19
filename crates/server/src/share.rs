@@ -262,7 +262,7 @@ async fn entry(
 ) -> Result<Json<Value>> {
     let id = shared(&app, &token).await?;
     let e = retrieval::get(&app, &id).await?;
-    let (segments, key) = retrieval::segments(&app, &e, &id).await?;
+    let segments = retrieval::segments(&app, &id).await?;
     // Copied field by field: what else the owner's entry holds stays with the owner.
     let speakers: Vec<Value> = e["speakers"]
         .as_array()
@@ -288,7 +288,7 @@ async fn entry(
         "stage":e["stage"],"summary":e["summary"],"summary_manual":e["summary_manual"],
         "audio_available":e["audio_available"],"video":video,"speakers":speakers,
     });
-    retrieval::attach(&mut v, json!(segments), key, q.transcript_key.as_deref());
+    retrieval::attach(&mut v, json!(segments), q.transcript_key.as_deref());
     Ok(Json(v))
 }
 

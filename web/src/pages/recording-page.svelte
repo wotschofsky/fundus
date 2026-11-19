@@ -131,7 +131,6 @@
       editing = false;
     });
   // Fails to the control, which shows the error beside it and keeps a typed name.
-  // Names come from the entry's speakers, so the transcript itself is not refetched.
   const assign = (label: string) => async (personId: string | null, newName?: string) => {
     let person = personId;
     if (newName) person = (await api<Person>('/v1/people', send('POST', { name: newName }))).id;

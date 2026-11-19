@@ -307,8 +307,8 @@ async fn entry(
 ) -> Result<Json<Value>> {
     a.read()?;
     let mut v = retrieval::get(&app, &id).await?;
-    let (segments, key) = retrieval::segments(&app, &v, &id).await?;
-    retrieval::attach(&mut v, segments, key, q.transcript_key.as_deref());
+    let segments = retrieval::segments(&app, &id).await?;
+    retrieval::attach(&mut v, segments, q.transcript_key.as_deref());
     if a.admin().is_ok() {
         v["correction_undo"] = json!(corrections::undo_ready(&app, &id).await?);
     }

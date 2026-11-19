@@ -15,8 +15,9 @@
   /** A read found the link gone. A link that stopped working never works again, so the page stays
    * closed and stops asking, whatever a later attempt (a failed one, say) would leave behind. */
   let dead = $state(false);
-  // The recording and its whole transcript in one read, so no correction falls between parts of
-  // it. The owner's corrections show when the page asks again, on coming back to it.
+  // The recording and its transcript in one read. The transcript comes whole, so no correction
+  // falls between parts of it. The owner's corrections show when the page asks again, on coming
+  // back to it.
   const entry = createQuery(() => ({
     queryKey: ['shared', token],
     queryFn: ({ client, signal }) =>
