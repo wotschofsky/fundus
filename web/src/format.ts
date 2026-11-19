@@ -18,14 +18,16 @@ export const stageName = (e: Pick<Entry, 'stage' | 'pause_requested'>) =>
 export function speakerNames(
   speakers: Pick<Speaker, 'label' | 'name'>[] = [],
   /** Turns of the transcript: what they were read with decides a speaker's name, as it matches
-   * them; no name there means none, so a speaker the recording lists is numbered. */
+   * them; no name there means none, so the speaker is numbered (one the recording does not list
+   * yet, its transcript saved after it was read, after those it does, as it first speaks). */
   turns: Pick<Segment, 'speaker' | 'speaker_name'>[] = [],
 ): Map<string, string> {
   const numbered = new Map(speakers.map((s, i) => [s.label, `Speaker ${i + 1}`]));
   const names = new Map(speakers.map((s) => [s.label, s.name ?? numbered.get(s.label)!]));
   for (const turn of turns) {
-    const name = turn.speaker_name ?? numbered.get(turn.speaker);
-    if (name) names.set(turn.speaker, name);
+    let name = turn.speaker_name ?? numbered.get(turn.speaker);
+    if (!name) numbered.set(turn.speaker, (name = `Speaker ${numbered.size + 1}`));
+    names.set(turn.speaker, name);
   }
   return names;
 }

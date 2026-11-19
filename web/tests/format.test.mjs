@@ -4,7 +4,8 @@ import { speakerNames, startAt } from '../src/format.ts';
 
 test("a transcript's own speaker names win over the recording's", () => {
   // The recording was read before the owner renamed speaker A and cleared B's name; its
-  // transcript after. C has no turns in it; D is a speaker the recording did not list yet.
+  // transcript after. C has no turns in it; D and E are speakers the recording did not list yet
+  // (the transcript was saved between the two reads).
   const speakers = [
     { label: 'A', name: 'Alex' },
     { label: 'B', name: 'Morgan' },
@@ -13,13 +14,17 @@ test("a transcript's own speaker names win over the recording's", () => {
   const turns = [
     { speaker: 'A', speaker_name: 'Robin' },
     { speaker: 'B', speaker_name: null },
+    { speaker: 'E', speaker_name: null },
     { speaker: 'D', speaker_name: null },
+    { speaker: 'E', speaker_name: null },
   ];
   const names = speakerNames(speakers, turns);
   assert.equal(names.get('A'), 'Robin');
   assert.equal(names.get('B'), 'Speaker 2');
   assert.equal(names.get('C'), 'Speaker 3');
-  assert.equal(names.get('D'), undefined);
+  // Numbered after the listed ones, in the order they first speak, so they stay told apart.
+  assert.equal(names.get('E'), 'Speaker 4');
+  assert.equal(names.get('D'), 'Speaker 5');
   // Without the transcript, the recording's names stand and unnamed speakers are numbered.
   assert.equal(speakerNames(speakers).get('A'), 'Alex');
   assert.equal(speakerNames(speakers).get('C'), 'Speaker 3');
