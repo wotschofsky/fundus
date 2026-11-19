@@ -1,6 +1,6 @@
 <!-- A recording as its share link shows it: the player, summary and transcript, read-only. -->
 <script lang="ts">
-  import { createQuery, keepPreviousData } from '@tanstack/svelte-query';
+  import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query';
   import { Download } from '@lucide/svelte';
   import { gone, isProcessing, shared, type Segment, type SharedEntry } from '../api';
   import { dateTime, downloadTranscript, duration, speakerNames, startAt } from '../format';
@@ -37,8 +37,14 @@
     enabled: !!stage && !dead && !gone(entry.error),
     placeholderData: keepPreviousData,
   }));
+  const qc = useQueryClient();
   $effect(() => {
-    if (gone(entry.error) || gone(segments.error)) dead = true;
+    if (!dead && (gone(entry.error) || gone(segments.error))) {
+      dead = true;
+      // A retry already scheduled would still run: cancelled, so nothing more is asked.
+      qc.cancelQueries({ queryKey: ['shared', token] });
+      qc.cancelQueries({ queryKey: ['shared-transcript', token] });
+    }
   });
   /** Either read finding the link gone closes the page for good, which takes the player away.
    * The player's own requests failing does not. */
