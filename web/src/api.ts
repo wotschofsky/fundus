@@ -156,6 +156,11 @@ export const shareQuery = (id: string) =>
       const since = leaving();
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
       // Cancelled once its answer had arrived: the cache keeps what it had, and so does the page.
+      // ponytail: a cancel in the few microtasks after this returns, before the cache takes the
+      // answer, keeps what follows while the cache reverts. Each cancel is followed by a fresh
+      // read (a change ending, the dialog opening, or the next mount), which the extra count only
+      // makes a change's answer wait for, and which undoes an omission if it has the link.
+      // Reconciling in the query cache's success events is the upgrade if that ever matters.
       signal.throwIfAborted();
       landed++;
       if (next) confirm(next.url, since);
