@@ -140,16 +140,17 @@ test('a page asks the server again when its link lapses, once', async () => {
 });
 
 test('a list of links drops each one as it expires and asks again each time', async () => {
+  // Deadlines far enough apart that a slow runner still checks between them.
   const first = expiring(100);
-  const second = expiring(250);
+  const second = expiring(700);
   const lasting = expiring(null);
   const { clock, asked, stop } = page(first, second, lasting);
   try {
-    await delay(170);
+    await delay(350);
     assert.equal(clock.offered(first), null);
     assert.equal(clock.offered(second), second);
     assert.equal(asked.count, 1);
-    await delay(150);
+    await delay(500);
     assert.equal(clock.offered(second), null);
     assert.equal(clock.offered(lasting), lasting);
     assert.equal(asked.count, 2);
