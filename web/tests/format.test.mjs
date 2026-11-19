@@ -39,3 +39,24 @@ test('a link to a moment starts there only for a time a player can seek to', () 
   // Finite in seconds, but not in milliseconds.
   assert.equal(startAt('1e308'), 0);
 });
+
+test('a speaker the recording does not list yet keeps its number once the list has it', () => {
+  // The recording lists A; its transcript, saved after it was read, adds B (named) and C.
+  const turns = [
+    { speaker: 'A', speaker_name: null },
+    { speaker: 'B', speaker_name: 'Robin' },
+    { speaker: 'C', speaker_name: null },
+  ];
+  const before = speakerNames([{ label: 'A', name: null }], turns);
+  const after = speakerNames(
+    [
+      { label: 'A', name: null },
+      { label: 'B', name: 'Robin' },
+      { label: 'C', name: null },
+    ],
+    turns,
+  );
+  assert.equal(before.get('B'), 'Robin');
+  assert.equal(before.get('C'), after.get('C'));
+  assert.equal(after.get('C'), 'Speaker 3');
+});

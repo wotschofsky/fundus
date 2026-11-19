@@ -38,6 +38,9 @@
   /** "Only you" was chosen while shared: the URL of the link the dialog asks about stopping. */
   let stopping = $state<string | null>(null);
   let copied = $state<'idle' | 'copied' | 'failed'>('idle');
+  /** The link last copied: "Link copied" is said only while it is the link shown, not for one a
+   * read replaced it with. */
+  let copiedUrl = $state<string | null>(null);
   const expiries: [Expiry, string][] = [
     ['1d', 'Expires in 1 day'],
     ['7d', 'Expires in 7 days'],
@@ -102,6 +105,7 @@
   const goneBeforeChange = new Error(
     'That link had already stopped working, so its expiry was not changed.',
   );
+  const saidCopied = $derived(copied === 'copied' && !!link && copiedUrl === link.url);
   /** Stop sharing is being confirmed, for the link still offered. */
   const confirming = $derived(!!link && stopping === link.url);
   /** What the access menu shows: the saved state, or a choice still being saved or confirmed. */
@@ -148,9 +152,13 @@
   function copy() {
     clock.check();
     if (!link) return;
+    const url = link.url;
     // No clipboard API outside secure origins (plain HTTP on a LAN address): show the link.
-    (navigator.clipboard?.writeText(link.url) ?? Promise.reject()).then(
-      () => (copied = 'copied'),
+    (navigator.clipboard?.writeText(url) ?? Promise.reject()).then(
+      () => {
+        copiedUrl = url;
+        copied = 'copied';
+      },
       () => (copied = 'failed'),
     );
   }
@@ -270,7 +278,7 @@
   />
   <div class="dialog-actions share-actions">
     <button type="button" disabled={!link || confirming} onclick={copy}>
-      {#if copied === 'copied'}
+      {#if saidCopied}
         <Check size={15} aria-hidden="true" />
         Link copied
       {:else}
@@ -278,7 +286,7 @@
         Copy link
       {/if}
     </button>
-    <span class="sr-only" role="status">{copied === 'copied' ? 'Link copied' : ''}</span>
+    <span class="sr-only" role="status">{saidCopied ? 'Link copied' : ''}</span>
     <button
       bind:this={done}
       type="button"
