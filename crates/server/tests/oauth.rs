@@ -778,7 +778,7 @@ async fn a_client_stored_long_ago_and_never_used_can_still_open_its_consent_page
 }
 
 #[tokio::test]
-async fn only_the_id_registration_issued_is_accepted_and_only_a_valid_request_stores_it() {
+async fn only_the_exact_spelling_of_a_client_id_is_accepted_and_only_a_valid_request_stores_it() {
     let (_dir, app, r) = setup().await;
     let client = register(&r).await;
     let stored = || async {
@@ -813,7 +813,7 @@ async fn only_the_id_registration_issued_is_accepted_and_only_a_valid_request_st
             .0
         }
     };
-    // The same registration spelled differently (here padded out) is not one registration issued.
+    // The same registration spelled differently (here padded out) is refused.
     let decoded: Value = serde_json::from_slice(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(&client)

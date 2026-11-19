@@ -202,9 +202,10 @@ fn loopback(url: &url::Url) -> bool {
             Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
         )
 }
-/// Owner access is sent only back to the device that signed in (a loopback address, or an app's
-/// own reverse-domain scheme), never to a website: a phished approval cannot send it to someone
-/// else's site. An app on the device that receives the callback is trusted as the device.
+/// Owner access is sent only back to the device that signed in (a loopback address, or an app
+/// scheme with a dot in it, the reverse-domain form apps use), never to a website: a phished
+/// approval cannot send it to someone else's site. Which app owns a scheme cannot be checked
+/// here, so whatever on the device receives the callback is trusted as the device.
 fn on_device(redirect: &str) -> bool {
     url::Url::parse(redirect).is_ok_and(|url| url.scheme().contains('.') || loopback(&url))
 }
@@ -342,15 +343,15 @@ pub async fn authorization(
             "Owner access required".into(),
         )
     })?;
-    // Not stored yet: stored below with its first valid request.
-    let unstored = Client::from_id(&query.client_id);
+    // A client carried in its ID; stored below with its first valid request, if not already.
+    let carried = Client::from_id(&query.client_id);
     let stored = sqlx::query!(
         "SELECT name,redirect_uris,allowed_scope FROM oauth_clients WHERE id=?",
         query.client_id
     )
     .fetch_optional(&app.db)
     .await?;
-    let (name, redirects, allowed_scope) = match (stored, &unstored) {
+    let (name, redirects, allowed_scope) = match (stored, &carried) {
         (Some(row), _) => (
             row.name,
             serde_json::from_str::<Vec<String>>(&row.redirect_uris)
@@ -409,7 +410,7 @@ pub async fn authorization(
     sqlx::query!("DELETE FROM oauth_clients WHERE created_at<unixepoch() - 86400 * 7 AND NOT EXISTS(SELECT 1 FROM oauth_grants WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_pending WHERE client_id=oauth_clients.id) AND NOT EXISTS(SELECT 1 FROM oauth_codes WHERE client_id=oauth_clients.id) AND id<>?", query.client_id).execute(&app.db).await?;
     let request_hash = auth::hash(&request_id);
     let mut tx = app.db.begin().await?;
-    if let Some(client) = unstored {
+    if let Some(client) = carried {
         let redirects = serde_json::to_string(&client.redirect_uris).unwrap();
         sqlx::query!("INSERT OR IGNORE INTO oauth_clients(id,name,redirect_uris,auth_method,secret_hash,created_at,allowed_scope) VALUES(?,?,?,?,?,unixepoch(),?)", query.client_id, client.name, redirects, client.auth_method, client.secret_hash, client.scope).execute(&mut *tx).await?;
     }
@@ -542,8 +543,8 @@ async fn authenticate(
     .fetch_optional(&app.db)
     .await?
     .map(|row| (row.auth_method, row.secret_hash))
-    // Not stored: a client is stored with its first valid consent request, and cleared after a
-    // week unused.
+    // Not stored: a client is stored with its first valid consent request, and cleared once it is
+    // a week old with no grant or open request.
     .or_else(|| Client::from_id(&client_id).map(|c| (c.auth_method, c.secret_hash)));
     let valid = row.is_some_and(|(expected, secret_hash)| {
         expected == method
