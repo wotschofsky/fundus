@@ -159,7 +159,7 @@
         const deleted = cachedLinks(qc, id);
         await api(`/v1/entries/${id}/trash`, send('POST'));
         // Gone for every reader, Settings' list too.
-        for (const url of deleted) forget(url);
+        for (const link of deleted) forget(link.url);
         await refresh();
         qc.removeQueries({ queryKey: ['share', id] });
         await qc.invalidateQueries({ queryKey: ['shares'] });
