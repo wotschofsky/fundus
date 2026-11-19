@@ -99,6 +99,9 @@
       reread(error, url);
     },
   }));
+  const goneBeforeChange = new Error(
+    'That link had already stopped working, so its expiry was not changed.',
+  );
   /** Stop sharing is being confirmed, for the link still offered. */
   const confirming = $derived(!!link && stopping === link.url);
   /** What the access menu shows: the saved state, or a choice still being saved or confirmed. */
@@ -256,11 +259,12 @@
       />
     </label>
   {/if}
-  <!-- A link gone meanwhile is not an error: the dialog asks again and shows what is there. The
-       latest change's error comes first, as it answers what the owner just did. -->
+  <!-- The latest change's error comes first, as it answers what the owner just did. A link gone
+       meanwhile (stopped elsewhere, replaced or expired) is asked about again, and the dialog shows
+       what is there; a stop it answered did what was asked, an expiry change did not. -->
   <ErrorNotice
     error={(latest === 'save' ? save.error : null) ??
-      (latest === 'extend' && !gone(extend.error) ? extend.error : null) ??
+      (latest === 'extend' ? (gone(extend.error) ? goneBeforeChange : extend.error) : null) ??
       (latest === 'stop' && !gone(stop.error) ? stop.error : null) ??
       share.error}
   />
