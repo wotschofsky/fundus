@@ -117,7 +117,7 @@ export default function UploadScreen() {
             </Column>
           ) : (
             <>
-              {queue?.server ? <Text>{`Connected to ${queue.server}`}</Text> : null}
+              {queue?.server ? <Text>{`Uploads go to ${queue.server}`}</Text> : null}
               <Button
                 label={queue?.server ? 'Connection settings' : 'Connect your vault'}
                 variant="outlined"
