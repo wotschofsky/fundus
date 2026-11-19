@@ -18,7 +18,7 @@ export const stageName = (e: Pick<Entry, 'stage' | 'pause_requested'>) =>
 export function speakerNames(
   speakers: Pick<Speaker, 'label' | 'name'>[] = [],
   /** Turns of the transcript: what they were read with decides a speaker's name, as it matches
-   * them; no name there means none, so the speaker is numbered. */
+   * them; no name there means none, so a speaker the recording lists is numbered. */
   turns: Pick<Segment, 'speaker' | 'speaker_name'>[] = [],
 ): Map<string, string> {
   const numbered = new Map(speakers.map((s, i) => [s.label, `Speaker ${i + 1}`]));

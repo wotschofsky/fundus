@@ -179,6 +179,7 @@ export async function shared<T>(token: string, path: string, signal?: AbortSigna
   return await r.json();
 }
 
+/** Every transcript page, in order. The server caps page size; follow next_cursor until done. */
 export async function transcript(id: string, signal?: AbortSignal): Promise<Segment[]> {
   const rows: Segment[] = [];
   let cursor: number | null = 0;

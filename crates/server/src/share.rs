@@ -74,10 +74,10 @@ fn expiry(expires: &str) -> Result<Option<String>> {
     }))
 }
 
-/// Shares the recording, with its link working for `expires` from now. A link that still works is
+/// Shares the recording. A new link works for `expires` from now. A link that still works is
 /// returned as it is, its expiry too (only `extend` changes that), so a dialog that had not yet
-/// seen a link made elsewhere cannot shorten or lengthen it; an expired one gets a new URL, so
-/// whoever had the old one does not get it back.
+/// seen a link made elsewhere cannot shorten or lengthen it; an expired one is replaced by a new
+/// URL, so whoever had the old one does not get it back.
 pub async fn save(
     State(app): State<App>,
     Extension(a): Extension<Access>,
