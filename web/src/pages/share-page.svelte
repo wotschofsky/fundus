@@ -12,9 +12,13 @@
   import TranscriptTurn from '../components/transcript-turn.svelte';
 
   let { token }: { token: string } = $props();
+  /** A read found the link gone. A link that stopped working never works again, so the page stays
+   * closed and stops asking, whatever a later attempt (a failed one, say) would leave behind. */
+  let dead = $state(false);
   const entry = createQuery(() => ({
     queryKey: ['shared', token],
     queryFn: ({ signal }) => shared<SharedEntry>(token, 'entry', signal),
+    enabled: !dead,
     // Like the owner's page: while the recording, then its video, is being prepared; never
     // after the link stopped working, though the last answer is still at hand.
     refetchInterval: ({ state: { data, error } }) =>
@@ -30,12 +34,15 @@
     // The whole transcript in one read, so no correction falls between parts of it.
     queryFn: async ({ signal }): Promise<Segment[]> =>
       (await shared<{ segments: Segment[] }>(token, 'transcript', signal)).segments,
-    enabled: !!stage && !gone(entry.error),
+    enabled: !!stage && !dead && !gone(entry.error),
     placeholderData: keepPreviousData,
   }));
-  /** Either read finding the link gone closes the page, which takes the player away. The
-   * player's own requests failing does not. */
-  const closed = $derived(gone(entry.error) || gone(segments.error));
+  $effect(() => {
+    if (gone(entry.error) || gone(segments.error)) dead = true;
+  });
+  /** Either read finding the link gone closes the page for good, which takes the player away.
+   * The player's own requests failing does not. */
+  const closed = $derived(dead || gone(entry.error) || gone(segments.error));
   const rows = $derived(segments.data ?? []);
   // A name read with the transcript's turns wins over the recording's, as it matches them.
   const names = $derived(speakerNames(entry.data?.speakers, rows));
