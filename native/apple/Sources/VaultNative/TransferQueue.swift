@@ -60,13 +60,16 @@ public struct QueueState: Codable, Sendable {
     private let preparationOverride: TransferPreparation?
     private let requestOverride: TransferRequest?
     private var resumeAfterStopping = false
-    #if os(macOS)
-    private lazy var macUploadSession: URLSession = {
+    /// Requests sent while the queue runs; on iPhone, chunks go through the background `session`.
+    private lazy var foregroundSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForResource = 7 * 24 * 3600
         configuration.httpMaximumConnectionsPerHost = 3
         return URLSession(configuration: configuration)
     }()
+    #if os(iOS)
+    /// One refresh and resend per rejected chunk before the queue fails.
+    private var chunkRetried = false
     #endif
     private var responseData: [Int: Data] = [:]
     private lazy var session: URLSession = {
@@ -115,6 +118,7 @@ public struct QueueState: Codable, Sendable {
     }
     private var journal: URL { folder.appendingPathComponent("queue.json") }
     private func save() { do { try JSONEncoder().encode(snapshot).write(to: journal, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]); let handle = try FileHandle(forWritingTo: journal); try handle.synchronize(); try handle.close() } catch { snapshot.error = "Could not save the transfer queue: \(error.localizedDescription)"; snapshot.state = "failed" } }
+    #if os(macOS)
     public func configure(server: String, token: String, timezone: String) throws {
         guard ["idle", "verified"].contains(snapshot.state) || server == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
         _ = try VaultConnection(server: server, token: token)
@@ -122,6 +126,7 @@ public struct QueueState: Codable, Sendable {
         try VaultCredentials.save(token)
         snapshot.server = server; snapshot.timezone = timezone; save()
     }
+    #endif
     /// Stops sending uploads anywhere until a vault is configured again, as when the Mac
     /// disconnects from the vault the queue uploads to.
     public func forgetServer() throws {
@@ -133,22 +138,32 @@ public struct QueueState: Codable, Sendable {
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
         snapshot.timezone = timezone; save()
     }
-    #if os(macOS)
     public func configureNative(server: String, timezone: String) async throws {
         guard ["idle", "verified"].contains(snapshot.state) || server == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
         _ = try await NativeVaultSession.connection(server: server)
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
         snapshot.server = server; snapshot.timezone = timezone; save()
     }
+    #if os(iOS)
+    /// Signs this iPhone in to `server` in the browser, then uploads there with the recorder clock `timezone`.
+    /// Signing in again to the queue's own vault is allowed mid-import, so a revoked connection can resume.
+    public func signIn(server: String, timezone: String) async throws {
+        let origin = try NativeVaultSession.origin(server)
+        guard ["idle", "verified"].contains(snapshot.state) || origin == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
+        guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
+        try await NativeVaultSession.shared.signIn(server: origin)
+        try await configureNative(server: origin, timezone: timezone)
+    }
+    /// Stops uploading and revokes this iPhone's access to its vault.
+    public func signOut() async throws {
+        try forgetServer()
+        await NativeVaultSession.shared.signOut()
+    }
     #endif
     public func enqueue(_ urls: [URL], sessions: [ImportSessionPlan] = [], sourceIDs: [String: String] = [:]) async throws {
         guard ["idle", "verified"].contains(snapshot.state), !urls.isEmpty else { throw failure("Finish or clear the current queue first.") }
         guard !snapshot.server.isEmpty else { throw failure("Connect to your vault first.") }
-        #if os(macOS)
-        _ = try await macConnection()
-        #else
-        guard VaultCredentials.read() != nil else { throw failure("Connect to your vault first.") }
-        #endif
+        _ = try await connection()
         guard Set(urls.map(\.path)).count == urls.count else { throw failure("Select each source recording only once.") }
         for url in urls {
             guard ["wav", "flac", "mp3", "m4a"].contains(url.pathExtension.lowercased()) else { throw failure("Select WAV, FLAC, MP3, or M4A recordings.") }
@@ -204,7 +219,7 @@ public struct QueueState: Codable, Sendable {
         snapshot.error = nil
         snapshot.state = snapshot.files.contains(where: { $0.originalURL != nil }) ? "copying" : "uploading"
         #else
-        snapshot.error = nil; snapshot.state = "uploading"
+        snapshot.error = nil; snapshot.state = "uploading"; chunkRetried = false
         #endif
         save(); start()
     }
@@ -235,10 +250,6 @@ public struct QueueState: Codable, Sendable {
         snapshot = cleared; save()
     }
     public func json() throws -> String { String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self) }
-    private func connection() throws -> VaultConnection {
-        guard let token = tokenOverride ?? VaultCredentials.read() else { throw failure("Reconnect with an upload token.") }
-        return try VaultConnection(server: snapshot.server, token: token)
-    }
     private func start() {
         #if os(macOS)
         guard runner == nil, ["copying", "uploading", "verifying"].contains(snapshot.state) else { return }
@@ -287,9 +298,9 @@ public struct QueueState: Codable, Sendable {
         return body
     }
     private func advance() async throws {
-        let connection = try connection()
+        let connection = try await connection()
         if snapshot.importID == nil {
-            let response = try await connection.json("/api/v1/imports", method: "POST", body: Self.importBody(timezone: snapshot.timezone, sessions: snapshot.sessions))
+            let response = try await sendJSON(connection, "/api/v1/imports", method: "POST", body: Self.importBody(timezone: snapshot.timezone, sessions: snapshot.sessions))
             try Task.checkCancellation()
             guard let id = response["id"] as? String else { throw failure("Invalid import response.") }
             snapshot.importID = id; save()
@@ -314,7 +325,7 @@ public struct QueueState: Codable, Sendable {
                 var metadata = ["import_id": snapshot.importID!, "filename": snapshot.files[index].prepared!, "original_name": snapshot.files[index].name]
                 if let sourceID = snapshot.files[index].sourceID { metadata["source_id"] = sourceID }
                 request.setValue(metadata.sorted { $0.key < $1.key }.map { "\($0.key) \(Data($0.value.utf8).base64EncodedString())" }.joined(separator: ","), forHTTPHeaderField: "Upload-Metadata")
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await send(request)
                 try Task.checkCancellation()
                 try VaultConnection.check(response, data)
                 guard let location = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Location") else { throw failure("Missing upload location.") }
@@ -323,7 +334,7 @@ public struct QueueState: Codable, Sendable {
             }
             var head = try connection.request(snapshot.files[index].location!, method: "HEAD")
             head.setValue("1.0.0", forHTTPHeaderField: "Tus-Resumable")
-            let (_, response) = try await URLSession.shared.data(for: head); try Task.checkCancellation(); try VaultConnection.check(response)
+            let (data, response) = try await send(head); try Task.checkCancellation(); try VaultConnection.check(response, data)
             guard let offset = Int64((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Upload-Offset") ?? ""), offset <= snapshot.files[index].length else { throw failure("Invalid upload offset.") }
             snapshot.files[index].offset = offset
             if offset == snapshot.files[index].length { snapshot.files[index].state = "uploaded"; save(); continue }
@@ -337,12 +348,15 @@ public struct QueueState: Codable, Sendable {
             request.setValue("1.0.0", forHTTPHeaderField: "Tus-Resumable")
             request.setValue(String(offset), forHTTPHeaderField: "Upload-Offset")
             request.setValue("application/offset+octet-stream", forHTTPHeaderField: "Content-Type")
+            // The chunk may wait in the background session, so it carries a token refreshed just now if near expiry.
+            request = try await authorized(request)
+            try Task.checkCancellation()
             snapshot.files[index].state = "uploading"; save()
             let task = session.uploadTask(with: request, fromFile: chunkURL)
             task.taskDescription = snapshot.files[index].id; task.resume()
             return // The native session delegate schedules the next bounded chunk.
         }
-        _ = try await connection.json("/api/v1/imports/\(snapshot.importID!)/complete", method: "POST")
+        _ = try await sendJSON(connection, "/api/v1/imports/\(snapshot.importID!)/complete", method: "POST")
         snapshot.state = "verifying"; save()
         try await pollReceipt()
     }
@@ -353,9 +367,9 @@ public struct QueueState: Codable, Sendable {
         if snapshot.state == "verifying" { try await pollReceipt(); return }
         snapshot.state = snapshot.files.contains(where: { $0.originalURL != nil }) ? "copying" : "uploading"
         save()
-        let connection = try await macConnection()
+        let connection = try await connection()
         if snapshot.importID == nil {
-            let response = try await macJSON(connection, "/api/v1/imports", method: "POST", body: Self.importBody(timezone: snapshot.timezone, sessions: snapshot.sessions))
+            let response = try await sendJSON(connection, "/api/v1/imports", method: "POST", body: Self.importBody(timezone: snapshot.timezone, sessions: snapshot.sessions))
             guard let id = response["id"] as? String else { throw failure("Invalid import response.") }
             snapshot.importID = id; save()
             try Task.checkCancellation()
@@ -407,7 +421,7 @@ public struct QueueState: Codable, Sendable {
         guard snapshot.files.allSatisfy({ $0.state == "uploaded" }), let importID = snapshot.importID else {
             throw failure("Not every recording finished uploading. Resume to continue.")
         }
-        _ = try await macJSON(connection, "/api/v1/imports/\(importID)/complete", method: "POST")
+        _ = try await sendJSON(connection, "/api/v1/imports/\(importID)/complete", method: "POST")
         snapshot.state = "verifying"; save()
         try await pollReceipt()
     }
@@ -496,7 +510,7 @@ public struct QueueState: Codable, Sendable {
             var metadata = ["import_id": importID, "filename": prepared, "original_name": snapshot.files[index].name]
             if let sourceID = snapshot.files[index].sourceID { metadata["source_id"] = sourceID }
             request.setValue(metadata.sorted { $0.key < $1.key }.map { "\($0.key) \(Data($0.value.utf8).base64EncodedString())" }.joined(separator: ","), forHTTPHeaderField: "Upload-Metadata")
-            let (data, response) = try await macRequest(request)
+            let (data, response) = try await send(request)
             try VaultConnection.check(response, data)
             guard let location = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Location") else { throw failure("Missing upload location.") }
             _ = try connection.request(location)
@@ -507,7 +521,7 @@ public struct QueueState: Codable, Sendable {
         let location = snapshot.files[index].location!
         var head = try connection.request(location, method: "HEAD")
         head.setValue("1.0.0", forHTTPHeaderField: "Tus-Resumable")
-        let (data, response) = try await macRequest(head)
+        let (data, response) = try await send(head)
         try VaultConnection.check(response, data)
         guard let remoteOffset = Int64((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Upload-Offset") ?? ""), remoteOffset >= 0, remoteOffset <= snapshot.files[index].length else { throw failure("Invalid upload offset.") }
         snapshot.files[index].offset = remoteOffset
@@ -536,7 +550,7 @@ public struct QueueState: Codable, Sendable {
             request.setValue(String(offset), forHTTPHeaderField: "Upload-Offset")
             request.setValue(String(count), forHTTPHeaderField: "Content-Length")
             request.setValue("application/offset+octet-stream", forHTTPHeaderField: "Content-Type")
-            let (data, response) = try await macRequest(request, file: chunkURL)
+            let (data, response) = try await send(request, file: chunkURL)
             try VaultConnection.check(response, data)
             guard let confirmed = Int64((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Upload-Offset") ?? ""), confirmed == offset + Int64(count) else { throw failure("The server returned an unexpected upload offset. Resume to reconcile it.") }
             snapshot.files[index].offset = confirmed
@@ -552,49 +566,48 @@ public struct QueueState: Codable, Sendable {
         save()
     }
 
-    private func macConnection(forceRefresh: Bool = false) async throws -> VaultConnection {
+    #endif
+
+    /// The owner connection, refreshed when it nearly expired or when `forceRefresh`.
+    private func connection(forceRefresh: Bool = false) async throws -> VaultConnection {
         if let tokenOverride { return try VaultConnection(server: snapshot.server, token: tokenOverride) }
         return try await NativeVaultSession.connection(server: snapshot.server, forceRefresh: forceRefresh)
     }
-    private func macRequest(_ original: URLRequest, file: URL? = nil) async throws -> (Data, URLResponse) {
-        if let requestOverride { return try await requestOverride(original, file) }
+    /// `original` addressed and authorised with the current connection.
+    private func authorized(_ original: URLRequest, forceRefresh: Bool = false) async throws -> URLRequest {
+        let connection = try await connection(forceRefresh: forceRefresh)
+        guard let url = original.url else { throw failure("Invalid transfer address.") }
         var request = original
+        request.url = try connection.request(url.absoluteString, method: request.httpMethod ?? "GET").url
+        request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+    /// Sends `original`; a 401 refreshes the connection once and sends it again.
+    private func send(_ original: URLRequest, file: URL? = nil) async throws -> (Data, URLResponse) {
+        if let requestOverride { return try await requestOverride(original, file) }
         for attempt in 0...1 {
-            let connection = try await macConnection(forceRefresh: attempt > 0)
-            guard let url = request.url else { throw failure("Invalid transfer address.") }
-            let fresh = try connection.request(url.absoluteString, method: request.httpMethod ?? "GET")
-            request.url = fresh.url
-            request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
+            let request = try await authorized(original, forceRefresh: attempt > 0)
             let result: (Data, URLResponse)
-            if let file { result = try await macUploadSession.upload(for: request, fromFile: file) }
-            else { result = try await macUploadSession.data(for: request) }
+            if let file { result = try await foregroundSession.upload(for: request, fromFile: file) }
+            else { result = try await foregroundSession.data(for: request) }
             if (result.1 as? HTTPURLResponse)?.statusCode != 401 || attempt == 1 { return result }
         }
         throw failure("Reconnect to your vault to continue the upload.")
     }
-    private func macJSON(_ connection: VaultConnection, _ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> [String: Any] {
+    private func sendJSON(_ connection: VaultConnection, _ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> [String: Any] {
         let request = try connection.request(path, method: method, json: body)
-        let (data, response) = try await macRequest(request)
+        let (data, response) = try await send(request)
         try VaultConnection.check(response, data)
         guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("Invalid server response.") }
         return result
     }
-    #endif
 
     private func pollReceipt() async throws {
-        #if os(macOS)
-        let connection = try await macConnection()
-        #else
-        let connection = try connection()
-        #endif
+        let connection = try await connection()
         guard let id = snapshot.importID else { return }
         for _ in 0..<120 {
             try Task.checkCancellation()
-            #if os(macOS)
-            let receipt = try await macJSON(connection, "/api/v1/imports/\(id)")
-            #else
-            let receipt = try await connection.json("/api/v1/imports/\(id)")
-            #endif
+            let receipt = try await sendJSON(connection, "/api/v1/imports/\(id)")
             try Task.checkCancellation()
             if receipt["state"] as? String == "failed" {
                 let files = receipt["files"] as? [[String: Any]] ?? []
@@ -626,10 +639,25 @@ public struct QueueState: Codable, Sendable {
             guard self.snapshot.state == "uploading", let itemID, self.snapshot.files.contains(where: { $0.id == itemID }) else { return }
             do {
                 if let error { throw error }
-                if let response { try VaultConnection.check(response, data) } else { throw self.failure("No upload response.") }
+                guard let response else { throw self.failure("No upload response.") }
+                #if os(iOS)
+                if (response as? HTTPURLResponse)?.statusCode == 401, !self.chunkRetried {
+                    self.chunkRetried = true
+                    // HEAD reconciles the offset, then the chunk goes out again with the refreshed token.
+                    _ = try await self.connection(forceRefresh: true)
+                    guard self.snapshot.state == "uploading" else { return }
+                    self.start()
+                    return
+                }
+                self.chunkRetried = false
+                #endif
+                try VaultConnection.check(response, data)
                 try? FileManager.default.removeItem(at: self.folder.appendingPathComponent("chunk-\(itemID)"))
                 self.start()
-            } catch { self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save() }
+            } catch {
+                guard self.snapshot.state == "uploading" else { return } // Paused while refreshing.
+                self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save()
+            }
         }
     }
     nonisolated public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {

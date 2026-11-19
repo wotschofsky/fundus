@@ -1,10 +1,14 @@
-#if os(macOS)
-import AppKit
 import Combine
 import CryptoKit
 import Foundation
-@preconcurrency import Network
 import Security
+#if os(macOS)
+import AppKit
+@preconcurrency import Network
+#else
+import AuthenticationServices
+import UIKit
+#endif
 
 struct NativeOAuthCredentials: Codable, Sendable {
     let server: String
@@ -57,7 +61,7 @@ private enum NativeOAuthFailure: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .message(let message): message
-        case .keychain: "Could not access the vault connection in macOS Keychain. Unlock Keychain and reconnect."
+        case .keychain: "Could not access the saved vault connection in Keychain. Unlock this device and reconnect."
         case .cancelled: "Connection cancelled."
         }
     }
@@ -85,6 +89,9 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private var cached: [String: NativeOAuthCredentials] = [:]
     private var login: Task<Void, Error>?
     private static let preference = "NativeVaultServer"
+    /// The iPhone app's callback: a reverse-domain scheme it owns (RFC 8252 §7.1), with no host.
+    static let phoneCallback = URL(string: "dev.wsky.vaultuploader:/oauth")!
+    static let phoneName = "Fundus for iPhone"
 
     public convenience init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -170,13 +177,30 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         }
     }
 
+    /// Only how the approval page opens and its answer arrives differs: a loopback listener on
+    /// the Mac, an app-scheme callback through `ASWebAuthenticationSession` on iPhone.
     private func performSignIn(server: String) async throws {
-        let state = try Self.random(), verifier = try Self.random()
+        let state = try Self.random()
+        #if os(macOS)
         let receiver = try NativeLoopbackCallback(state: state)
         defer { receiver.cancel() }
         let callback = try await receiver.start()
+        try await authorize(server: server, name: "Fundus for Mac", callback: callback, state: state) { url in
+            guard NSWorkspace.shared.open(url) else { throw NativeOAuthFailure.message("Could not open your browser. Set a default browser and try again.") }
+            return try await receiver.wait()
+        }
+        #else
+        try await authorize(server: server, name: Self.phoneName, callback: Self.phoneCallback, state: state) { url in
+            try await NativeWebAuthentication.open(url, scheme: Self.phoneCallback.scheme!)
+        }
+        #endif
+    }
+
+    /// Registers this app, shows the approval page through `browse`, and redeems the verified code.
+    func authorize(server: String, name: String, callback: URL, state: String, browse: (URL) async throws -> URL) async throws {
+        let verifier = try Self.random()
         let registration = try await oauth(server: server, path: "/oauth/register", json: [
-            "client_name": "Fundus for Mac", "redirect_uris": [callback.absoluteString],
+            "client_name": name, "redirect_uris": [callback.absoluteString],
             "token_endpoint_auth_method": "none", "scope": "vault:owner",
             "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]
         ])
@@ -190,8 +214,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             .init(name: "resource", value: server + "/api/native"), .init(name: "state", value: state)
         ]
         try Task.checkCancellation()
-        guard NSWorkspace.shared.open(authorization.url!) else { throw NativeOAuthFailure.message("Could not open your browser. Set a default browser and try again.") }
-        let returned = try await receiver.wait()
+        let returned = try await browse(authorization.url!)
         let code = try Self.authorizationCode(from: returned, state: state, issuer: server)
         let tokens = try await oauth(server: server, path: "/oauth/token", form: [
             "grant_type": "authorization_code", "client_id": client, "code": code,
@@ -234,8 +257,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     func connection(for supplied: String, forceRefresh: Bool = false) async throws -> VaultConnection {
         let origin = try Self.origin(supplied)
         guard let credentials = try stored(origin) else {
-            guard let token = VaultCredentials.read(), !token.isEmpty else { throw NativeOAuthFailure.message("Connect this app to your vault first.") }
-            return try VaultConnection(server: origin, token: token)
+            #if os(macOS)
+            // The Mac's upload-token fallback, until upload tokens are removed.
+            if let token = VaultCredentials.read(), !token.isEmpty { return try VaultConnection(server: origin, token: token) }
+            #endif
+            throw NativeOAuthFailure.message("Connect this app to your vault first.")
         }
         guard credentials.server == origin else {
             throw NativeOAuthFailure.message("The saved connection does not match this vault. Connect the app again.")
@@ -326,6 +352,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     }
 }
 
+#if os(macOS)
 @MainActor final class NativeLoopbackCallback {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "vault.oauth.loopback")
@@ -420,6 +447,44 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             connection.cancel()
             if let result { Task { @MainActor in self?.finish(.success(result)) } }
         })
+    }
+}
+#else
+/// Shows the approval page in a browser sheet that shares Safari's sign-ins (such as
+/// Cloudflare Access) and returns the app-scheme callback it catches.
+@MainActor private final class NativeWebAuthentication: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private let anchor: ASPresentationAnchor
+    private var session: ASWebAuthenticationSession?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private init(anchor: ASPresentationAnchor) { self.anchor = anchor }
+
+    static func open(_ url: URL, scheme: String) async throws -> URL {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
+            throw NativeOAuthFailure.message("Open Fundus and try connecting again.")
+        }
+        let browser = NativeWebAuthentication(anchor: window)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                browser.continuation = continuation
+                // @Sendable: the SDK does not promise the main thread, so the result hops there itself.
+                let session = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { @Sendable [weak browser] callback, error in
+                    let result: Result<URL, Error> = if let callback { .success(callback) }
+                        else if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin { .failure(NativeOAuthFailure.cancelled) }
+                        else { .failure(NativeOAuthFailure.message("Could not show the vault sign-in page. Try connecting again.")) }
+                    Task { @MainActor in browser?.finish(result) }
+                }
+                session.presentationContextProvider = browser
+                session.prefersEphemeralWebBrowserSession = false // Reuse an existing browser sign-in.
+                browser.session = session
+                if !session.start() { browser.finish(.failure(NativeOAuthFailure.message("Could not show the vault sign-in page. Try connecting again."))) }
+            }
+        } onCancel: { Task { @MainActor in browser.session?.cancel(); browser.finish(.failure(NativeOAuthFailure.cancelled)) } }
+    }
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { anchor }
+    private func finish(_ result: Result<URL, Error>) {
+        continuation?.resume(with: result)
+        continuation = nil
+        session = nil
     }
 }
 #endif

@@ -5,7 +5,9 @@ public class VaultTransferModule: Module {
     public func definition() -> ModuleDefinition {
         Name("VaultTransfer")
         AsyncFunction("status") { () -> String in try await MainActor.run { try TransferQueue.shared.json() } }
-        AsyncFunction("configure") { (server: String, token: String, timezone: String) in try await MainActor.run { try TransferQueue.shared.configure(server: server, token: token, timezone: timezone) } }
+        // Opens the vault's sign-in page; the owner connection stays in Keychain, never in JS.
+        AsyncFunction("signIn") { (server: String, timezone: String) in try await TransferQueue.shared.signIn(server: server, timezone: timezone) }
+        AsyncFunction("signOut") { try await TransferQueue.shared.signOut() }
         AsyncFunction("enqueue") { (files: [[String: String]]) in
             let urls = files.compactMap { URL(string: $0["uri"] ?? "") }
             try await TransferQueue.shared.enqueue(urls)

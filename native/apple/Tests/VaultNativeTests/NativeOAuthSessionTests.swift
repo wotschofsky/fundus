@@ -1,5 +1,7 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
+import Synchronization
 import XCTest
 @testable import VaultNative
 
@@ -36,8 +38,123 @@ private final class NativeOAuthMockProtocol: URLProtocol, @unchecked Sendable {
     }
     override func stopLoading() { work?.cancel() }
 }
+/// Answers registration and code exchange, recording each request's path and body.
+private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
+    static let requests = Mutex<[(path: String, body: Data)]>([])
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        // URLSession hands a POST body to a protocol as a stream.
+        var body = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 { body.append(buffer, count: count) }
+        }
+        let path = request.url!.path, recorded = body
+        Self.requests.withLock { $0.append((path, recorded)) }
+        let reply = path == "/oauth/register" ? #"{"client_id":"synthetic-phone"}"#
+            : #"{"access_token":"oa_synthetic-phone","refresh_token":"synthetic-phone-refresh","expires_in":3600,"scope":"vault:owner"}"#
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(reply.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
 
 @MainActor final class NativeOAuthSessionTests: XCTestCase {
+    private func phoneSession(_ storage: MemoryNativeCredentials) -> NativeVaultSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SignInMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        return NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+    }
+    private func parameters(_ items: [URLQueryItem]?) -> [String: String] {
+        Dictionary((items ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+    }
+
+    func testPhoneSignInRegistersAppSchemeAndRedeemsVerifiedCode() async throws {
+        SignInMockProtocol.requests.withLock { $0 = [] }
+        let storage = MemoryNativeCredentials()
+        let session = phoneSession(storage)
+        let origin = "https://vault.example.com"
+        var opened: URL?
+        try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "expected-state") { url in
+            opened = url
+            return URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=expected-state&iss=https%3A%2F%2Fvault.example.com")!
+        }
+        let requests = SignInMockProtocol.requests.withLock { $0 }
+        XCTAssertEqual(requests.map(\.path), ["/oauth/register", "/oauth/token"])
+        let registration = try XCTUnwrap(JSONSerialization.jsonObject(with: requests[0].body) as? [String: Any])
+        XCTAssertEqual(registration["client_name"] as? String, "Fundus for iPhone")
+        XCTAssertEqual(registration["redirect_uris"] as? [String], ["dev.wsky.vaultuploader:/oauth"])
+        XCTAssertEqual(registration["scope"] as? String, "vault:owner")
+        XCTAssertEqual(registration["token_endpoint_auth_method"] as? String, "none")
+
+        let page = try XCTUnwrap(opened.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) })
+        XCTAssertEqual(page.scheme, "https")
+        XCTAssertEqual(page.host, "vault.example.com")
+        XCTAssertEqual(page.path, "/oauth/authorize")
+        let query = parameters(page.queryItems)
+        XCTAssertEqual(query["response_type"], "code")
+        XCTAssertEqual(query["client_id"], "synthetic-phone")
+        XCTAssertEqual(query["redirect_uri"], "dev.wsky.vaultuploader:/oauth")
+        XCTAssertEqual(query["code_challenge_method"], "S256")
+        XCTAssertEqual(query["scope"], "vault:owner")
+        XCTAssertEqual(query["resource"], "https://vault.example.com/api/native")
+        XCTAssertEqual(query["state"], "expected-state")
+
+        var form = URLComponents()
+        form.percentEncodedQuery = String(decoding: requests[1].body, as: UTF8.self)
+        let exchange = parameters(form.queryItems)
+        XCTAssertEqual(exchange["grant_type"], "authorization_code")
+        XCTAssertEqual(exchange["client_id"], "synthetic-phone")
+        XCTAssertEqual(exchange["code"], "synthetic-code")
+        XCTAssertEqual(exchange["redirect_uri"], "dev.wsky.vaultuploader:/oauth")
+        XCTAssertEqual(exchange["resource"], "https://vault.example.com/api/native")
+        let verifier = try XCTUnwrap(exchange["code_verifier"])
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        XCTAssertEqual(query["code_challenge"], challenge)
+
+        XCTAssertEqual(storage.values[origin]?.accessToken, "oa_synthetic-phone")
+        XCTAssertEqual(storage.values[origin]?.clientID, "synthetic-phone")
+        XCTAssertEqual(session.server, origin)
+        XCTAssertTrue(session.isConnected)
+        let connection = try await session.connection(for: origin)
+        XCTAssertTrue(connection.nativeOwner)
+        XCTAssertEqual(try connection.request("/api/v1/uploads").url?.path, "/api/native/v1/uploads")
+    }
+
+    func testPhoneSignInRedeemsNoCodeFromAForeignDeniedOrCancelledCallback() async throws {
+        let origin = "https://vault.example.com"
+        let callbacks = [
+            "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=other&iss=https%3A%2F%2Fvault.example.com",
+            "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=expected-state&iss=https%3A%2F%2Fother.example",
+            "dev.wsky.vaultuploader:/oauth?error=access_denied&state=expected-state&iss=https%3A%2F%2Fvault.example.com",
+            nil, // The user closed the sign-in sheet.
+        ]
+        for callback in callbacks {
+            SignInMockProtocol.requests.withLock { $0 = [] }
+            let storage = MemoryNativeCredentials()
+            let session = phoneSession(storage)
+            do {
+                try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "expected-state") { _ in
+                    guard let callback else { throw CancellationError() }
+                    return URL(string: callback)!
+                }
+                XCTFail("\(callback ?? "cancel") must not connect")
+            } catch {
+                if callback?.contains("access_denied") == true { XCTAssertEqual(error.localizedDescription, "Vault access was not approved.") }
+            }
+            let paths = SignInMockProtocol.requests.withLock { $0.map(\.path) }
+            XCTAssertEqual(paths, ["/oauth/register"], callback ?? "cancel")
+            XCTAssertTrue(storage.values.isEmpty)
+            XCTAssertFalse(session.isConnected)
+        }
+    }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
         let storage = MemoryNativeCredentials()

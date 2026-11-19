@@ -8,7 +8,6 @@ export default function UploadScreen() {
   const [queue, setQueue] = useState<QueueState>();
   const [settings, setSettings] = useState(false);
   const [server, setServer] = useState('');
-  const [token, setToken] = useState('');
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -64,7 +63,7 @@ export default function UploadScreen() {
             </Text>
             <Text>
               {settings
-                ? 'Create an upload token in the web library’s Settings.'
+                ? 'Connect opens your vault’s sign-in page. Approve access there to let this iPhone upload.'
                 : 'Upload audio to your vault.'}
             </Text>
           </Column>
@@ -79,14 +78,6 @@ export default function UploadScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
               />
-              <Text>Upload token</Text>
-              <TextInput
-                onChangeText={setToken}
-                placeholder="Paste upload token"
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
               <Text>Recorder timezone</Text>
               <TextInput
                 defaultValue={timezone}
@@ -96,24 +87,37 @@ export default function UploadScreen() {
                 autoCorrect={false}
               />
               <Text>
-                The timezone should match the recorder’s clock. Your token is stored securely on
-                this device.
+                The timezone should match the recorder’s clock. This iPhone keeps its vault access
+                in Keychain.
               </Text>
               <Button
-                label="Save connection"
+                label="Connect"
                 disabled={busy}
                 onPress={() =>
                   void action(async () => {
-                    await transfer.configure(server.trim(), token.trim(), timezone.trim());
-                    setToken('');
+                    await transfer.signIn(server.trim(), timezone.trim());
                     setSettings(false);
                   })
                 }
               />
+              {queue?.server ? (
+                <Button
+                  label="Disconnect"
+                  variant="outlined"
+                  disabled={busy}
+                  onPress={() =>
+                    void action(async () => {
+                      await transfer.signOut();
+                      setSettings(false);
+                    })
+                  }
+                />
+              ) : null}
               <Button label="Cancel" variant="text" onPress={() => setSettings(false)} />
             </Column>
           ) : (
             <>
+              {queue?.server ? <Text>{`Connected to ${queue.server}`}</Text> : null}
               <Button
                 label={queue?.server ? 'Connection settings' : 'Connect your vault'}
                 variant="outlined"
