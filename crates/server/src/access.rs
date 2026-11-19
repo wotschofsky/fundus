@@ -3,8 +3,9 @@
 //! carries a valid `Cf-Access-Jwt-Assertion`: the token Access adds to every request it has
 //! signed in. A request that reached the server another way (a path the proxy lets through
 //! without sign-in, however that path was spelled on its way in, or a direct hit on the origin)
-//! carries none of its own. The token is a bearer credential until it expires (plus `LEEWAY`):
-//! whoever holds the owner's is let in, wherever the request comes from.
+//! carries none of its own. The token is a bearer credential, at most until it expires (plus
+//! `LEEWAY`) or Access retires the key that signed it: whoever holds the owner's is let in,
+//! wherever the request comes from.
 use crate::{
     config::App,
     error::{Error, Result},
@@ -23,7 +24,7 @@ pub const HEADER: &str = "cf-access-jwt-assertion";
 const LEEWAY: i64 = 60;
 /// Keys are read again after this, and when a token names one not held (Access rotates them).
 const REFRESH: Duration = Duration::from_secs(3600);
-/// At most one read of the keys this often, so made-up key IDs cannot make the server ask.
+/// At most one read of the keys this often, however many unknown key IDs arrive.
 const RETRY: Duration = Duration::from_secs(30);
 
 /// Which Access application's sign-ins count as the owner's.
