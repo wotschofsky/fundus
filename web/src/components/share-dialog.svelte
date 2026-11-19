@@ -51,7 +51,8 @@
   /** The change sent last: only its error is shown, not that of an earlier change since
    * overtaken (a failed expiry change before a Stop that worked, say). */
   let latest = $state<'save' | 'extend' | 'stop' | null>(null);
-  /** When a change goes out, how many share reads and answers had landed, for `keepAnswer`. */
+  /** When a change goes out: it becomes the latest, and takes how many share reads and answers had
+   * landed and its moment (`leaving`), for `keepAnswer`. */
   const sending = (change: 'save' | 'extend' | 'stop') => () => {
     latest = change;
     return { sent: sentAt(), since: leaving() };
