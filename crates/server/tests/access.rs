@@ -233,3 +233,29 @@ async fn a_key_read_finishes_even_when_the_request_that_started_it_goes_away() {
     assert_eq!(status(&router, Some(&owner)).await, StatusCode::OK);
     assert_eq!(reads.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn other_sites_cannot_make_the_browser_ask_as_the_owner() {
+    let (_dir, app, router) = proxied(Some(Settings::new(ACCESS_TEAM, ACCESS_AUD).unwrap())).await;
+    app.access_keys
+        .hold(access_jwks().to_string().as_bytes())
+        .await
+        .unwrap();
+    let owner = access_token(owner_claims());
+    // A page elsewhere can time a search it cannot read; another subdomain is no different.
+    for (site, expected) in [
+        ("cross-site", StatusCode::FORBIDDEN),
+        ("same-site", StatusCode::FORBIDDEN),
+        ("same-origin", StatusCode::OK),
+        ("none", StatusCode::OK),
+    ] {
+        let request = Request::builder()
+            .uri("/api/v1/search?q=word")
+            .header("Cf-Access-Jwt-Assertion", &owner)
+            .header("Sec-Fetch-Site", site)
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "{site}");
+    }
+}

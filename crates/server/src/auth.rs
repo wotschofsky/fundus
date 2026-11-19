@@ -77,7 +77,21 @@ pub async fn issue(app: &App, name: &str, scope: &str) -> Result<String> {
     .await?;
     Ok(value)
 }
+/// For a request the browser's own sign-in (its cookie, or Access's token) lets in.
 fn check_origin(app: &App, request: &Request) -> Result<()> {
+    // Any site can make the browser send one and time the answer without reading it (does a
+    // search find this word?). Only this site's pages and what the owner opens directly may ask;
+    // browsers too old to say which send nothing.
+    let site = request
+        .headers()
+        .get("sec-fetch-site")
+        .map(|v| v.as_bytes());
+    if site.is_some_and(|site| site != b"same-origin" && site != b"none") {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "Requests from other sites are refused".into(),
+        ));
+    }
     if !["GET", "HEAD", "OPTIONS"].contains(&request.method().as_str()) {
         let origin = request
             .headers()
