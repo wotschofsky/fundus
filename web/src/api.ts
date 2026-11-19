@@ -154,7 +154,8 @@ export const shareQuery = (id: string) =>
     queryFn: async ({ client, signal }) => {
       const known = cachedLinks(client, id);
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
-      for (const link of known) if (link.url !== next?.url && !lapsed(link)) forget(link.url);
+      landed++;
+      forgetMissing(known, new Set(next ? [next.url] : []));
       return next;
     },
   });
@@ -164,8 +165,8 @@ export const sharesQuery = queryOptions({
   queryFn: async ({ client, signal }) => {
     const known = cachedLinks(client);
     const next = await api<{ shares: SharedLink[] }>('/v1/shares', { signal });
-    const listed = new Set(next.shares.map((link) => link.url));
-    for (const link of known) if (!listed.has(link.url) && !lapsed(link)) forget(link.url);
+    landed++;
+    forgetMissing(known, new Set(next.shares.map((link) => link.url)));
     return next;
   },
 });
@@ -186,10 +187,20 @@ export function cachedLinks(client: QueryClient, entry?: string): Share[] {
  * the clock does, and the page clock already stops offering it, while taking it for gone would
  * hide an extension made at its deadline that a read could have just missed. */
 const lapsed = (link: Share) => !!link.expires_at && Date.parse(link.expires_at) <= Date.now();
-/** What the page had read of a recording's link and of Settings' list as a change went out, for
- * `keepAnswer`: each read that lands counts, even two in one millisecond. */
-export const sentAt = (client: QueryClient, id: string) =>
-  `${client.getQueryState(['share', id])?.dataUpdateCount ?? 0}/${client.getQueryState(['shares'])?.dataUpdateCount ?? 0}`;
+/** Takes for gone each held link a read no longer has, unless any copy the page holds of it has
+ * merely lapsed (an older copy in the other view may not show the deadline it has since read). */
+function forgetMissing(known: Share[], answered: Set<string>) {
+  const lapsedUrls = new Set(known.filter(lapsed).map((link) => link.url));
+  for (const link of known)
+    if (!answered.has(link.url) && !lapsedUrls.has(link.url)) forget(link.url);
+}
+/** Share reads (of a recording's link or of Settings' list) that have landed on this page. It
+ * only grows: a list dropped from memory and read afresh counts on from here, unlike the
+ * cache's own per-query counts. */
+let landed = 0;
+/** How many share reads had landed as a change went out, for `keepAnswer`: each read that lands
+ * counts, even two in one millisecond. */
+export const sentAt = () => landed;
 /** Puts the answer to a change of the recording's link (`sent`: `sentAt` as it went out) in the
  * cache, unless a read of the link or of Settings' list landed after the change was sent: that
  * read may be newer than the answer (another tab shared again, say), so the page asks again
@@ -198,11 +209,11 @@ export async function keepAnswer(
   client: QueryClient,
   id: string,
   value: Share | null,
-  sent: string,
+  sent: number,
 ) {
   // A read still under way would land after this and bring back what was just changed.
   await client.cancelQueries({ queryKey: ['share', id] });
-  if (sentAt(client, id) === sent) client.setQueryData(['share', id], value);
+  if (landed === sent) client.setQueryData(['share', id], value);
   else await client.invalidateQueries({ queryKey: ['share', id] });
   return client.invalidateQueries({ queryKey: ['shares'] });
 }

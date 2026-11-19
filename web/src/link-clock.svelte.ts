@@ -1,10 +1,11 @@
 import { SvelteSet } from 'svelte/reactivity';
 
-/** URLs of links that are gone: this page stopped them, or the server answered 404 for them. A
- * token never works again once it is gone, so no page offers these again, even before it hears
- * what (if anything) replaced them. */
+/** URLs of links that are gone: this page stopped them or moved their recording to Trash, the
+ * server answered 404 for them, or a read no longer returned them. A token never works again
+ * once it is gone, so no page offers these again, even before it hears what (if anything)
+ * replaced them. */
 const dead = new SvelteSet<string>();
-/** This link is gone: stopped here, or the server answered 404 for it. */
+/** This link is gone (stopped, deleted by Trash, answered 404, or no longer read back). */
 export const forget = (url: string) => {
   dead.add(url);
 };

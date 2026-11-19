@@ -49,7 +49,7 @@
    * once the server has said it is gone. */
   const link = $derived(clock.offered(share.data));
   /** When a change goes out, what the page then held of the link, for `keepAnswer`. */
-  const sending = () => ({ sent: sentAt(qc, id) });
+  const sending = () => ({ sent: sentAt() });
   const save = createMutation(() => ({
     onMutate: sending,
     mutationFn: (expires: Expiry) =>

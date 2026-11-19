@@ -123,12 +123,13 @@ test('a link made while Settings was reading stays offered', async () => {
 test("a change's answer does not overwrite a read that landed after the change was sent", async () => {
   const client = new QueryClient();
   const stopped = link();
-  client.setQueryData(['share', 'cedar'], stopped);
-  const sent = sentAt(client, 'cedar');
-  await delay(2);
+  answer(stopped);
+  await client.fetchQuery(shareQuery('cedar'));
+  const sent = sentAt();
   // Stop sharing went out; another tab shared again, and this page read the new link.
   const replacement = link();
-  client.setQueryData(['share', 'cedar'], replacement);
+  answer(replacement);
+  await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 });
   await keepAnswer(client, 'cedar', null, sent);
   assert.deepEqual(client.getQueryData(['share', 'cedar']), replacement);
 });
@@ -136,8 +137,9 @@ test("a change's answer does not overwrite a read that landed after the change w
 test("a change's answer lands when nothing newer was read meanwhile", async () => {
   const client = new QueryClient();
   const before = link();
-  client.setQueryData(['share', 'cedar'], before);
-  const sent = sentAt(client, 'cedar');
+  answer(before);
+  await client.fetchQuery(shareQuery('cedar'));
+  const sent = sentAt();
   const changed = { ...before, expires_at: '2026-12-01T00:00:00.000Z' };
   await keepAnswer(client, 'cedar', changed, sent);
   assert.deepEqual(client.getQueryData(['share', 'cedar']), changed);
@@ -160,10 +162,10 @@ test('a link that only lapsed is not taken for gone, so an extension made at its
 test("a change's answer does not overwrite what Settings read after the change was sent", async () => {
   const client = new QueryClient();
   client.setQueryData(['share', 'cedar'], null);
-  const sent = sentAt(client, 'cedar');
+  const sent = sentAt();
   // Sharing went out; Settings then read the list (another tab had stopped and replaced it).
-  const replacement = link();
-  client.setQueryData(['shares'], { shares: [replacement] });
+  answer({ shares: [link()] });
+  await client.fetchQuery(sharesQuery);
   const made = link();
   await keepAnswer(client, 'cedar', made, sent);
   assert.notDeepEqual(client.getQueryData(['share', 'cedar']), made);
@@ -174,13 +176,45 @@ test('a read landing in the same millisecond as the last one still counts as new
   const now = Date.now;
   Date.now = () => 1_800_000_000_000;
   try {
-    client.setQueryData(['share', 'cedar'], null);
-    const sent = sentAt(client, 'cedar');
+    answer(null);
+    await client.fetchQuery(shareQuery('cedar'));
+    const sent = sentAt();
     const replacement = link();
-    client.setQueryData(['share', 'cedar'], replacement);
+    answer(replacement);
+    await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 });
     await keepAnswer(client, 'cedar', null, sent);
     assert.deepEqual(client.getQueryData(['share', 'cedar']), replacement);
   } finally {
     Date.now = now;
   }
+});
+
+test("a read counts as newer even after Settings' list was dropped from memory and read afresh", async () => {
+  const client = new QueryClient();
+  answer({ shares: [] });
+  await client.fetchQuery(sharesQuery);
+  const sent = sentAt();
+  // Unused for a while, the list is dropped; reopening Settings reads it again from scratch.
+  client.removeQueries({ queryKey: ['shares'] });
+  answer({ shares: [] });
+  await client.fetchQuery(sharesQuery);
+  const stale = link();
+  await keepAnswer(client, 'cedar', stale, sent);
+  assert.notDeepEqual(client.getQueryData(['share', 'cedar']), stale);
+});
+
+test('a link any held copy shows as lapsed is not taken for gone', async () => {
+  const client = new QueryClient();
+  const url = link().url;
+  // Settings still holds the link as never expiring; the recording page has read its deadline.
+  client.setQueryData(['shares'], { shares: [{ ...link(), url, expires_at: null }] });
+  const lapsedCopy = { ...link(), url, expires_at: new Date(Date.now() - 1000).toISOString() };
+  client.setQueryData(['share', 'cedar'], lapsedCopy);
+  // Read at the deadline, before an extension committed: no link. Then the extension.
+  answer(null);
+  await client.fetchQuery(shareQuery('cedar'));
+  const extended = { ...lapsedCopy, expires_at: new Date(Date.now() + 86_400_000).toISOString() };
+  answer(extended);
+  await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 });
+  assert.equal(offered(extended), true);
 });
