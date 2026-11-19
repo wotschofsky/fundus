@@ -10,6 +10,7 @@
     gone,
     keepAnswer,
     linkToken,
+    rereadLinks,
     send,
     sentAt,
     type Share,
@@ -62,14 +63,15 @@
     mutationFn: (expires: Expiry) =>
       api<Share>(`/v1/entries/${id}/share`, send('PUT', { expires })),
     onSuccess: (value, _, context) => keepAnswer(qc, id, value, context.sent, context.since),
+    onError: () => reread(),
   }));
-  /** The named link is no longer there (stopped, expired or replaced elsewhere): drop it and ask
-   * again. */
-  const reread = (error: Error, url: string) => {
-    if (!gone(error)) return;
-    forget(url);
-    qc.invalidateQueries({ queryKey: ['shares'] });
-    return qc.invalidateQueries({ queryKey: ['share', id] });
+  /** A change failed: ask again, as it may have gone through before its answer was lost. A named
+   * link that is no longer there (stopped, expired or replaced elsewhere) is dropped first. Not
+   * waited for, so a failure shows (and the dialog can close) without waiting on reads that may
+   * fail too. */
+  const reread = (error?: Error, url?: string) => {
+    if (url && gone(error)) forget(url);
+    void rereadLinks(qc, id);
   };
   /** Changes only the link shown, so it never shares again or touches a link that replaced it. */
   const extend = createMutation(() => ({
@@ -94,7 +96,7 @@
     },
     onError: (error, url) => {
       stopping = null;
-      return reread(error, url);
+      reread(error, url);
     },
   }));
   /** Stop sharing is being confirmed, for the link still offered. */
@@ -115,8 +117,9 @@
       extend.reset();
       stop.reset();
       // What the page has may be out of date: by its clock now, and from the server again (which
-      // the clock has just done if the link lapsed).
-      if (!clock.check()) share.refetch();
+      // the clock has just done if the link lapsed). A first read still on its way left before the
+      // dialog opened, and would be waited for rather than read again: cancelled.
+      if (!clock.check()) qc.cancelQueries({ queryKey: ['share', id] }).then(() => share.refetch());
       dialog.showModal();
       // Done, the safe default, rather than the access menu the dialog would otherwise focus.
       done.focus();

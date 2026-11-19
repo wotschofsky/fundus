@@ -341,3 +341,51 @@ test('a newer read returning a link undoes an older omission that landed first',
   await newer;
   assert.equal(offered(held), true);
 });
+
+test('an answer that is not shown still counts, so a later one cannot overwrite what it settled', async () => {
+  const client = new QueryClient();
+  const shared = link();
+  answer(shared);
+  await client.fetchQuery(shareQuery('cedar'));
+  const first = sending(); // One day.
+  answer(shared);
+  await client.fetchQuery({ ...shareQuery('cedar'), staleTime: 0 }); // A read lands meanwhile.
+  const second = sending(); // Seven days, committed first at the server.
+  const oneDay = { ...shared, expires_at: new Date(Date.now() + 86_400_000).toISOString() };
+  const sevenDays = { ...shared, expires_at: new Date(Date.now() + 7 * 86_400_000).toISOString() };
+  // The one-day answer arrives first; a read landed since it was sent, so it is not shown.
+  await keepAnswer(client, 'cedar', oneDay, first.sent, first.since);
+  // The seven-day answer arrives after it: an answer landed since it was sent, so it is not shown
+  // either, and the read after both settles it.
+  await keepAnswer(client, 'cedar', sevenDays, second.sent, second.since);
+  assert.notDeepEqual(client.getQueryData(['share', 'cedar']), sevenDays);
+});
+
+test('after a change, Settings reads its list afresh even if its first read was still on its way', async () => {
+  const client = new QueryClient();
+  let listReads = 0;
+  let releaseFirst;
+  globalThis.fetch = (url) => {
+    if (!String(url).endsWith('/v1/shares')) return Promise.resolve(Response.json(null));
+    listReads++;
+    if (listReads === 1)
+      return new Promise(
+        (resolve) => (releaseFirst = () => resolve(Response.json({ shares: [] }))),
+      );
+    return Promise.resolve(Response.json({ shares: [link()] }));
+  };
+  // Settings opens for the first time while sharing is on its way: its list read leaves.
+  const { QueryObserver } = await import('@tanstack/query-core');
+  const settings = new QueryObserver(client, sharesQuery);
+  const stop = settings.subscribe(() => {});
+  await delay(0);
+  const { sent, since } = sending();
+  const kept = keepAnswer(client, 'cedar', link(), sent, since);
+  // The first read lands after the change answered: it left before the change.
+  releaseFirst();
+  await kept;
+  await delay(10);
+  stop();
+  client.clear();
+  assert.equal(listReads, 2);
+});

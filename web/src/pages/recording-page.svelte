@@ -16,6 +16,7 @@
     cachedLinks,
     isProcessing,
     peopleQuery,
+    rereadLinks,
     send,
     shareQuery,
     transcript,
@@ -157,13 +158,17 @@
         // The links Trash deletes: those this page or Settings held as it went out, not one
         // read after it (another tab may have restored and shared again by then).
         const deleted = cachedLinks(qc, id);
-        await api(`/v1/entries/${id}/trash`, send('POST'));
-        // Gone for every reader, Settings' list too.
-        for (const link of deleted) forget(link.url);
-        await refresh();
-        // Asked again rather than dropped: a read may already have a link made since.
-        qc.invalidateQueries({ queryKey: ['share', id] });
-        await qc.invalidateQueries({ queryKey: ['shares'] });
+        try {
+          await api(`/v1/entries/${id}/trash`, send('POST'));
+          // Gone for every reader, Settings' list too.
+          for (const link of deleted) forget(link.url);
+          await refresh();
+        } finally {
+          // Asked again rather than dropped, whether or not it worked: a read may already have a
+          // link made since, and a Trash that failed may have gone through. Not waited for, so a
+          // failure shows without waiting on reads that may fail too.
+          void rereadLinks(qc, id);
+        }
         router.navigate('/');
       },
     });

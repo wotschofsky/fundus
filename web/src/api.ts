@@ -227,14 +227,23 @@ export async function keepAnswer(
   if (value) confirm(value.url, since);
   // A read still under way would land after this and bring back what was just changed.
   await client.cancelQueries({ queryKey: ['share', id] });
-  if (landed === sent) {
-    landed++;
-    client.setQueryData(['share', id], value);
-  }
+  // Every answer counts as it lands, shown or not: another change's answer, sent before this one
+  // landed, may be the older one at the server.
+  const fresh = landed === sent;
+  landed++;
+  if (fresh) client.setQueryData(['share', id], value);
   // Shown at once if nothing newer landed, and read again either way: another change may have
-  // committed after this one, or its own read have been cancelled just above.
-  await client.invalidateQueries({ queryKey: ['share', id] });
-  return client.invalidateQueries({ queryKey: ['shares'] });
+  // committed after this one.
+  return rereadLinks(client, id);
+}
+/** Reads the recording's link and Settings' list again after a change to the recording's links,
+ * whether or not it worked: one that failed may have gone through before its answer was lost. A
+ * read still under way left before the change, so it is cancelled rather than kept: the cache
+ * would wait for a first read (one with no answer yet) instead of reading again. */
+export async function rereadLinks(client: QueryClient, id: string) {
+  const keys = [['share', id], ['shares']];
+  await Promise.all(keys.map((queryKey) => client.cancelQueries({ queryKey })));
+  await Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })));
 }
 /** The token at the end of a link's URL, which names the link when it is changed or stopped. */
 export const linkToken = (share: Pick<Share, 'url'>) =>
