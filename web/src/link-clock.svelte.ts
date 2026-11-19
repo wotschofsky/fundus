@@ -5,7 +5,8 @@ import { SvelteMap } from 'svelte/reactivity';
  * token never works again once it is gone, so no page offers these, even before it hears what
  * (if anything) replaced them; `confirm` corrects one a racing read took for gone. */
 const dead = new SvelteMap<string, number>();
-/** This page's share events, in order: each link taken for gone and each read that leaves. */
+/** This page's share events, in order: each link taken for gone and each read or change that
+ * leaves. */
 let moment = 0;
 /** This link is gone (stopped, deleted by Trash, answered 404, or no longer read back). */
 export const forget = (url: string) => {
@@ -25,7 +26,8 @@ export function confirm(url: string, since: number) {
 /** For each link, when the latest read or change answered with it working left. */
 const seen = new Map<string, number>();
 /** A read that left at `since` no longer had this link: it is gone, unless a read or change that
- * left after it was answered with the link working (this one, slower, raced that answer). */
+ * left after it was answered with the link working. Either answer may be the newer one at the
+ * server; the link stays offered until the page's next read settles it. */
 export function missing(url: string, since: number) {
   if ((seen.get(url) ?? 0) < since) forget(url);
 }
