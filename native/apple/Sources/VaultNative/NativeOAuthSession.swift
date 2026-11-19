@@ -275,34 +275,34 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         return try VaultConnection(server: origin, token: current.accessToken, nativeOwner: true)
     }
     private func refresh(_ credentials: NativeOAuthCredentials) async throws -> NativeOAuthCredentials {
-        if let running = refreshes[credentials.server] { return try await running.value }
-        // A sign-in while this refresh was under way stored a newer grant: that one stands,
-        // whether this refresh of the old grant succeeds or is refused.
+        // A sign-in while this refresh was under way stored a newer grant: that one stands, whether
+        // this refresh of the old grant succeeds or is refused, checked again as each caller resumes.
         let newer = { [self] in (try? stored(credentials.server)).flatMap { $0.refreshToken == credentials.refreshToken ? nil : $0 } }
-        let task = Task { () throws -> NativeOAuthCredentials in
-            do {
-                let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
-                    "grant_type": "refresh_token", "client_id": credentials.clientID,
-                    "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
-                ])
-                let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
-                try Task.checkCancellation()
-                if let current = newer() { return current }
-                try store(updated)
-                return updated
-            } catch {
-                if let current = newer() { return current }
-                throw error
-            }
+        let task = refreshes[credentials.server] ?? Task { () throws -> NativeOAuthCredentials in
+            let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
+                "grant_type": "refresh_token", "client_id": credentials.clientID,
+                "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
+            ])
+            let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
+            try Task.checkCancellation()
+            if let current = newer() { return current }
+            try store(updated)
+            return updated
         }
         refreshes[credentials.server] = task
-        defer { refreshes[credentials.server] = nil }
+        defer { if refreshes[credentials.server] == task { refreshes[credentials.server] = nil } }
         do {
             let updated = try await task.value
             if server == credentials.server { isConnected = true; lastError = nil }
             return updated
+        } catch {
+            if let current = newer() {
+                if server == credentials.server { isConnected = true; lastError = nil }
+                return current
+            }
+            if server == credentials.server { isConnected = false }
+            throw error
         }
-        catch { if server == credentials.server { isConnected = false }; throw error }
     }
 
     public func request(_ path: String, method: String = "GET", json: [String: Any]? = nil) async throws -> URLRequest {
@@ -334,18 +334,22 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         } else { origin = server }
         let selected = origin == server
         if selected { cancelSignIn() }
-        if let credentials = try? stored(origin) {
-            _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
-        }
+        // Forgotten here before the revoke request: a sign-in finishing while it is under way keeps
+        // the grant it stored.
+        let credentials = try? stored(origin)
         refreshes[origin]?.cancel()
         refreshes[origin] = nil
         try? storage.remove(server: origin)
         cached[origin] = nil
-        guard selected else { return }
-        isConnected = false
-        server = ""
-        lastError = nil
-        preferences.removeObject(forKey: Self.preference)
+        if selected {
+            isConnected = false
+            server = ""
+            lastError = nil
+            preferences.removeObject(forKey: Self.preference)
+        }
+        if let credentials {
+            _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
+        }
     }
 
     private func oauth(server: String, path: String, json: [String: Any]? = nil, form: [String: String]? = nil) async throws -> [String: Any] {

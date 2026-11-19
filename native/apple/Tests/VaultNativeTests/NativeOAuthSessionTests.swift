@@ -63,10 +63,32 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
-/// Registration and code exchange answer at once; a refresh answers only after a delay, and
-/// refuses the old grant while `failRefresh` is set.
+/// Registration and code exchange answer at once. A refresh or revoke is held (`held`) until
+/// `releaseAt` code exchanges have been answered, so a test can finish a sign-in in between;
+/// a refresh refuses the old grant while `failRefresh` is set.
 private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
     static let failRefresh = Mutex(false)
+    /// Each code exchange issues a grant of its own.
+    static let exchanges = Mutex(0)
+    static let releaseAt = Mutex(1)
+    static let held = Mutex<[String]>([])
+    static func reset(releaseAt count: Int) {
+        exchanges.withLock { $0 = 0 }
+        releaseAt.withLock { $0 = count }
+        held.withLock { $0 = [] }
+    }
+    /// Returns once a request for `path` is being held.
+    static func holding(_ path: String) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !held.withLock({ $0.contains(path) }) {
+            guard Date() < deadline else { throw URLError(.timedOut) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+    private static func answer(_ deliver: @escaping @Sendable () -> Void, deadline: Date) {
+        if exchanges.withLock({ $0 }) >= releaseAt.withLock({ $0 }) || Date() > deadline { deliver() }
+        else { DispatchQueue.global().asyncAfter(deadline: .now() + 0.005) { answer(deliver, deadline: deadline) } }
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -78,16 +100,25 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
             while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 { body.append(buffer, count: count) }
         }
         let url = request.url!, refresh = String(decoding: body, as: UTF8.self).contains("grant_type=refresh_token")
+        let revoke = url.path == "/oauth/revoke"
+        let grant = Self.exchanges.withLock { count in
+            if url.path == "/oauth/token" && !refresh { count += 1 }
+            return count > 1 ? "-\(count)" : ""
+        }
         let reply = url.path == "/oauth/register" ? #"{"client_id":"synthetic-new-client"}"#
+            : revoke ? "{}"
             : refresh ? #"{"access_token":"oa_synthetic-old-rotated","refresh_token":"synthetic-old-rotated","expires_in":3600,"scope":"vault:owner"}"#
-            : #"{"access_token":"oa_synthetic-new","refresh_token":"synthetic-new-refresh","expires_in":3600,"scope":"vault:owner"}"#
+            : #"{"access_token":"oa_synthetic-new\#(grant)","refresh_token":"synthetic-new-refresh\#(grant)","expires_in":3600,"scope":"vault:owner"}"#
         let refused = refresh && Self.failRefresh.withLock { $0 }
-        let deliver = { [self] in
+        let deliver: @Sendable () -> Void = { [self] in
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: refused ? 400 : 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data((refused ? #"{"error":"invalid_grant"}"# : reply).utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
-        if refresh { DispatchQueue.global().asyncAfter(deadline: .now() + 0.15, execute: deliver) } else { deliver() }
+        if refresh || revoke {
+            Self.held.withLock { $0.append(url.path) }
+            Self.answer(deliver, deadline: Date().addingTimeInterval(5))
+        } else { deliver() }
     }
     override func stopLoading() {}
 }
@@ -185,6 +216,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         }
     }
     func testARefreshFinishingAfterANewSignInKeepsTheNewGrant() async throws {
+        ReconnectMockProtocol.reset(releaseAt: 1)
         let origin = "https://vault.example.com"
         let storage = MemoryNativeCredentials()
         storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
@@ -195,7 +227,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
         // An upload starts refreshing the old grant, and the owner connects again before it answers.
         async let refreshing = session.connection(for: origin)
-        try await Task.sleep(for: .milliseconds(30))
+        try await ReconnectMockProtocol.holding("/oauth/token")
         try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
             URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
         }
@@ -205,6 +237,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(current.token, "oa_synthetic-new")
     }
     func testARefreshFailingAfterANewSignInKeepsTheNewGrantConnected() async throws {
+        ReconnectMockProtocol.reset(releaseAt: 1)
         ReconnectMockProtocol.failRefresh.withLock { $0 = true }
         defer { ReconnectMockProtocol.failRefresh.withLock { $0 = false } }
         let origin = "https://vault.example.com"
@@ -217,7 +250,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
         // The old grant's refresh is refused only after the owner has connected again.
         async let refreshing = session.connection(for: origin)
-        try await Task.sleep(for: .milliseconds(30))
+        try await ReconnectMockProtocol.holding("/oauth/token")
         try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
             URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
         }
@@ -225,6 +258,30 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(connection.token, "oa_synthetic-new")
         XCTAssertTrue(session.isConnected)
         XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh")
+    }
+    func testASlowDisconnectDoesNotEraseASignInThatFinishesFirst() async throws {
+        ReconnectMockProtocol.reset(releaseAt: 2)
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+        let connect = {
+            try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
+                URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
+            }
+        }
+        try await connect()
+        // The revoke request is slow; the owner connects again before it answers.
+        async let disconnecting: Void = session.signOut()
+        try await ReconnectMockProtocol.holding("/oauth/revoke")
+        try await connect()
+        await disconnecting
+        XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh-2")
+        XCTAssertEqual(session.server, origin)
+        XCTAssertTrue(session.isConnected)
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()

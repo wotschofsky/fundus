@@ -351,7 +351,12 @@ public struct QueueState: Codable, Sendable {
             let (data, response) = try await send(head); try Task.checkCancellation(); try VaultConnection.check(response, data)
             guard let offset = Int64((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Upload-Offset") ?? ""), offset <= snapshot.files[index].length else { throw failure("Invalid upload offset.") }
             snapshot.files[index].offset = offset
-            if offset == snapshot.files[index].length { snapshot.files[index].state = "uploaded"; save(); continue }
+            // The last chunk's file goes once the server confirms it all, not when a chunk upload
+            // finishes: a finish reported late (after a relaunch) would delete the next chunk's file.
+            if offset == snapshot.files[index].length {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent("chunk-\(snapshot.files[index].id)"))
+                snapshot.files[index].state = "uploaded"; save(); continue
+            }
             let file = try FileHandle(forReadingFrom: folder.appendingPathComponent(snapshot.files[index].prepared!))
             defer { try? file.close() }
             try file.seek(toOffset: UInt64(offset))
@@ -655,7 +660,10 @@ public struct QueueState: Codable, Sendable {
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
             #if os(iOS)
-            // After a relaunch nothing was sent by this process: the finished chunk is the queue's.
+            // A chunk Pause or Clear cancelled is not the queue's to act on (after a force quit, the
+            // relaunch restarts the queue). After a relaunch nothing was sent by this process, so a
+            // chunk that finished is the queue's.
+            if (error as? URLError)?.code == .cancelled { return }
             if let sent = self.sentChunk, sent != taskID { return }
             #endif
             let batch = self.snapshot.importID
@@ -680,7 +688,6 @@ public struct QueueState: Codable, Sendable {
                 self.retriedChunk = nil
                 #endif
                 try VaultConnection.check(response, data)
-                try? FileManager.default.removeItem(at: self.folder.appendingPathComponent("chunk-\(itemID)"))
                 self.start()
             } catch {
                 // Paused, or another batch or chunk sent, while refreshing.
