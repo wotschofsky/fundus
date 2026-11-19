@@ -3,7 +3,7 @@
   import { createQuery, keepPreviousData } from '@tanstack/svelte-query';
   import { Download } from '@lucide/svelte';
   import { gone, isProcessing, shared, type Segment, type SharedEntry } from '../api';
-  import { dateTime, downloadTranscript, duration, speakerNames } from '../format';
+  import { dateTime, downloadTranscript, duration, speakerNames, startAt } from '../format';
   import { Playback } from '../playback.svelte';
   import EmptyState from '../components/empty-state.svelte';
   import ErrorNotice from '../components/error-notice.svelte';
@@ -40,7 +40,7 @@
   // A name read with the transcript's turns wins over the recording's, as it matches them.
   const names = $derived(speakerNames(entry.data?.speakers, rows));
   // A link can point at a moment, like a search result's: `?t=` in seconds.
-  const startMs = Number(new URLSearchParams(location.search).get('t')) * 1000 || 0;
+  const startMs = startAt(new URLSearchParams(location.search).get('t'));
   const playback = new Playback(
     () => rows,
     () => startMs,

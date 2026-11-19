@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { speakerNames } from '../src/format.ts';
+import { speakerNames, startAt } from '../src/format.ts';
 
 test("a transcript's own speaker names win over the recording's", () => {
   // The recording was read before the owner named speaker A and cleared B's name; its
@@ -20,4 +20,12 @@ test("a transcript's own speaker names win over the recording's", () => {
   assert.equal(names.get('C'), undefined);
   // Without the transcript, unnamed speakers are numbered.
   assert.equal(speakerNames(speakers).get('A'), 'Speaker 1');
+});
+
+test('a link to a moment starts there only for a time a player can seek to', () => {
+  assert.equal(startAt('12.5'), 12_500);
+  assert.equal(startAt(null), 0);
+  assert.equal(startAt('Infinity'), 0);
+  assert.equal(startAt('-5'), 0);
+  assert.equal(startAt('soon'), 0);
 });

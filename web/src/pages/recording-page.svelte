@@ -22,7 +22,7 @@
     type Person,
     type Segment,
   } from '../api';
-  import { dateTime, downloadTranscript, duration, speakerNames } from '../format';
+  import { dateTime, downloadTranscript, duration, speakerNames, startAt } from '../format';
   import { Playback } from '../playback.svelte';
   import { router } from '../router.svelte';
   import BackLink from '../components/back-link.svelte';
@@ -90,7 +90,7 @@
     return first;
   });
   const names = $derived(speakerNames(entry.data?.speakers));
-  const startMs = $derived(Number(router.url.searchParams.get('t')) * 1000 || 0);
+  const startMs = $derived(startAt(router.url.searchParams.get('t')));
   const playback = new Playback(
     () => rows,
     () => startMs,

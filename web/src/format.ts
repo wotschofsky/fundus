@@ -30,6 +30,12 @@ export function speakerNames(
   return names;
 }
 
+/** Where a link to a moment (`?t=`, in seconds) starts, in ms: only a time a player can seek to. */
+export const startAt = (t: string | null) => {
+  const s = Number(t);
+  return Number.isFinite(s) && s > 0 ? s * 1000 : 0;
+};
+
 export const duration = (ms: number) => {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
