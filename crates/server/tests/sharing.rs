@@ -629,3 +629,66 @@ async fn a_change_or_stop_for_an_old_link_leaves_its_replacement_alone() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// Sharing and changing an expiry answer only once the change is saved: a commit that fails
+/// after the statement has produced its row is a failure, not a link that was never stored.
+#[tokio::test]
+async fn a_change_that_fails_to_commit_is_not_reported_as_saved() {
+    let v = setup().await;
+    // A check that SQLite runs only at commit, after the statement has returned its row.
+    for sql in [
+        "CREATE TABLE refused (x TEXT REFERENCES nowhere(id) DEFERRABLE INITIALLY DEFERRED)",
+        "CREATE TABLE nowhere (id TEXT PRIMARY KEY)",
+        "CREATE TRIGGER refuse_insert AFTER INSERT ON shares BEGIN INSERT INTO refused VALUES ('x'); END",
+        "CREATE TRIGGER refuse_update AFTER UPDATE ON shares BEGIN INSERT INTO refused VALUES ('x'); END",
+    ] {
+        sqlx::query(sql).execute(&v.app.db).await.unwrap();
+    }
+    let (status, _, _) = call(
+        &v,
+        "PUT",
+        "/api/v1/entries/cedar/share",
+        Some(&v.owner),
+        &[],
+        Some(json!({"expires":"7d"})),
+    )
+    .await;
+    assert!(status.is_server_error(), "{status}");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares")
+        .fetch_one(&v.app.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    // A link saved before the check, then changed.
+    sqlx::query("DROP TRIGGER refuse_insert")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    sqlx::query("DROP TRIGGER refuse_update")
+        .execute(&v.app.db)
+        .await
+        .unwrap();
+    let link = share(&v, "1d").await;
+    sqlx::query(
+        "CREATE TRIGGER refuse_update AFTER UPDATE ON shares BEGIN INSERT INTO refused VALUES ('x'); END",
+    )
+    .execute(&v.app.db)
+    .await
+    .unwrap();
+    let (status, _, _) = call(
+        &v,
+        "PATCH",
+        "/api/v1/entries/cedar/share",
+        Some(&v.owner),
+        &[],
+        Some(json!({"expires":"never","token":token(&link)})),
+    )
+    .await;
+    assert!(status.is_server_error(), "{status}");
+    let expires: Option<String> = sqlx::query_scalar("SELECT expires_at FROM shares")
+        .fetch_one(&v.app.db)
+        .await
+        .unwrap();
+    assert!(expires.is_some());
+}

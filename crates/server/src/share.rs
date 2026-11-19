@@ -104,8 +104,11 @@ pub async fn save(
         now,
         expires_at
     )
-    .fetch_optional(&app.db)
-    .await?;
+    // Read to the end, not just the first row: the change commits after the row is returned, and
+    // a commit that fails must not be answered as saved.
+    .fetch_all(&app.db)
+    .await?
+    .pop();
     let Some(r) = saved else {
         retrieval::get_including_trash(&app, &id).await?;
         return Err(Error::conflict(
@@ -143,8 +146,10 @@ pub async fn extend(
         p.token,
         expires_at
     )
-    .fetch_optional(&app.db)
+    // To the end, as in `save`, so a failed commit is not answered as saved.
+    .fetch_all(&app.db)
     .await?
+    .pop()
     .ok_or_else(Error::not_found)?;
     Ok(Json(
         json!({"url":url(&app,&r.token),"created_at":r.created_at,"expires_at":r.expires_at}),
