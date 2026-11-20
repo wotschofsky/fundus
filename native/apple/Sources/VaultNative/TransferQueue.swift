@@ -595,9 +595,16 @@ public struct QueueState: Codable, Sendable {
         if let tokenOverride { return try VaultConnection(server: snapshot.server, token: tokenOverride) }
         return try await NativeVaultSession.connection(server: snapshot.server, forceRefresh: forceRefresh)
     }
-    /// `original` addressed and authorised with the current connection.
-    private func authorized(_ original: URLRequest, forceRefresh: Bool = false) async throws -> URLRequest {
-        let connection = try await connection(forceRefresh: forceRefresh)
+    /// The current connection, refreshed if `rejected` (a bearer a 401 answered) is still its token:
+    /// after a reconnect, the newer grant's token is simply used.
+    @discardableResult private func connection(replacing rejected: String?) async throws -> VaultConnection {
+        let connection = try await connection()
+        guard let rejected, rejected == "Bearer \(connection.token)" else { return connection }
+        return try await self.connection(forceRefresh: true)
+    }
+    /// `original` addressed and authorised with the current connection, past a `rejected` bearer.
+    private func authorized(_ original: URLRequest, rejected: String? = nil) async throws -> URLRequest {
+        let connection = try await connection(replacing: rejected)
         guard let url = original.url else { throw failure("Invalid transfer address.") }
         var request = original
         request.url = try connection.request(url.absoluteString, method: request.httpMethod ?? "GET").url
@@ -607,8 +614,10 @@ public struct QueueState: Codable, Sendable {
     /// Sends `original`; a 401 refreshes the connection once and sends it again.
     private func send(_ original: URLRequest, file: URL? = nil) async throws -> (Data, URLResponse) {
         if let requestOverride { return try await requestOverride(original, file) }
+        var rejected: String?
         for attempt in 0...1 {
-            let request = try await authorized(original, forceRefresh: attempt > 0)
+            let request = try await authorized(original, rejected: rejected)
+            rejected = request.value(forHTTPHeaderField: "Authorization")
             let result: (Data, URLResponse)
             if let file { result = try await foregroundSession.upload(for: request, fromFile: file) }
             else { result = try await foregroundSession.data(for: request) }
@@ -656,15 +665,16 @@ public struct QueueState: Codable, Sendable {
     }
     nonisolated public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         let taskID = task.taskIdentifier, itemID = task.taskDescription, response = task.response
+        let bearer = task.originalRequest?.value(forHTTPHeaderField: "Authorization")
         Task { @MainActor in
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
             #if os(iOS)
-            // A chunk this app cancelled (Pause, then Resume before this arrives) is not the queue's
-            // to act on. One iOS cancelled (no background updates, low resources, force quit) carries
-            // a reason and fails the queue below, resumably. After a relaunch nothing was sent by this
-            // process, so a chunk that finished is the queue's.
-            if let cancelled = error as? URLError, cancelled.code == .cancelled, cancelled.backgroundTaskCancelledReason == nil { return }
+            // A chunk this app cancelled (Pause, then Resume before this arrives) is left to the resumed
+            // runner at work. Any other cancellation of the current chunk (by iOS, or Pause's late
+            // cancel reaching a chunk Resume already sent) fails the queue below, resumably. After a
+            // relaunch nothing was sent by this process, so a chunk that finished is the queue's.
+            if let cancelled = error as? URLError, cancelled.code == .cancelled, cancelled.backgroundTaskCancelledReason == nil, self.runner != nil { return }
             if let sent = self.sentChunk, sent != taskID { return }
             #endif
             let batch = self.snapshot.importID
@@ -680,7 +690,7 @@ public struct QueueState: Codable, Sendable {
                     let awake = StayAwake()
                     defer { awake.end() }
                     // HEAD reconciles the offset, then the chunk goes out again with the refreshed token.
-                    _ = try await self.connection(forceRefresh: true)
+                    try await self.connection(replacing: bearer)
                     guard self.snapshot.state == "uploading", self.snapshot.importID == batch,
                           self.sentChunk == nil || self.sentChunk == taskID else { return }
                     self.start()
@@ -698,7 +708,14 @@ public struct QueueState: Codable, Sendable {
                 if let sent = self.sentChunk, sent != taskID { return }
                 if self.runner != nil { return }
                 #endif
-                self.snapshot.state = "failed"; self.snapshot.error = error.localizedDescription; self.save()
+                #if os(iOS)
+                let message = (error as? URLError)?.code == .cancelled ? "iOS stopped the upload. Resume to continue." : error.localizedDescription
+                #else
+                let message = error.localizedDescription
+                #endif
+                self.snapshot.state = "failed"
+                self.snapshot.error = message
+                self.save()
             }
         }
     }

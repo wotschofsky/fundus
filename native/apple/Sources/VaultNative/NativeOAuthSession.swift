@@ -288,7 +288,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             try Task.checkCancellation()
             // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.
             guard (try? stored(credentials.server))?.refreshToken == credentials.refreshToken else { return updated }
-            try store(updated)
+            // Held in memory before Keychain is written: the server has retired the old token, so
+            // this process never redeems it again even if the write fails (the next rotation is
+            // written again).
+            cached[credentials.server] = updated
+            try? storage.save(updated)
             return updated
         }
         refreshes[key] = task

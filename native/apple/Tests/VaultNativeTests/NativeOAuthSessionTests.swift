@@ -7,8 +7,13 @@ import XCTest
 
 @MainActor private final class MemoryNativeCredentials: NativeCredentialStorage {
     var values: [String: NativeOAuthCredentials] = [:]
+    /// Saving fails, as Keychain does when it cannot be written.
+    var failSaves = false
     func read(server: String) -> NativeOAuthCredentials? { values[server] }
-    func save(_ credentials: NativeOAuthCredentials) { values[credentials.server] = credentials }
+    func save(_ credentials: NativeOAuthCredentials) throws {
+        if failSaves { throw CocoaError(.fileWriteUnknown) }
+        values[credentials.server] = credentials
+    }
     func remove(server: String) { values[server] = nil }
 }
 private actor NativeOAuthMockServer {
@@ -313,6 +318,23 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         _ = try await underNewGrant
         XCTAssertTrue(session.isConnected)
         XCTAssertNotEqual(storage.values[origin]?.refreshToken, "synthetic-old-refresh")
+    }
+    func testARotationThatCannotBeSavedIsStillUsedNotRedeemedAgain() async throws {
+        await NativeOAuthMockProtocol.server.reset()
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        storage.failSaves = true
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NativeOAuthMockProtocol.self]
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration))
+        // The server rotated the token; reusing the old one would revoke the whole grant.
+        let first = try await session.connection(for: origin)
+        XCTAssertEqual(first.token, "oa_synthetic-next")
+        let again = try await session.connection(for: origin)
+        XCTAssertEqual(again.token, "oa_synthetic-next")
+        let refreshes = await NativeOAuthMockProtocol.server.count()
+        XCTAssertEqual(refreshes, 1)
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
