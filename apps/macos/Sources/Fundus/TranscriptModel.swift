@@ -193,8 +193,9 @@ final class TranscriptModel {
         defer { isUpdatingSpeaker = false }
         do {
             try await library.assign(person, to: label, in: entryID, locked: locked)
-            await refresh()
+            // Cleared before the refresh, so a failure of that refresh stays on screen.
             actionError = nil
+            await refresh()
         } catch {
             actionError = "Could not save the change: \(error.localizedDescription)"
         }
