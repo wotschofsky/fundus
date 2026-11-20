@@ -66,18 +66,26 @@
     // Also while the video is being prepared, which goes on after the transcript is done.
     refetchInterval: ({ state: { data } }) =>
       data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
+    // Asked again on every visit, as the undo state's own read was: a correction made in another
+    // tab can be undone on coming back.
+    staleTime: 0,
   }));
   const people = createQuery(() => peopleQuery);
   const share = createQuery(() => shareQuery(id));
   // The page shows once all it holds has been read, not in a second step: the Share button and
   // speakers' names read the link and people. Each keeps its answer through later reads. Those two
   // hold the page only on their first try: offline, or trying again after failing, they wait for
-  // the network, the recording does not.
+  // the network, the recording does not. Once shown, the page stays: a read that asks again later
+  // (back online, say) never takes it away from someone editing it.
   const firstTry = (q: { isLoading: boolean; failureCount: number }) =>
     q.isLoading && q.failureCount === 0;
+  let shown = $state(false);
   const loading = $derived(
-    (entry.isPending || firstTry(share) || firstTry(people)) && !entry.error,
+    !shown && (entry.isPending || firstTry(share) || firstTry(people)) && !entry.error,
   );
+  $effect(() => {
+    if (!loading && entry.data) shown = true;
+  });
   const clock = new LinkClock(
     () => [share.data?.expires_at],
     // A fresh read: one already under way may have left before the link lapsed.
@@ -95,8 +103,10 @@
   });
   const names = $derived(speakerNames(entry.data?.speakers));
   const startMs = $derived(startAt(router.url.searchParams.get('t')));
+  // The rows once they are on the page, so a search link's passage is revealed where it can be
+  // scrolled to.
   const playback = new Playback(
-    () => rows,
+    () => (loading ? [] : rows),
     () => startMs,
   );
 
