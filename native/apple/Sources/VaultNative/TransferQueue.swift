@@ -124,15 +124,6 @@ public struct QueueState: Codable, Sendable {
     }
     private var journal: URL { folder.appendingPathComponent("queue.json") }
     private func save() { do { try JSONEncoder().encode(snapshot).write(to: journal, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]); let handle = try FileHandle(forWritingTo: journal); try handle.synchronize(); try handle.close() } catch { snapshot.error = "Could not save the transfer queue: \(error.localizedDescription)"; snapshot.state = "failed" } }
-    #if os(macOS)
-    public func configure(server: String, token: String, timezone: String) throws {
-        guard ["idle", "verified"].contains(snapshot.state) || server == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
-        _ = try VaultConnection(server: server, token: token)
-        guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
-        try VaultCredentials.save(token)
-        snapshot.server = server; snapshot.timezone = timezone; save()
-    }
-    #endif
     /// Stops sending uploads anywhere until a vault is configured again, as when the Mac
     /// disconnects from the vault the queue uploads to.
     public func forgetServer() throws {

@@ -969,40 +969,39 @@ mod tests {
     #[tokio::test]
     async fn voice_splits_require_owner_access_and_analysis_failures_leave_no_changes() {
         let (_dir, app) = fixture().await;
-        for scope in ["read", "upload"] {
-            let access = || {
-                Extension(Access {
-                    scope: scope.into(),
+        // An MCP client's read grant.
+        let access = || {
+            Extension(Access {
+                scope: "read".into(),
+            })
+        };
+        assert_eq!(
+            preview(
+                State(app.clone()),
+                access(),
+                Path("e".into()),
+                Json(Request {
+                    speaker: "A".into(),
+                    not_segment_id: None,
                 })
-            };
-            assert_eq!(
-                preview(
-                    State(app.clone()),
-                    access(),
-                    Path("e".into()),
-                    Json(Request {
-                        speaker: "A".into(),
-                        not_segment_id: None,
-                    })
-                )
-                .await
-                .unwrap_err()
-                .0,
-                StatusCode::FORBIDDEN
-            );
-            assert_eq!(
-                apply(
-                    State(app.clone()),
-                    access(),
-                    Path(("e".into(), "review".into())),
-                    Json(choice(0))
-                )
-                .await
-                .unwrap_err()
-                .0,
-                StatusCode::FORBIDDEN
-            );
-        }
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            apply(
+                State(app.clone()),
+                access(),
+                Path(("e".into(), "review".into())),
+                Json(choice(0))
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::FORBIDDEN
+        );
         assert_eq!(
             preview(
                 State(app.clone()),
@@ -1073,27 +1072,26 @@ mod tests {
     async fn undo_requires_owner_access() {
         let (_dir, app) = fixture().await;
         let _ = accept(&app, choice(0)).await.unwrap();
-        for scope in ["read", "upload"] {
-            let access = || {
-                Extension(Access {
-                    scope: scope.into(),
-                })
-            };
-            assert_eq!(
-                undo(State(app.clone()), access(), Path("e".into()))
-                    .await
-                    .unwrap_err()
-                    .0,
-                StatusCode::FORBIDDEN
-            );
-            assert_eq!(
-                undo_status(State(app.clone()), access(), Path("e".into()))
-                    .await
-                    .unwrap_err()
-                    .0,
-                StatusCode::FORBIDDEN
-            );
-        }
+        // An MCP client's read grant.
+        let access = || {
+            Extension(Access {
+                scope: "read".into(),
+            })
+        };
+        assert_eq!(
+            undo(State(app.clone()), access(), Path("e".into()))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            undo_status(State(app.clone()), access(), Path("e".into()))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
         assert!(available(&app).await);
     }
     async fn notes_mock(

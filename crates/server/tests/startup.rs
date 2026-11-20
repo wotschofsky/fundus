@@ -43,8 +43,12 @@ fn proxy_mode_serves_only_with_access_settings_but_other_commands_run_without_th
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("VAULT_ACCESS_TEAM_DOMAIN") && stderr.contains("VAULT_ACCESS_AUD"));
     assert!(!unserved.exists());
-    // Making a token checks no sign-in, so it needs no Access settings, e.g. while upgrading.
-    let output = command(&dir.path().join("data"), &["token", "--name", "reader"]);
+    // A backup checks no sign-in, so it needs no Access settings, e.g. while upgrading.
+    let backup = dir.path().join("backup");
+    let output = command(
+        &dir.path().join("data"),
+        &["backup", backup.to_str().unwrap()],
+    );
     assert!(
         output.status.success(),
         "{}",

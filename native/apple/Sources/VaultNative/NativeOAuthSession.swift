@@ -270,10 +270,6 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     func connection(for supplied: String, forceRefresh: Bool = false) async throws -> VaultConnection {
         let origin = try Self.origin(supplied)
         guard let credentials = try stored(origin) else {
-            #if os(macOS)
-            // The Mac's upload-token fallback, until upload tokens are removed.
-            if let token = VaultCredentials.read(), !token.isEmpty { return try VaultConnection(server: origin, token: token) }
-            #endif
             throw NativeOAuthFailure.message("Connect this app to your vault first.")
         }
         guard credentials.server == origin else {
@@ -281,7 +277,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         }
         let current = !forceRefresh && credentials.expiresAt.timeIntervalSinceNow > 60
             ? credentials : try await refresh(credentials)
-        return try VaultConnection(server: origin, token: current.accessToken, nativeOwner: true)
+        return try VaultConnection(server: origin, token: current.accessToken)
     }
     private func refresh(_ credentials: NativeOAuthCredentials) async throws -> NativeOAuthCredentials {
         // One refresh per refresh token: every caller holding that token waits on it, so it is
@@ -347,7 +343,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         guard !server.isEmpty else { throw NativeOAuthFailure.message("Connect this app to your vault first.") }
         var connection = try await connection(for: server)
         var result = try await session.data(for: connection.request(path, method: method, json: body))
-        if (result.1 as? HTTPURLResponse)?.statusCode == 401, connection.nativeOwner {
+        if (result.1 as? HTTPURLResponse)?.statusCode == 401 {
             connection = try await self.connection(for: server, forceRefresh: true)
             result = try await session.data(for: connection.request(path, method: method, json: body))
         }

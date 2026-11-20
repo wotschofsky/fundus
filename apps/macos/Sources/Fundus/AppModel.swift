@@ -24,7 +24,9 @@ final class AppModel {
     /// recorder list does not redraw while a file uploads.
     private(set) var transfer: QueueState
     private(set) var transferState: String
-    /// The vault uploads go to; can differ from `server` (the library shown) for token-only setups.
+    /// The vault uploads go to, as the queue saved it. It can differ from `server` (the library
+    /// shown): an upload-token setup saved the address as typed, and a sign-in that finishes
+    /// mid-import opens its own vault.
     private(set) var uploadServer: String
     private(set) var hasUploads: Bool
     private(set) var isCopyingSources = false
@@ -90,7 +92,7 @@ final class AppModel {
         sources.start(timezone: transfer.timezone)
         guard !transfer.server.isEmpty else { return }
         profiles.remember(transfer.server)
-        // The session restores the last vault by itself; only an upload-token setup needs selecting.
+        // Uploads go to the queue's vault: open that one if the session restored another, or none.
         if !(native.isConnected && native.server == transfer.server) { try? await native.use(server: transfer.server) }
     }
 

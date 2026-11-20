@@ -37,15 +37,13 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
             ])
             .with_cancellation_token(shutdown),
     );
-    let mcp = Router::new()
-        .nest_service("/mcp", service)
-        .route_layer(middleware::from_fn(read_only))
-        .route_layer(middleware::from_fn_with_state(
-            app.clone(),
-            oauth::require_mcp,
-        ));
-    let transfers = transfer_routes("/api/v1")
-        .route_layer(middleware::from_fn_with_state(app.clone(), auth::require));
+    let mcp =
+        Router::new()
+            .nest_service("/mcp", service)
+            .route_layer(middleware::from_fn_with_state(
+                app.clone(),
+                oauth::require_mcp,
+            ));
     let protected = library_routes("/api/v1")
         .route(
             "/api/v1/oauth/authorize",
@@ -57,16 +55,14 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
             axum::routing::delete(oauth::disconnect),
         )
         .route("/api/v1/logout", post(logout))
-        .route("/api/v1/tokens", get(tokens).post(create_token))
-        .route("/api/v1/tokens/{id}", axum::routing::delete(revoke))
         // The web library's own uploads: the browser session, kept behind the proxy.
         .merge(transfer_routes("/api/web/v1"))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::require_browser,
         ));
-    // Installed clients use an OAuth-only namespace. Proxy trust and legacy
-    // upload/read credentials never authenticate these owner-capability routes.
+    // Installed clients use an OAuth-only namespace. Proxy trust and browser
+    // cookies never authenticate these owner-capability routes.
     let native = library_routes("/v1")
         .merge(transfer_routes("/v1"))
         .fallback(|| async { Error::not_found() })
@@ -90,7 +86,6 @@ pub fn router(app: App, shutdown: tokio_util::sync::CancellationToken) -> Router
         .route("/api/login", post(auth::login))
         .merge(oauth::public_router())
         .merge(protected)
-        .merge(transfers)
         .merge(mcp)
         .nest("/api/native", native)
         // Share links: public, and nothing under `/s` reaches the owner's routes.
@@ -178,12 +173,6 @@ fn transfer_routes(prefix: &str) -> Router<App> {
                 .options(uploads::options),
         )
 }
-async fn read_only(Extension(a): Extension<Access>, r: Request, n: middleware::Next) -> Response {
-    if let Err(e) = a.read() {
-        return e.into_response();
-    }
-    n.run(r).await
-}
 async fn security_headers(request: Request, next: middleware::Next) -> Response {
     let mut r = next.run(request).await;
     let h = r.headers_mut();
@@ -240,57 +229,12 @@ async fn logout(
     )
         .into_response())
 }
-#[derive(Deserialize)]
-struct TokenRequest {
-    name: String,
-    scope: String,
-}
-async fn create_token(
-    State(app): State<App>,
-    Extension(a): Extension<Access>,
-    Json(p): Json<TokenRequest>,
-) -> Result<Json<Value>> {
-    a.admin()?;
-    if !["upload", "read"].contains(&p.scope.as_str())
-        || p.name.trim().is_empty()
-        || p.name.len() > 100
-    {
-        return Err(Error::bad("Choose a name and an upload or read scope"));
-    }
-    Ok(Json(
-        json!({"token":auth::issue(&app,p.name.trim(),&p.scope).await?}),
-    ))
-}
-async fn tokens(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
-    a.admin()?;
-    let rows=sqlx::query!("SELECT hash AS \"hash!\",name,scope,created_at,last_used_at FROM credentials WHERE scope!='session' ORDER BY created_at DESC").fetch_all(&app.db).await?;
-    Ok(Json(
-        json!({"tokens":rows.iter().map(|r|json!({"id":r.hash.clone(),"name":r.name.clone(),"scope":r.scope.clone(),"created_at":r.created_at.clone(),"last_used_at":r.last_used_at.clone()})).collect::<Vec<_>>()}),
-    ))
-}
-async fn revoke(
-    State(app): State<App>,
-    Extension(a): Extension<Access>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    a.admin()?;
-    sqlx::query!(
-        "DELETE FROM credentials WHERE hash=? AND scope!='session'",
-        id
-    )
-    .execute(&app.db)
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
 async fn entries(
     State(app): State<App>,
     Extension(a): Extension<Access>,
     Query(f): Query<retrieval::Filters>,
 ) -> Result<Json<Value>> {
-    a.read()?;
-    if f.trash == Some(true) {
-        a.admin()?;
-    }
+    a.admin()?;
     Ok(Json(retrieval::list(&app, f).await?))
 }
 async fn entry(
@@ -298,7 +242,7 @@ async fn entry(
     Extension(a): Extension<Access>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    a.read()?;
+    a.admin()?;
     Ok(Json(retrieval::get(&app, &id).await?))
 }
 #[derive(Deserialize, Default)]
@@ -314,7 +258,7 @@ async fn read(
     Path(id): Path<String>,
     Query(p): Query<ReadQuery>,
 ) -> Result<Json<Value>> {
-    a.read()?;
+    a.admin()?;
     Ok(Json(
         retrieval::transcript(
             &app,
@@ -331,7 +275,7 @@ async fn read(
     ))
 }
 async fn labels(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
-    a.read()?;
+    a.admin()?;
     Ok(Json(retrieval::labels(&app).await?))
 }
 #[derive(Deserialize)]
@@ -347,10 +291,7 @@ async fn search(
     Extension(a): Extension<Access>,
     Query(p): Query<SearchQuery>,
 ) -> Result<Json<Value>> {
-    a.read()?;
-    if p.filters.trash == Some(true) {
-        a.admin()?;
-    }
+    a.admin()?;
     Ok(Json(
         retrieval::search(
             &app,
@@ -372,7 +313,7 @@ async fn audio_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
-    a.read()?;
+    a.admin()?;
     serve_media(&app, &id, r, false).await
 }
 async fn video_file(
@@ -381,7 +322,7 @@ async fn video_file(
     Path(id): Path<String>,
     r: Request,
 ) -> Result<Response> {
-    a.read()?;
+    a.admin()?;
     serve_media(&app, &id, r, true).await
 }
 /// A recording's playback file, with range requests for seeking. A video plays from the upload
@@ -669,7 +610,7 @@ async fn source_history(
     Extension(access): Extension<Access>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<Value>> {
-    access.read()?;
+    access.admin()?;
     let limit = query.limit.unwrap_or(500).clamp(1, 1000);
     let cursor = query.cursor.unwrap_or(0);
     let query_limit = i64::from(limit) + 1;
@@ -770,7 +711,7 @@ async fn delete_entry(
     Ok(StatusCode::NO_CONTENT)
 }
 async fn people(State(app): State<App>, Extension(a): Extension<Access>) -> Result<Json<Value>> {
-    a.read()?;
+    a.admin()?;
     let rows=sqlx::query!("SELECT p.id AS \"id!\",p.name,(SELECT COUNT(*) FROM voice_samples vs JOIN entries e ON e.id=vs.entry_id WHERE vs.person_id=p.id AND e.trashed_at IS NULL) AS samples FROM people p ORDER BY p.name").fetch_all(&app.db).await?;
     Ok(Json(
         json!({"people":rows.iter().map(|r|json!({"id":r.id.clone(),"name":r.name.clone(),"samples":r.samples})).collect::<Vec<_>>()}),

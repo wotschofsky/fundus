@@ -1003,24 +1003,6 @@ mark {
   overflow-wrap: anywhere;
   user-select: all;
 }
-.token-form {
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.token-form label:first-child {
-  flex: 1;
-  min-width: 140px;
-}
-.secret {
-  display: grid;
-  gap: 10px;
-  justify-items: start;
-}
-.secret .copy-field {
-  width: 100%;
-}
 .connection strong {
   font-weight: 500;
   overflow-wrap: anywhere;
@@ -1350,10 +1332,6 @@ dialog.share-dialog .access-body p {
   }
   .search-form input {
     font-size: 16px;
-  }
-  .token-form {
-    flex-direction: column;
-    align-items: stretch;
   }
   .trash-row,
   .person {

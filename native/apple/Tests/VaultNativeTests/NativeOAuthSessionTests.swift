@@ -199,7 +199,6 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(session.server, origin)
         XCTAssertTrue(session.isConnected)
         let connection = try await session.connection(for: origin)
-        XCTAssertTrue(connection.nativeOwner)
         XCTAssertEqual(try connection.request("/api/v1/uploads").url?.path, "/api/native/v1/uploads")
     }
 
@@ -436,7 +435,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         async let second = session.connection(for: "https://vault.example.com/")
         async let third = session.connection(for: "https://vault.example.com:443")
         let connections = try await [first, second, third]
-        XCTAssertTrue(connections.allSatisfy { $0.nativeOwner && $0.token == "oa_synthetic-next" })
+        XCTAssertTrue(connections.allSatisfy { $0.token == "oa_synthetic-next" })
         let count = await NativeOAuthMockProtocol.server.count()
         XCTAssertEqual(count, 1)
         XCTAssertEqual(storage.values["https://vault.example.com"]?.refreshToken, "synthetic-rotated")
@@ -468,13 +467,11 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
     }
 
     func testNativeRequestsUseDedicatedAudienceAndPreserveTusLocations() throws {
-        let connection = try VaultConnection(server: "https://vault.example.com", token: "oa_synthetic", nativeOwner: true)
+        let connection = try VaultConnection(server: "https://vault.example.com", token: "oa_synthetic")
         XCTAssertEqual(try connection.request("/api/v1/entries?limit=1").url?.absoluteString, "https://vault.example.com/api/native/v1/entries?limit=1")
         XCTAssertEqual(try connection.request("https://vault.example.com/api/native/v1/uploads/123", method: "HEAD").url?.path, "/api/native/v1/uploads/123")
         XCTAssertEqual(try connection.request("https://vault.example.com/api/v1/uploads/123", method: "HEAD").url?.path, "/api/native/v1/uploads/123")
         XCTAssertThrowsError(try connection.request("https://other.example/api/v1/entries"))
-        let legacy = try VaultConnection(server: "https://vault.example.com", token: "synthetic-upload")
-        XCTAssertEqual(try legacy.request("/api/v1/uploads").url?.path, "/api/v1/uploads")
     }
 
     func testAuthorizationResponseChecksStateIssuerAndDuplicateParameters() throws {
