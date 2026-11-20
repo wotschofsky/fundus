@@ -70,8 +70,11 @@
   const people = createQuery(() => peopleQuery);
   const share = createQuery(() => shareQuery(id));
   // The page shows once all it holds has been read, not in a second step: the Share button and
-  // speakers' names read the link and people. Each keeps its answer through later reads.
-  const loading = $derived([entry, share, people].some((q) => q.isPending) && !entry.error);
+  // speakers' names read the link and people. Each keeps its answer through later reads. Those two
+  // hold the page only while asking: offline, they wait for the network, the recording does not.
+  const loading = $derived(
+    (entry.isPending || share.isLoading || people.isLoading) && !entry.error,
+  );
   const clock = new LinkClock(
     () => [share.data?.expires_at],
     // A fresh read: one already under way may have left before the link lapsed.
