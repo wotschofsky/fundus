@@ -93,10 +93,12 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private let preferences: UserDefaults
     /// Refreshes under way, by the refresh token each redeems.
     private var refreshes: [String: Task<NativeOAuthCredentials, Error>] = [:]
-    /// Refresh tokens this process saw rotated or refused: never a usable grant again, whatever
-    /// Keychain still holds (a write or a removal it could not make).
+    /// Refresh tokens this process saw rotated, refused or signed out: never a usable grant again,
+    /// whatever Keychain still holds (a write or a removal it could not make).
     private var spent: Set<String> = []
-    /// Keychain reads are slow enough to matter on every request; the stored item stays the source of truth.
+    /// Keychain reads are slow enough to matter on every request, so Keychain is read only on a cache
+    /// miss. Within this process the cache is current: it holds a rotation Keychain could not save,
+    /// and a Keychain item holding a spent token is never loaded into it.
     private var cached: [String: NativeOAuthCredentials] = [:]
     private var login: Task<Void, Error>?
     private static let preference = "NativeVaultServer"
@@ -123,7 +125,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     }
 
     private func stored(_ server: String) throws -> NativeOAuthCredentials? {
-        if let credentials = cached[server] { return credentials }
+        if let credentials = cached[server] { return spent.contains(credentials.refreshToken) ? nil : credentials }
         guard let credentials = try storage.read(server: server), !spent.contains(credentials.refreshToken) else { return nil }
         cached[server] = credentials
         return credentials
@@ -306,7 +308,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
             // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.
-            guard (try? stored(credentials.server))?.refreshToken == credentials.refreshToken else { return updated }
+            guard cached[credentials.server]?.refreshToken == credentials.refreshToken else { return updated }
             // Held in memory before Keychain is written: the server has retired the old token, so
             // this process never redeems it again even if the write fails (the next rotation is
             // written again).
@@ -367,6 +369,8 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         if let credentials {
             refreshes[credentials.refreshToken]?.cancel()
             refreshes[credentials.refreshToken] = nil
+            // Never a grant again, even if Keychain cannot remove the item below.
+            spent.insert(credentials.refreshToken)
         }
         try? storage.remove(server: origin)
         cached[origin] = nil

@@ -406,6 +406,24 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
         XCTAssertEqual(ReconnectMockProtocol.held.withLock { $0 }.filter { $0 == "/oauth/token" }.count, 1)
     }
+    func testADisconnectedVaultKeychainCannotForgetStaysDisconnected() async throws {
+        ReconnectMockProtocol.reset()
+        ReconnectMockProtocol.release()
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+        try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
+            URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
+        }
+        // Keychain cannot remove the item; the disconnected grant must not come back from it.
+        storage.failRemoves = true
+        await session.signOut()
+        do { _ = try await session.connection(for: origin); XCTFail("A disconnected vault must stay disconnected") } catch {}
+    }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
         let storage = MemoryNativeCredentials()

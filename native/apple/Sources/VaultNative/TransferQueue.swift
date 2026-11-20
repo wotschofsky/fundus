@@ -238,7 +238,9 @@ public struct QueueState: Codable, Sendable {
         // Keep the copying state until its file handles have closed; eject stays disabled.
         if snapshot.state != "copying" { snapshot.state = "paused"; save() }
         #else
-        snapshot.state = "paused"; runner?.cancel(); runner = nil; save()
+        // Retired, not just cancelled: a refresh it awaits does not stop with it, and its late
+        // outcome must not touch the queue Pause or Clear left.
+        snapshot.state = "paused"; runner?.cancel(); runner = nil; runnerID = UUID(); save()
         session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         #endif
     }
@@ -248,7 +250,7 @@ public struct QueueState: Codable, Sendable {
         resumeAfterStopping = false
         #endif
         guard ["idle", "verified", "failed", "paused"].contains(snapshot.state) else { throw failure("Pause the queue before clearing it.") }
-        runner?.cancel(); runner = nil
+        runner?.cancel(); runner = nil; runnerID = UUID()
         #if os(iOS)
         session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         #endif
