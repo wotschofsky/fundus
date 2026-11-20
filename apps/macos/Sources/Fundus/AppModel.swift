@@ -24,7 +24,8 @@ final class AppModel {
     /// recorder list does not redraw while a file uploads.
     private(set) var transfer: QueueState
     private(set) var transferState: String
-    /// The vault uploads go to; can differ from `server` (the library shown) for token-only setups.
+    /// The vault uploads go to; can differ from `server` (the library shown) when that vault could
+    /// not be opened, such as an unfinished import whose connection is gone.
     private(set) var uploadServer: String
     private(set) var hasUploads: Bool
     private(set) var isCopyingSources = false

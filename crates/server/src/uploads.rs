@@ -227,7 +227,7 @@ pub async fn create(
     Ok(tus(
         StatusCode::CREATED,
         vec![
-            // Under whichever prefix the upload was created: token, native or browser.
+            // Under whichever prefix the upload was created: native or browser.
             ("location", format!("{}/{id}", uri.path())),
             ("upload-offset", "0".into()),
         ],
