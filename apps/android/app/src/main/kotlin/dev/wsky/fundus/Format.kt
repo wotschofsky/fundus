@@ -32,10 +32,10 @@ object Format {
     /** `Nov 2`. */
     fun day(instant: Instant): String = pattern("MMMd").format(instant.atZone(zone))
 
-    /** `14:05`, or `14:05:03` with seconds. */
-    fun time(instant: Instant, seconds: Boolean = false): String {
-        val skeleton = (if (hour24) "Hm" else "hm") + if (seconds) "s" else ""
-        return pattern(skeleton).format(instant.atZone(zone))
+    /** `14:05`, or `14:05:03` with seconds, under `look` (the phone's now). */
+    fun time(instant: Instant, seconds: Boolean = false, look: Look = this.look): String {
+        val skeleton = (if (look.hour24) "Hm" else "hm") + if (seconds) "s" else ""
+        return pattern(skeleton, look.locale).format(instant.atZone(look.zone))
     }
 
     /** `Today`, `Yesterday`, `Monday, November 2`, and the year once it is not this one. */
@@ -55,12 +55,14 @@ object Format {
 
     val zone: ZoneId get() = ZoneId.systemDefault()
 
-    /** What times are drawn by besides the time itself: one drawn under another look is out of date. */
-    val look: List<Any> get() = listOf(hour24, zone, Locale.getDefault())
+    /** What times are drawn under besides the time itself: one drawn under another look is out of date. */
+    data class Look(val hour24: Boolean, val zone: ZoneId, val locale: Locale)
+
+    /** The phone's look now. */
+    val look: Look get() = Look(hour24, zone, Locale.getDefault())
 
     private val patterns = ConcurrentHashMap<String, DateTimeFormatter>()
-    private fun pattern(skeleton: String): DateTimeFormatter {
-        val locale = Locale.getDefault()
+    private fun pattern(skeleton: String, locale: Locale = Locale.getDefault()): DateTimeFormatter {
         return patterns.getOrPut("$locale|$skeleton") {
             DateTimeFormatter.ofPattern(DateFormat.getBestDateTimePattern(locale, skeleton), locale)
         }

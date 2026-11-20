@@ -52,7 +52,7 @@ final class TranscriptModel {
     @ObservationIgnored private var timeline = SessionTimeline(chunks: [], timeZone: .current)
     /// The vault's key for the segments `rows` were made from; sent back, unchanged ones are not resent.
     @ObservationIgnored private var rowsKey: String?
-    /// The zone `rows` drew their clock times in: the Mac moved since, the key is not sent, so they are drawn again.
+    /// The zone `rows` drew their clock times in: the Mac moved since, the next read does not send the key, so they are drawn again.
     @ObservationIgnored private var rowsZone: TimeZone?
     /// Refreshes overlap (the 3 s poll, an edit's, a button's): the number of the latest asked, and of the one shown.
     @ObservationIgnored private var asked = 0

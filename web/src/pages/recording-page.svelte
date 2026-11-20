@@ -80,8 +80,12 @@
   const firstTry = (q: { isLoading: boolean; failureCount: number; isFetched: boolean }) =>
     q.isLoading && q.failureCount === 0 && !q.isFetched;
   let shown = $state(false);
+  // A recording that could not be read shows its error at once; one already read (a poll failed
+  // since) waits for the others as usual.
   const loading = $derived(
-    !shown && (entry.isPending || firstTry(share) || firstTry(people)) && !entry.error,
+    !shown &&
+      (entry.isPending || firstTry(share) || firstTry(people)) &&
+      !(entry.error && !entry.data),
   );
   $effect(() => {
     if (!loading && entry.data) shown = true;

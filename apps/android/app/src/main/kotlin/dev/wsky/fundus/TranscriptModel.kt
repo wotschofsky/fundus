@@ -62,8 +62,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
 
     /** The vault's key for the segments `rows` came from (hex); sent back, unchanged ones are not resent. */
     private var rowsKey: String? = null
-    /** The `Format.look` `rows` were drawn under: changed since, the key is not sent, so they are drawn again. */
-    private var rowsLook: List<Any>? = null
+    /** The `Format.look` `rows` were drawn under: changed since, the next read does not send the key, so they are drawn again. */
+    private var rowsLook: Format.Look? = null
     /** Refreshes overlap (the 3 s poll, an edit's, "Try again"): the number of the latest asked, and of the one shown. */
     private var asked = 0
     private var shown = 0
@@ -95,9 +95,9 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             val text = vault.request("/entries/${segment(entryId)}$held")
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
-            // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
             val look = Format.look
-            val rows = transcript.segments?.let { rows(detail, it) }
+            // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            val rows = transcript.segments?.let { rows(detail, it, look) }
             // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
             // another answer replaced is asked again, with the key of the rows shown: either answer may
             // hold the newer recording (an edit made here, say), and asking again brings the latest.
@@ -129,12 +129,13 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         }
     }
 
-    private suspend fun rows(entry: Entry, segments: List<Segment>): List<TranscriptRow> {
+    /** Every row under the one `look` they are kept under, whatever the phone changes meanwhile. */
+    private suspend fun rows(entry: Entry, segments: List<Segment>, look: Format.Look): List<TranscriptRow> {
         return withContext(Dispatchers.Default) {
             val timeline = SessionTimeline.of(entry)
             val dated = entry.recorded != null
             segments.map {
-                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true) else Format.position(it.startMs / 1000.0)
+                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true, look = look) else Format.position(it.startMs / 1000.0)
                 TranscriptRow(it.id, it.speaker, it.startMs, clock, it.text)
             }
         }
