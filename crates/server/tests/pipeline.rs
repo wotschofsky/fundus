@@ -177,7 +177,7 @@ async fn call(
 async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_holding_up_the_transcript()
  {
     let (dir, app, _provider, task) = setup(Options::default()).await;
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let video = |entry: &serde_json::Value| entry["video"].clone();
 
@@ -198,7 +198,7 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
         &router,
         &token,
         "GET",
-        format!("/api/v1/entries/{entry}/video"),
+        format!("/api/native/v1/entries/{entry}/video"),
     )
     .await;
     assert_eq!(response.status(), 206);
@@ -230,7 +230,7 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
         &router,
         &token,
         "GET",
-        format!("/api/v1/entries/{entry}/video"),
+        format!("/api/native/v1/entries/{entry}/video"),
     )
     .await;
     assert_eq!(response.status(), 404);
@@ -252,7 +252,7 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
         &router,
         &token,
         "GET",
-        format!("/api/v1/entries/{entry}/video"),
+        format!("/api/native/v1/entries/{entry}/video"),
     )
     .await;
     assert_eq!(response.status(), 206);
@@ -274,7 +274,7 @@ async fn a_plain_mp4_plays_as_uploaded_and_other_video_is_converted_without_hold
         &router,
         &token,
         "GET",
-        format!("/api/v1/entries/{entry}/video"),
+        format!("/api/native/v1/entries/{entry}/video"),
     )
     .await;
     assert_eq!(response.status(), 404);
@@ -454,7 +454,7 @@ async fn a_conversion_stops_short_of_the_disk_reserve() {
 #[tokio::test]
 async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
     let (dir, app, _provider, task) = setup(Options::default()).await;
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     let source = media(
         dir.path(),
@@ -487,7 +487,7 @@ async fn trash_stops_a_conversion_delete_waits_for_it_and_a_crash_loop_ends() {
     let (work_app, work_entry) = (app.clone(), entry.clone());
     let converting =
         tokio::spawn(async move { fundus::video::convert(&work_app, &work_entry, stop).await });
-    let path = format!("/api/v1/entries/{entry}");
+    let path = format!("/api/native/v1/entries/{entry}");
     assert_eq!(
         call(&router, &token, "DELETE", path.clone()).await.status(),
         409
@@ -819,9 +819,7 @@ async fn ambiguous_submission_requires_explicit_retry_and_saved_jobs_resume() {
     let error = pipeline::process(&app, "interrupted").await.unwrap_err();
     assert!(error.to_string().contains("Retry explicitly"));
     // The explicit Retry clears only an ambiguous marker; a saved job ID survives it.
-    let admin = fundus::auth::issue(&app, "test owner", "admin")
-        .await
-        .unwrap();
+    let admin = common::grant(&app, "vault:owner").await;
     let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
     sqlx::query("UPDATE entries SET stage='failed' WHERE id IN ('interrupted','resumable')")
         .execute(&app.db)
@@ -832,7 +830,7 @@ async fn ambiguous_submission_requires_explicit_retry_and_saved_jobs_resume() {
         let response = router
             .clone()
             .oneshot(
-                axum::http::Request::post(format!("/api/v1/entries/{id}/retry"))
+                axum::http::Request::post(format!("/api/native/v1/entries/{id}/retry"))
                     .header("Authorization", format!("Bearer {admin}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -986,10 +984,10 @@ async fn trash_cancels_processing_at_the_next_checkpoint() {
     let (work_app, work_entry) = (app.clone(), entry.clone());
     let process = tokio::spawn(async move { pipeline::process(&work_app, &work_entry).await });
     until(|| provider.submits() == 1).await;
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
-            axum::http::Request::post(format!("/api/v1/entries/{entry}/trash"))
+            axum::http::Request::post(format!("/api/native/v1/entries/{entry}/trash"))
                 .header("Authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -1077,10 +1075,10 @@ async fn summary_regenerates_alone_and_keeps_the_speakers() {
         .await
         .unwrap();
     let chats = provider.chats.lock().unwrap().len();
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
-            axum::http::Request::post(format!("/api/v1/entries/{entry}/summarize"))
+            axum::http::Request::post(format!("/api/native/v1/entries/{entry}/summarize"))
                 .header("Authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -1290,16 +1288,16 @@ async fn recordings_over_assemblyais_limit_are_refused_before_upload() {
 }
 
 #[tokio::test]
-async fn read_tokens_cannot_list_trash() {
+async fn read_grants_cannot_list_trash() {
     use tower::ServiceExt;
     let (_dir, app, _provider, task) = setup(Options::default()).await;
     let router = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new());
-    for (scope, expected) in [("read", 403), ("admin", 200)] {
-        let token = fundus::auth::issue(&app, "test", scope).await.unwrap();
+    for (scope, expected) in [("mcp:read", 401), ("vault:owner", 200)] {
+        let token = common::grant(&app, scope).await;
         let response = router
             .clone()
             .oneshot(
-                axum::http::Request::get("/api/v1/entries?trash=true")
+                axum::http::Request::get("/api/native/v1/entries?trash=true")
                     .header("Authorization", format!("Bearer {token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -1336,10 +1334,10 @@ async fn a_hand_edited_summary_is_kept_and_search_finds_it() {
             .iter()
             .any(|hit| hit["summary"] == true && hit["excerpt"].as_str().unwrap().contains("plans"))
     );
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
-            axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+            axum::http::Request::patch(format!("/api/native/v1/entries/{entry}"))
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(
@@ -1376,7 +1374,7 @@ async fn a_hand_edited_summary_is_kept_and_search_finds_it() {
     );
     let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
-            axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+            axum::http::Request::patch(format!("/api/native/v1/entries/{entry}"))
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"summary":""}"#))
@@ -1489,12 +1487,12 @@ async fn transcription_keeps_summaries_edited_before_or_during_the_job() {
         })
         .await;
         let entry = entry(&app, dir.path(), "manual-transcription").await;
-        let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+        let token = common::grant(&app, "vault:owner").await;
         let edit = || async {
             let response =
                 fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
                     .oneshot(
-                        axum::http::Request::patch(format!("/api/v1/entries/{entry}"))
+                        axum::http::Request::patch(format!("/api/native/v1/entries/{entry}"))
                             .header("Authorization", format!("Bearer {token}"))
                             .header("Content-Type", "application/json")
                             .body(axum::body::Body::from(
@@ -1617,10 +1615,10 @@ async fn shutdown_waits_for_person_summary_refreshes() {
         .execute(&app.db)
         .await
         .unwrap();
-    let token = fundus::auth::issue(&app, "test", "admin").await.unwrap();
+    let token = common::grant(&app, "vault:owner").await;
     let response = fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
-            axum::http::Request::patch("/api/v1/people/p")
+            axum::http::Request::patch("/api/native/v1/people/p")
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"name":"After"}"#))
@@ -1655,10 +1653,10 @@ async fn shutdown_waits_for_person_summary_refreshes() {
     task.abort();
 }
 
-/// Status of an owner request to the browser API.
+/// Status of an owner request to the native API.
 async fn owner(app: &App, method: &str, uri: &str) -> u16 {
     use tower::ServiceExt;
-    let token = fundus::auth::issue(app, "test", "admin").await.unwrap();
+    let token = common::grant(app, "vault:owner").await;
     fundus::api::router(app.clone(), tokio_util::sync::CancellationToken::new())
         .oneshot(
             axum::http::Request::builder()
@@ -1694,7 +1692,7 @@ async fn a_summary_trashed_mid_request_waits_for_restore_and_is_not_paid_twice()
         .execute(&app.db)
         .await
         .unwrap();
-    let uri = |action: &str| format!("/api/v1/entries/{entry}/{action}");
+    let uri = |action: &str| format!("/api/native/v1/entries/{entry}/{action}");
     assert_eq!(owner(&app, "POST", &uri("summarize")).await, 200);
     let (work_app, work_entry) = (app.clone(), entry.clone());
     let job =
@@ -1729,7 +1727,12 @@ async fn a_summary_job_that_finds_its_recording_in_trash_stops_and_can_be_delete
     let entry = entry(&app, dir.path(), "trashed-early").await;
     pipeline::process(&app, &entry).await.unwrap();
     assert_eq!(
-        owner(&app, "POST", &format!("/api/v1/entries/{entry}/summarize")).await,
+        owner(
+            &app,
+            "POST",
+            &format!("/api/native/v1/entries/{entry}/summarize")
+        )
+        .await,
         200
     );
     // The worker claimed the job, then the owner moved the recording to Trash.
@@ -1746,7 +1749,7 @@ async fn a_summary_job_that_finds_its_recording_in_trash_stops_and_can_be_delete
     assert_eq!(stage(&app, &entry).await, "paused");
     assert_eq!(provider.chats.lock().unwrap().len(), chats);
     assert_eq!(
-        owner(&app, "DELETE", &format!("/api/v1/entries/{entry}")).await,
+        owner(&app, "DELETE", &format!("/api/native/v1/entries/{entry}")).await,
         204
     );
     task.abort();

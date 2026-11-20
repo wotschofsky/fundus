@@ -1,7 +1,6 @@
-//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request without an
-//! `Authorization` header (which `auth::require` checks instead) is the owner's only when it
-//! carries a valid `Cf-Access-Jwt-Assertion`: the token Access adds to every request it has
-//! signed in. A request that reached the server another way (a path the proxy lets through
+//! Cloudflare Access sign-in, for `VAULT_AUTH_MODE=proxy`. A browser request is the owner's only
+//! when it carries a valid `Cf-Access-Jwt-Assertion` (and no `Authorization` header, `auth.rs`):
+//! the token Access adds to every request it has signed in. A request that reached the server another way (a path the proxy lets through
 //! without sign-in, however that path was spelled on its way in, or a direct hit on the origin)
 //! carries none of its own. The token is a bearer credential, at most until it expires (plus
 //! `LEEWAY`): whoever holds the owner's is let in, wherever the request comes from.
@@ -41,7 +40,7 @@ pub const MISSING: &str = "VAULT_AUTH_MODE=proxy needs VAULT_ACCESS_TEAM_DOMAIN 
      (<team>.cloudflareaccess.com) and VAULT_ACCESS_AUD (the Access application's Audience tag)";
 impl Settings {
     /// From `VAULT_ACCESS_TEAM_DOMAIN` and `VAULT_ACCESS_AUD`; none when neither is set, so
-    /// commands that never check a sign-in (`token`, `backup`) run without them.
+    /// commands that never check a sign-in (`init`, `backup`, `healthcheck`) run without them.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
         let team = std::env::var("VAULT_ACCESS_TEAM_DOMAIN").unwrap_or_default();
         let audience = std::env::var("VAULT_ACCESS_AUD").unwrap_or_default();

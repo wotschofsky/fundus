@@ -55,20 +55,20 @@ private actor TransferServer {
         func response(_ status: Int, _ value: [String: Any] = [:], headers: [String: String] = [:]) -> (Data, URLResponse) {
             (try! JSONSerialization.data(withJSONObject: value), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!)
         }
-        if path == "/api/v1/imports", method == "POST" {
+        if path == "/api/native/v1/imports", method == "POST" {
             if let data = request.httpBody, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any], let sessions = body["sessions"] as? [[String: Any]] {
                 metrics.plannedSources = sessions.compactMap { $0["source_ids"] as? [String] }
                 metrics.trimStart = (sessions.first?["trim_start_frame"] as? NSNumber)?.int64Value
             }
             return response(201, ["id": "batch"])
         }
-        if path == "/api/v1/uploads", method == "POST" {
+        if path == "/api/native/v1/uploads", method == "POST" {
             var metadata: [String: String] = [:]
             for part in (request.value(forHTTPHeaderField: "Upload-Metadata") ?? "").split(separator: ",") {
                 let pieces = part.split(separator: " ", maxSplits: 1)
                 if pieces.count == 2, let data = Data(base64Encoded: String(pieces[1])) { metadata[String(pieces[0])] = String(decoding: data, as: UTF8.self) }
             }
-            let location = "/api/v1/uploads/\(lengths.count)"
+            let location = "/api/native/v1/uploads/\(lengths.count)"
             lengths[location] = Int64(request.value(forHTTPHeaderField: "Upload-Length")!)!
             offsets[location] = 0
             if let name = metadata["original_name"] { metrics.originalNames.insert(name) }
@@ -96,12 +96,12 @@ private actor TransferServer {
             else { try await Task.sleep(for: .milliseconds(130)) }
             return response(204, headers: ["Upload-Offset": String(offset + Int64(size))])
         }
-        if path == "/api/v1/imports/batch/complete" {
+        if path == "/api/native/v1/imports/batch/complete" {
             guard lengths.allSatisfy({ offsets[$0.key] == $0.value }) else { return response(409, ["error": "Incomplete fixture import"] ) }
             metrics.completions += 1
             return response(200, ["state": "verifying"])
         }
-        if path == "/api/v1/imports/batch" {
+        if path == "/api/native/v1/imports/batch" {
             return response(200, ["state": "complete", "files": lengths.map { _ in ["state": "verified"] }])
         }
         return response(404, ["error": "Unexpected fixture request"])

@@ -160,7 +160,7 @@ A horizontal header spans the viewport at height (64px); its horizontal padding 
 
 Page headings and actions share a row with a (28px) bottom margin. The library toolbar holds the count and compact filters. Recordings are grouped by calendar day under a (13px) heading with a bottom divider; rows use vertical padding (20px). The detail grid has a flexible reading column, a (220px) speaker/source column that stays in view while the transcript scrolls, and a (56px) gap. Settings sections stop at (680px).
 
-At (760px) the header becomes (56px) tall with padding (20px); workspace padding becomes (28px 20px 72px). The detail grid becomes one column and the speaker/source panel moves **above** the transcript, so naming speakers never requires scrolling past a long recording. Filters wrap, token creation and row actions stack. At (360px) header padding and navigation gaps reduce further; workspace side padding becomes (16px).
+At (760px) the header becomes (56px) tall with padding (20px); workspace padding becomes (28px 20px 72px). The detail grid becomes one column and the speaker/source panel moves **above** the transcript, so naming speakers never requires scrolling past a long recording. Filters wrap and row actions stack. At (360px) header padding and navigation gaps reduce further; workspace side padding becomes (16px).
 
 Pages keep a scrollbar's width whether or not they scroll, so nothing shifts when a dialog stops the page scrolling. The header scrolls with the page. The audio player is sticky at the viewport top, on white, with a bottom divider. Navigating to a page starts at its top or at its `#anchor`; Back and Forward return to the previous scroll position, and list filters live in the URL. Long titles, transcript prose, addresses, and filenames wrap within their containers.
 
@@ -196,7 +196,7 @@ Labels are informational tags: (12px) text, fine border, chip radius. They wrap,
 
 ### Rows and containers
 
-Archive, trash, people, token, connection, and search rows are plain rows separated by dividers. Metadata (time, duration, processing state with a small spinner) precedes the title and bounded preview. Linked rows underline the title on hover; they do not fill. Notices are outlined; the processing notice pairs the state with Resume or Retry once stopped; Move to Trash cancels a running one. Edit forms and inline renames replace the row in place between rules rather than opening a panel. Empty states are a plain heading, a sentence, and at most one action.
+Archive, trash, people, connection, and search rows are plain rows separated by dividers. Metadata (time, duration, processing state with a small spinner) precedes the title and bounded preview. Linked rows underline the title on hover; they do not fill. Notices are outlined; the processing notice pairs the state with Resume or Retry once stopped; Move to Trash cancels a running one. Edit forms and inline renames replace the row in place between rules rather than opening a panel. Empty states are a plain heading, a sentence, and at most one action.
 
 ### Dialog
 

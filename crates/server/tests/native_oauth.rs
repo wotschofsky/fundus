@@ -35,8 +35,6 @@ async fn setup() -> (tempfile::TempDir, App, Router) {
             "/api/native/v1/probe",
             get(|Extension(a): Extension<Access>| async move {
                 a.admin().unwrap();
-                a.read().unwrap();
-                a.upload().unwrap();
                 Json(json!({"scope":a.scope}))
             }),
         )
@@ -167,7 +165,7 @@ async fn native_owner_requires_explicit_correct_scope_and_never_trusts_proxy_or_
             .0,
         StatusCode::UNAUTHORIZED
     );
-    let session = auth::issue(&app, "old session", "session").await.unwrap();
+    let session = auth::session(&app).await.unwrap();
     let cookie = format!("vault_session={session}");
     assert_eq!(
         call(
@@ -183,7 +181,7 @@ async fn native_owner_requires_explicit_correct_scope_and_never_trusts_proxy_or_
         StatusCode::UNAUTHORIZED
     );
     for scope in ["upload", "read", "admin"] {
-        let token = auth::issue(&app, "legacy", scope).await.unwrap();
+        let token = common::leftover_token(&app, scope).await;
         let bearer = format!("Bearer {token}");
         assert_eq!(
             call(

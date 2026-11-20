@@ -6,7 +6,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_ha
 use axum::{
     Json,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, Method, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -14,6 +14,8 @@ use base64::Engine;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+/// Who a request comes from: the owner ("session" in a password-mode browser, "admin" behind
+/// Cloudflare Access or in a native app) or an MCP client's read grant ("read").
 #[derive(Clone)]
 pub struct Access {
     pub scope: String,
@@ -26,23 +28,6 @@ impl Access {
             Err(Error(StatusCode::FORBIDDEN, "Owner access required".into()))
         }
     }
-    pub fn upload(&self) -> Result<()> {
-        if ["session", "admin", "upload"].contains(&self.scope.as_str()) {
-            Ok(())
-        } else {
-            Err(Error(
-                StatusCode::FORBIDDEN,
-                "Upload access required".into(),
-            ))
-        }
-    }
-    pub fn read(&self) -> Result<()> {
-        if self.scope != "upload" {
-            Ok(())
-        } else {
-            Err(Error(StatusCode::FORBIDDEN, "Read access required".into()))
-        }
-    }
 }
 pub fn hash(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
@@ -53,23 +38,16 @@ pub fn secret() -> String {
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
-pub async fn issue(app: &App, name: &str, scope: &str) -> Result<String> {
+/// Signs a password-mode browser in for seven days; the cookie's value.
+pub async fn session(app: &App) -> Result<String> {
     let value = secret();
-    let expires = if scope == "session" {
-        Some(
-            (chrono::Utc::now() + chrono::Duration::days(7))
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        )
-    } else {
-        None
-    };
+    let expires = (chrono::Utc::now() + chrono::Duration::days(7))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let token_hash = hash(&value);
     let timestamp = now();
     sqlx::query!(
-        "INSERT INTO credentials(hash,name,scope,created_at,expires_at) VALUES(?,?,?,?,?)",
+        "INSERT INTO credentials(hash,name,scope,created_at,expires_at) VALUES(?,'Web session','session',?,?)",
         token_hash,
-        name,
-        scope,
         timestamp,
         expires
     )
@@ -78,25 +56,19 @@ pub async fn issue(app: &App, name: &str, scope: &str) -> Result<String> {
     Ok(value)
 }
 /// For a request the browser's own sign-in (its cookie, or Access's token) lets in.
-fn check_origin(app: &App, request: &Request) -> Result<()> {
+fn check_origin(app: &App, headers: &HeaderMap, method: &Method) -> Result<()> {
     // Any site can make the browser send one and time the answer without reading it (does a
     // search find this word?). Only this site's pages and what the owner opens directly may ask;
     // browsers too old to say which send nothing.
-    let site = request
-        .headers()
-        .get("sec-fetch-site")
-        .map(|v| v.as_bytes());
+    let site = headers.get("sec-fetch-site").map(|v| v.as_bytes());
     if site.is_some_and(|site| site != b"same-origin" && site != b"none") {
         return Err(Error(
             StatusCode::FORBIDDEN,
             "Requests from other sites are refused".into(),
         ));
     }
-    if !["GET", "HEAD", "OPTIONS"].contains(&request.method().as_str()) {
-        let origin = request
-            .headers()
-            .get(header::ORIGIN)
-            .and_then(|v| v.to_str().ok());
+    if !["GET", "HEAD", "OPTIONS"].contains(&method.as_str()) {
+        let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
         let expected = app.config.public_url.origin().ascii_serialization();
         if origin != Some(expected.as_str()) {
             return Err(Error(StatusCode::FORBIDDEN, "Origin check failed".into()));
@@ -105,94 +77,66 @@ fn check_origin(app: &App, request: &Request) -> Result<()> {
     Ok(())
 }
 
-/// Applied only to browser routes, never to the public upload/MCP routers. In proxy mode a request
-/// without an `Authorization` header is the owner's only with Cloudflare Access's token for it:
-/// one that slipped past the proxy's sign-in gets nothing (`access.rs`).
+/// Applied only to browser routes. The owner's browser signs in with Cloudflare Access's token in
+/// proxy mode (`access.rs`) and with its session cookie otherwise.
 pub async fn require_browser(State(app): State<App>, mut request: Request, next: Next) -> Response {
-    if app.config.proxy_auth && !request.headers().contains_key(header::AUTHORIZATION) {
-        let token = request
-            .headers()
-            .get(crate::access::HEADER)
-            .and_then(|v| v.to_str().ok());
-        let Some(token) = token else {
-            return Error(StatusCode::UNAUTHORIZED, "Sign in to continue".into()).into_response();
-        };
-        if let Err(error) = crate::access::verify(&app, token).await {
-            return error.into_response();
+    match browser(&app, request.headers(), request.method()).await {
+        Ok(scope) => {
+            request.extensions_mut().insert(Access {
+                scope: scope.into(),
+            });
+            next.run(request).await
         }
-        if let Err(error) = check_origin(&app, &request) {
-            return error.into_response();
-        }
-        request.extensions_mut().insert(Access {
-            scope: "admin".into(),
-        });
-        return next.run(request).await;
+        Err(error) => error.into_response(),
     }
-    // Explicit credentials retain their scopes; an invalid token never becomes an owner.
-    require(State(app), request, next).await
 }
 
-pub async fn require(State(app): State<App>, mut request: Request, next: Next) -> Response {
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "));
-    let cookie = request
-        .headers()
+async fn browser(app: &App, headers: &HeaderMap, method: &Method) -> Result<&'static str> {
+    let signed_out = || Error(StatusCode::UNAUTHORIZED, "Sign in to continue".into());
+    // Native apps and MCP clients have routes of their own. A bearer credential here is no
+    // browser's sign-in, whatever else the request carries, so it never stands in for the owner.
+    if headers.contains_key(header::AUTHORIZATION) {
+        return Err(Error(
+            StatusCode::UNAUTHORIZED,
+            "Browser routes take no Authorization header".into(),
+        ));
+    }
+    if app.config.proxy_auth {
+        let token = headers
+            .get(crate::access::HEADER)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(signed_out)?;
+        crate::access::verify(app, token).await?;
+        check_origin(app, headers, method)?;
+        return Ok("admin");
+    }
+    let cookie = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             s.split(';')
                 .find_map(|s| s.trim().strip_prefix("vault_session="))
-        });
-    let cookie = if app.config.proxy_auth { None } else { cookie };
-    let value = match bearer.or(cookie) {
-        Some(s) if s.len() <= 256 => s,
-        _ => return Error(StatusCode::UNAUTHORIZED, "Sign in to continue".into()).into_response(),
-    };
-    // Cookie-authenticated mutations require same-origin browser requests. Bearer clients are not subject to CSRF.
-    if bearer.is_none()
-        && let Err(error) = check_origin(&app, &request)
-    {
-        return error.into_response();
-    }
-    let token_hash = hash(value);
-    let row = sqlx::query!(
-        "SELECT scope,expires_at FROM credentials WHERE hash=?",
+        })
+        .filter(|s| s.len() <= 256)
+        .ok_or_else(signed_out)?;
+    check_origin(app, headers, method)?;
+    let token_hash = hash(cookie);
+    let expires = sqlx::query_scalar!(
+        "SELECT expires_at FROM credentials WHERE hash=? AND scope='session'",
         token_hash
     )
     .fetch_optional(&app.db)
-    .await;
-    match row {
-        Ok(Some(row)) => {
-            let expiry: Option<String> = row.expires_at.clone();
-            if expiry.is_some_and(|s| s < now()) {
-                return Error(StatusCode::UNAUTHORIZED, "Session expired".into()).into_response();
-            }
-            let timestamp = now();
-            if let Err(error) = sqlx::query!(
-                "UPDATE credentials SET last_used_at=? WHERE hash=?",
-                timestamp,
-                token_hash
-            )
-            .execute(&app.db)
-            .await
-            {
-                return Error::from(error).into_response();
-            }
-            request.extensions_mut().insert(Access {
-                scope: row.scope.clone(),
-            });
-            next.run(request).await
-        }
-        Ok(None) => Error(
+    .await?
+    .ok_or_else(|| {
+        Error(
             StatusCode::UNAUTHORIZED,
-            "Credential invalid or revoked".into(),
+            "Session invalid or signed out".into(),
         )
-        .into_response(),
-        Err(e) => Error::from(e).into_response(),
+    })?;
+    if expires.is_none_or(|s| s < now()) {
+        return Err(Error(StatusCode::UNAUTHORIZED, "Session expired".into()));
     }
+    Ok("session")
 }
 #[derive(Deserialize)]
 pub struct Login {
@@ -249,7 +193,7 @@ pub async fn login(
     if !valid {
         return Err(Error(StatusCode::UNAUTHORIZED, "Incorrect password".into()));
     }
-    let token = issue(&app, "Web session", "session").await?;
+    let token = session(&app).await?;
     let cookie = format!(
         "vault_session={token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=604800{}",
         if app.config.secure_cookie {
