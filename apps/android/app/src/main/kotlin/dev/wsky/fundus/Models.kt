@@ -125,8 +125,8 @@ data class Person(val id: String, val name: String, val samples: Int = 0)
 @Serializable
 data class EntryPage(val entries: List<Entry> = emptyList(), val nextCursor: Int? = null)
 
-@Serializable
 /** The transcript a recording's read brings with it: `segments` is left out when the key sent still holds. */
+@Serializable
 data class TranscriptPart(val segments: List<Segment>? = null, val transcriptKey: String) {
     /** Whether this answer can stand beside rows made from the segments keyed `held`. One without segments was
      *  asked with the key it returns, so another `held` means a newer answer replaced the rows meanwhile, and

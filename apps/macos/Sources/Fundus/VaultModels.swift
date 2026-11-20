@@ -178,11 +178,11 @@ struct Page<Item: Decodable & Sendable>: Decodable, Sendable {
         init?(intValue: Int) { nil }
     }
 
-    /// Pages name their array after what they contain (`entries`, `segments`, …).
+    /// Pages name their array after what they contain (`entries`, `people`, …).
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Key.self)
         nextCursor = try container.decodeIfPresent(Int.self, forKey: Key(stringValue: "nextCursor"))
-        let key = container.allKeys.first { ["entries", "segments", "people", "labels"].contains($0.stringValue) }
+        let key = container.allKeys.first { ["entries", "people", "labels"].contains($0.stringValue) }
         items = try key.map { try container.decode([Item].self, forKey: $0) } ?? []
     }
 }
