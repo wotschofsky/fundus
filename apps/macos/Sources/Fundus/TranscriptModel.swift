@@ -27,8 +27,8 @@ struct Detail: Decodable {
     }
 
     /// Whether an answer can stand beside rows made from the segments keyed `held`. One without segments was
-    /// asked with the key it returns, so another `held` means another answer, read from newer vault state
-    /// (an earlier ask's, say, read later), replaced the rows meanwhile: this one's recording would not match them.
+    /// asked with the key it returns, so another `held` means another answer replaced the rows meanwhile: the
+    /// rows this one's recording goes with are not on hand.
     static func fits(hasSegments: Bool, key: String, held: String?) -> Bool { hasSegments || key == held }
 }
 
@@ -105,9 +105,11 @@ final class TranscriptModel {
             if let segments = read.segments {
                 made = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
             }
-            // An answer to an earlier ask than the one shown is dropped, and so is one without segments
-            // whose rows another answer replaced.
-            guard ask > shown, Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey) else { return }
+            // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
+            // another answer replaced is asked again, with the key of the rows shown: either answer may
+            // hold the newer recording (an edit made here, say), and asking again brings the latest.
+            guard ask > shown else { return }
+            guard Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey) else { return await refresh() }
             shown = ask
             if let made { rows = made }
             rowsKey = read.transcriptKey
