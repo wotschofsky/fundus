@@ -487,13 +487,16 @@ test('a page read sends the key of the transcript it holds and keeps it when lef
   assert.deepEqual(asked, ['', '?transcript_key=k', '?transcript_key=k']);
 });
 
-test('an early read is handed out once, and a failed one not at all', async () => {
+test('an early read is handed out once, and one that wanted signing in not at all', async () => {
   const fetched = globalThis.fetch;
-  globalThis.fetch = async (url) => new Response('{}', { status: url === '/ok' ? 200 : 401 });
+  const status = { '/ok': 200, '/gone': 404, '/denied': 401 };
+  globalThis.fetch = async (url) => new Response('{}', { status: status[url] });
   try {
-    start(['/ok', '/denied']);
+    start(['/ok', '/gone', '/denied']);
     assert.equal((await take('/ok'))?.status, 200);
     assert.equal(await take('/ok'), undefined);
+    // Asking again would only wait for the same answer.
+    assert.equal((await take('/gone'))?.status, 404);
     assert.equal(await take('/denied'), undefined);
   } finally {
     globalThis.fetch = fetched;
