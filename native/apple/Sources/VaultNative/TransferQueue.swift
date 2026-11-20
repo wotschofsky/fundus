@@ -217,7 +217,11 @@ public struct QueueState: Codable, Sendable {
                 snapshot.files.append(item); save()
             }
             snapshot.state = "uploading"; save(); start()
-        } catch { snapshot.state = "failed"; snapshot.error = error.localizedDescription; save(); throw error }
+        } catch {
+            // With nothing copied there is nothing to resume or clear: back to idle, the reason shown.
+            snapshot.state = snapshot.files.isEmpty ? "idle" : "failed"
+            snapshot.error = error.localizedDescription; save(); throw error
+        }
         #endif
     }
     public func resume() {
@@ -675,13 +679,13 @@ public struct QueueState: Codable, Sendable {
             let data = self.responseData.removeValue(forKey: taskID) ?? Data()
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
             #if os(iOS)
-            // A chunk this app cancelled (Pause, then Resume before this arrives) is left to the resumed
-            // runner at work. Any other cancellation of the current chunk (by iOS, or Pause's late
-            // cancel reaching a chunk Resume already sent) fails the queue below, resumably, unless a
-            // resumed runner is already at work: it reconciles the offset and sends the chunk again. After a
-            // relaunch nothing was sent by this process, so a chunk that finished is the queue's.
-            if let cancelled = error as? URLError, cancelled.code == .cancelled, cancelled.backgroundTaskCancelledReason == nil, self.runner != nil { return }
+            // Not the queue's to act on: a chunk a newer send superseded, or any chunk finishing while a
+            // resumed runner is at work (it reconciles the offset and sends again, with its own retry).
+            // Otherwise a cancellation of the current chunk (by iOS, or Pause's late cancel reaching a
+            // chunk Resume already sent) fails the queue below, resumably. After a relaunch nothing was
+            // sent by this process, so a chunk that finished is the queue's.
             if let sent = self.sentChunk, sent != taskID { return }
+            if self.runner != nil { return }
             #endif
             let batch = self.snapshot.importID
             do {
