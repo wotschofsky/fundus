@@ -52,6 +52,9 @@ final class TranscriptModel {
     @ObservationIgnored private var timeline = SessionTimeline(chunks: [], timeZone: .current)
     /// The vault's key for the segments `rows` were made from; sent back, unchanged ones are not resent.
     @ObservationIgnored private var rowsKey: String?
+    /// Refreshes overlap (the 3 s poll, an edit's): the number of the latest asked, and of the one shown.
+    @ObservationIgnored private var asked = 0
+    @ObservationIgnored private var shown = 0
 
     init(entryID: String, library: Library) {
         self.entryID = entryID
@@ -89,18 +92,24 @@ final class TranscriptModel {
     }
 
     func refresh() async {
+        asked += 1
+        let ask = asked
         do {
             // The recording and its transcript in one read: neither waits for the other.
             let held = rowsKey.map { "?transcript_key=\(VaultAPI.component($0))" } ?? ""
             let read = try await VaultAPI.get(VaultAPI.entryPath(entryID, held), as: Detail.self)
-            // Refreshes overlap (the 3 s poll, an edit's): one without segments that a newer one overtook is dropped.
-            guard Detail.fits(hasSegments: read.segments != nil, key: read.transcriptKey, held: rowsKey) else { return }
             let detail = read.entry
             let timeline = Self.timeline(for: detail)
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            var made: [TranscriptRow]?
             if let segments = read.segments {
-                rows = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
+                made = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
             }
+            // An answer to an earlier ask than the one shown is dropped, and so is one without segments
+            // whose rows a newer answer replaced.
+            guard ask > shown, Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey) else { return }
+            shown = ask
+            if let made { rows = made }
             rowsKey = read.transcriptKey
             // Set with the rows, in one update: the recording shows once its transcript is in, not before.
             entry = detail

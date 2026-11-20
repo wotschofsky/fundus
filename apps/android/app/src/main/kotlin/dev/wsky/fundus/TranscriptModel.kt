@@ -62,6 +62,9 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
 
     /** The vault's key for the segments `rows` came from (hex); sent back, unchanged ones are not resent. */
     private var rowsKey: String? = null
+    /** Refreshes overlap (the 3 s poll, an edit's, "Try again"): the number of the latest asked, and of the one shown. */
+    private var asked = 0
+    private var shown = 0
     private var watcher: Job? = null
     private var ticker: Job? = null
     private var player: MediaController? = null
@@ -83,16 +86,19 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
     // MARK: Loading
 
     suspend fun refresh() {
+        val ask = ++asked
         try {
             // The recording and its transcript in one read: neither waits for the other.
             val held = rowsKey?.let { "?transcript_key=$it" }.orEmpty()
             val text = vault.request("/entries/${segment(entryId)}$held")
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
-            // Refreshes overlap (the 3 s poll, an edit's, "Try again"): one without segments that a newer one overtook is dropped.
-            if (!transcript.fits(rowsKey)) return
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
             val rows = transcript.segments?.let { rows(detail, it) }
+            // An answer to an earlier ask than the one shown is dropped, and so is one without segments
+            // whose rows a newer answer replaced.
+            if (ask < shown || !transcript.fits(rowsKey)) return
+            shown = ask
             rowsKey = transcript.transcriptKey
             // Shown together: the recording appears once its transcript is in, not before.
             _state.update { it.copy(entry = detail, rows = rows ?: it.rows, loadError = null) }
