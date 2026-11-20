@@ -33,7 +33,13 @@
 
   const me = createQuery(() => ({
     queryKey: ['me'],
-    queryFn: () => api<Me>('/v1/me'),
+    queryFn: () =>
+      api<Me>('/v1/me').catch((error) => {
+        // The reads started beside a check that failed were made signed out, or are as old as the
+        // page by the time it passes (signed in here or in another tab, or tried again).
+        dropAll();
+        throw error;
+      }),
     retry: false,
   }));
   const path = $derived(router.url.pathname);
@@ -69,13 +75,7 @@
 {:else if !me.data}
   <main class="login">
     <ErrorNotice error={me.error} />
-    <!-- The reads started beside the failed check are as old as the page by now. -->
-    <button
-      onclick={() => {
-        dropAll();
-        me.refetch();
-      }}>Try again</button
-    >
+    <button onclick={() => me.refetch()}>Try again</button>
   </main>
 {:else if path === '/oauth/authorize'}
   <AuthorizePage />

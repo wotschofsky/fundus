@@ -14,7 +14,7 @@ export async function take(url: string): Promise<Response | undefined> {
   return await read?.catch(() => undefined);
 }
 
-/** Signing in makes every read started before it stale: each was made signed out. */
+/** Drops every early read not yet taken: its reader asks afresh. */
 export function dropAll() {
   started.clear();
 }

@@ -2,18 +2,13 @@
   import { createMutation, useQueryClient } from '@tanstack/svelte-query';
   import { ArrowRight } from '@lucide/svelte';
   import { api, send } from '../api';
-  import { dropAll } from '../early';
   import ErrorNotice from '../components/error-notice.svelte';
 
   const qc = useQueryClient();
   let password = $state('');
   const login = createMutation(() => ({
     mutationFn: () => api('/login', send('POST', { password })),
-    onSuccess: () => {
-      // Reads started as the page loaded were made signed out.
-      dropAll();
-      return qc.invalidateQueries();
-    },
+    onSuccess: () => qc.invalidateQueries(),
   }));
 </script>
 
