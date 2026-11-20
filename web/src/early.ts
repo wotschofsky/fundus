@@ -8,8 +8,6 @@ export function start(urls: string[], init?: RequestInit) {
 
 /** The early read of `url`, handed out once, whatever it answered (asking again would only wait for
  * the same answer); one that never arrived is not, and its reader asks afresh. */
-// ponytail: an early read taken late (the vault's sign-in check failed and was tried again) is
-// as old as the page; the reader's next refresh brings it up to date.
 export async function take(url: string): Promise<Response | undefined> {
   const read = started.get(url);
   started.delete(url);

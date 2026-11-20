@@ -2,9 +2,9 @@ import { mount } from 'svelte';
 import './style.css';
 import { start } from './early';
 
-const link = location.pathname.match(/^\/s\/([^/]+)\/?$/)?.[1];
+const link = location.pathname.match(/^\/s\/([^/%]+)\/?$/)?.[1];
 // As the pages ask for them; an id or token with an escaped character just isn't read early.
-const entry = location.pathname.match(/^\/entries\/([^/]+)\/?$/)?.[1];
+const entry = location.pathname.match(/^\/entries\/([^/%]+)\/?$/)?.[1];
 if (link) start([`/s/${link}/entry`], { credentials: 'omit' });
 else
   start([

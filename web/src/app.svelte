@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { QueryClient, createQuery, setQueryClientContext } from '@tanstack/svelte-query';
   import { api, ApiError, type Me } from './api';
+  import { dropAll } from './early';
   import { router } from './router.svelte';
   import EmptyState from './components/empty-state.svelte';
   import ErrorNotice from './components/error-notice.svelte';
@@ -68,7 +69,13 @@
 {:else if !me.data}
   <main class="login">
     <ErrorNotice error={me.error} />
-    <button onclick={() => me.refetch()}>Try again</button>
+    <!-- The reads started beside the failed check are as old as the page by now. -->
+    <button
+      onclick={() => {
+        dropAll();
+        me.refetch();
+      }}>Try again</button
+    >
   </main>
 {:else if path === '/oauth/authorize'}
   <AuthorizePage />

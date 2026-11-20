@@ -73,11 +73,12 @@
   const share = createQuery(() => shareQuery(id));
   // The page shows once all it holds has been read, not in a second step: the Share button and
   // speakers' names read the link and people. Each keeps its answer through later reads. Those two
-  // hold the page only on their first try: offline, or trying again after failing, they wait for
-  // the network, the recording does not. Once shown, the page stays: a read that asks again later
-  // (back online, say) never takes it away from someone editing it.
-  const firstTry = (q: { isLoading: boolean; failureCount: number }) =>
-    q.isLoading && q.failureCount === 0;
+  // hold the page only on their very first try: offline, trying again after failing, or asked
+  // again after giving up (on coming back to the tab), they wait for the network, the recording
+  // does not. Once shown, the page stays: a read that asks again later (back online, say) never
+  // takes it away from someone editing it.
+  const firstTry = (q: { isLoading: boolean; failureCount: number; isFetched: boolean }) =>
+    q.isLoading && q.failureCount === 0 && !q.isFetched;
   let shown = $state(false);
   const loading = $derived(
     !shown && (entry.isPending || firstTry(share) || firstTry(people)) && !entry.error,
