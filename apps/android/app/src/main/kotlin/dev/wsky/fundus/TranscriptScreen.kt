@@ -192,7 +192,7 @@ private fun TranscriptContent(
 ) {
     val current by model.currentRow.collectAsStateWithLifecycle()
     val playable = model.playback.collectAsStateWithLifecycle().value.available
-    val clockWidth = if (entry.recorded == null || Format.hour24) 64.dp else 88.dp
+    val clockWidth = if (entry.recorded == null || state.rowsLook?.hour24 != false) 64.dp else 88.dp
     val haptics = LocalHapticFeedback.current
 
     // Opened from a search result: show that passage once the transcript is in.

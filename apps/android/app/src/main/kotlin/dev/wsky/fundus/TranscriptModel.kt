@@ -36,6 +36,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
     data class State(
         val entry: Entry? = null,
         val rows: List<TranscriptRow> = emptyList(),
+        /** The `Format.look` `rows` were drawn under: changed since, the next read does not send the key, so they are drawn again. */
+        val rowsLook: Format.Look? = null,
         val loadError: String? = null,
         val updatingSpeaker: Boolean = false,
     ) {
@@ -62,8 +64,6 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
 
     /** The vault's key for the segments `rows` came from (hex); sent back, unchanged ones are not resent. */
     private var rowsKey: String? = null
-    /** The `Format.look` `rows` were drawn under: changed since, the next read does not send the key, so they are drawn again. */
-    private var rowsLook: Format.Look? = null
     /** Refreshes overlap (the 3 s poll, an edit's, "Try again"): the number of the latest asked, and of the one shown. */
     private var asked = 0
     private var shown = 0
@@ -91,7 +91,7 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         val ask = ++asked
         try {
             // The recording and its transcript in one read: neither waits for the other.
-            val held = rowsKey?.takeIf { rowsLook == Format.look }?.let { "?transcript_key=$it" }.orEmpty()
+            val held = rowsKey?.takeIf { _state.value.rowsLook == Format.look }?.let { "?transcript_key=$it" }.orEmpty()
             val text = vault.request("/entries/${segment(entryId)}$held")
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
@@ -104,12 +104,11 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             // either answer may hold the newer recording (an edit made here, say), and asking again
             // brings the latest, the segments too when the rows' look is out of date.
             if (ask < shown) return
-            if (!transcript.fits(rowsKey) || rows == null && rowsLook != look) return refresh()
+            if (!transcript.fits(rowsKey) || rows == null && _state.value.rowsLook != look) return refresh()
             shown = ask
             rowsKey = transcript.transcriptKey
-            if (rows != null) rowsLook = look
             // Shown together: the recording appears once its transcript is in, not before.
-            _state.update { it.copy(entry = detail, rows = rows ?: it.rows, loadError = null) }
+            _state.update { it.copy(entry = detail, rows = rows ?: it.rows, rowsLook = if (rows != null) look else it.rowsLook, loadError = null) }
             if (detail.audioAvailable && player == null) startPlayer(detail)
             if (rows != null && openAt != null && _currentRow.value == null) _currentRow.value = rowAt(openAt)
         } catch (error: CancellationException) {
