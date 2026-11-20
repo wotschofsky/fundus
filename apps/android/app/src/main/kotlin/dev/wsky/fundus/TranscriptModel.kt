@@ -135,7 +135,7 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             val timeline = SessionTimeline.of(entry)
             val dated = entry.recorded != null
             segments.map {
-                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true, look = look) else Format.position(it.startMs / 1000.0)
+                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true, look = look) else Format.position(it.startMs / 1000.0, look.locale)
                 TranscriptRow(it.id, it.speaker, it.startMs, clock, it.text)
             }
         }

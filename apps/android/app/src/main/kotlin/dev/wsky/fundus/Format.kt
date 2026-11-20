@@ -22,11 +22,11 @@ object Format {
         return if (minutes < 60) "${minutes}m" else "%dh %02dm".format(minutes / 60, minutes % 60)
     }
 
-    /** `2:03` or `1:02:03`, for positions in the audio. */
-    fun position(seconds: Double): String {
+    /** `2:03` or `1:02:03`, for positions in the audio, in `locale`'s digits. */
+    fun position(seconds: Double, locale: Locale = Locale.getDefault()): String {
         val total = seconds.toInt().coerceAtLeast(0)
-        return if (total >= 3600) "%d:%02d:%02d".format(total / 3600, total % 3600 / 60, total % 60)
-        else "%d:%02d".format(total / 60, total % 60)
+        return if (total >= 3600) "%d:%02d:%02d".format(locale, total / 3600, total % 3600 / 60, total % 60)
+        else "%d:%02d".format(locale, total / 60, total % 60)
     }
 
     /** `Nov 2`. */

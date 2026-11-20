@@ -83,6 +83,20 @@ class LogicTest {
         assertEquals("1:02:03", Format.position(3723.0))
     }
 
+    /** A row's position is drawn in the language it is kept under, not whatever the phone uses meanwhile. */
+    @Test
+    fun positionsAreDrawnInTheGivenLanguage() {
+        val arabic = java.util.Locale.forLanguageTag("ar-EG-u-nu-arab")
+        val before = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(arabic)
+        try {
+            assertEquals("2:03", Format.position(123.4, java.util.Locale.US))
+        } finally {
+            java.util.Locale.setDefault(before)
+        }
+        assertEquals("٢:٠٣", Format.position(123.4, arabic))
+    }
+
     @Test
     fun timelineFollowsSourceFilesAfterTheTrim() {
         val entry = VaultJson.decodeFromString<Entry>(
