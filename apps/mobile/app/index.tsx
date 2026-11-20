@@ -192,6 +192,13 @@ export default function UploadScreen() {
                   </Text>
                   <Text>Choose audio from a connected recorder or your files.</Text>
                   <Text>WAV files become verified, lossless FLAC when possible.</Text>
+                  {queue?.state === 'failed' ? (
+                    <Button
+                      label="Clear local queue"
+                      variant="text"
+                      onPress={() => void action(transfer.clear)}
+                    />
+                  ) : null}
                 </Column>
               )}
               <Button

@@ -159,19 +159,27 @@ public struct QueueState: Codable, Sendable {
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
         try await NativeVaultSession.shared.signIn(server: origin)
         try await configureNative(server: origin, timezone: timezone)
+        // A finished or empty queue keeps no error from before this connection.
+        if ["idle", "verified"].contains(snapshot.state) { snapshot.error = nil; save() }
     }
     /// Revokes this iPhone's access to the queue's vault and stops uploading there. Refused while
     /// an import is unfinished: finish or clear it first.
     public func signOut() async throws {
         let origin = snapshot.server
         try forgetServer()
+        snapshot.error = nil; save()
         await NativeVaultSession.shared.signOut(server: origin.isEmpty ? nil : origin)
     }
     #endif
     public func enqueue(_ urls: [URL], sessions: [ImportSessionPlan] = [], sourceIDs: [String: String] = [:]) async throws {
         guard ["idle", "verified"].contains(snapshot.state), !urls.isEmpty else { throw failure("Finish or clear the current queue first.") }
         guard !snapshot.server.isEmpty else { throw failure("Connect to your vault first.") }
+        let destination = snapshot.server
         _ = try await connection()
+        // The selection was meant for the vault and queue as they were before this waited.
+        guard snapshot.server == destination, ["idle", "verified"].contains(snapshot.state) else {
+            throw failure("The vault or queue changed while adding. Select the recordings again.")
+        }
         guard Set(urls.map(\.path)).count == urls.count else { throw failure("Select each source recording only once.") }
         for url in urls {
             guard ["wav", "flac", "mp3", "m4a"].contains(url.pathExtension.lowercased()) else { throw failure("Select WAV, FLAC, MP3, or M4A recordings.") }
@@ -680,10 +688,10 @@ public struct QueueState: Codable, Sendable {
             guard self.snapshot.state == "uploading", let itemID, let item = self.snapshot.files.first(where: { $0.id == itemID }) else { return }
             #if os(iOS)
             // Not the queue's to act on: a chunk a newer send superseded, or any chunk finishing while a
-            // resumed runner is at work (it reconciles the offset and sends again, with its own retry).
-            // Otherwise a cancellation of the current chunk (by iOS, or Pause's late cancel reaching a
-            // chunk Resume already sent) fails the queue below, resumably. After a relaunch nothing was
-            // sent by this process, so a chunk that finished is the queue's.
+            // runner is at work (started by Resume or by a relaunch, it reconciles the offset and sends
+            // again, with its own retry). Otherwise a cancellation of the current chunk (by iOS, or
+            // Pause's late cancel reaching a chunk Resume already sent) fails the queue below,
+            // resumably. After a relaunch with no runner at work, a chunk that finished is the queue's.
             if let sent = self.sentChunk, sent != taskID { return }
             if self.runner != nil { return }
             #endif
