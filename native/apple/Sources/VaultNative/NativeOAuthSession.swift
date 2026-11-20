@@ -1,10 +1,14 @@
-#if os(macOS)
-import AppKit
 import Combine
 import CryptoKit
 import Foundation
-@preconcurrency import Network
 import Security
+#if os(macOS)
+import AppKit
+@preconcurrency import Network
+#else
+import AuthenticationServices
+import UIKit
+#endif
 
 struct NativeOAuthCredentials: Codable, Sendable {
     let server: String
@@ -54,11 +58,18 @@ struct NativeOAuthCredentials: Codable, Sendable {
 
 private enum NativeOAuthFailure: LocalizedError {
     case message(String), keychain, cancelled
+    /// The server refused the grant (`invalid_grant`): revoked, expired, or a token reused.
+    case refused
     var errorDescription: String? {
         switch self {
         case .message(let message): message
+        #if os(macOS)
         case .keychain: "Could not access the vault connection in macOS Keychain. Unlock Keychain and reconnect."
+        #else
+        case .keychain: "Could not access the saved vault connection in Keychain. Unlock this iPhone and reconnect."
+        #endif
         case .cancelled: "Connection cancelled."
+        case .refused: "This connection has expired or was revoked. Connect the app again."
         }
     }
 }
@@ -80,11 +91,20 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private let storage: any NativeCredentialStorage
     private let session: URLSession
     private let preferences: UserDefaults
+    /// Refreshes under way, by the refresh token each redeems.
     private var refreshes: [String: Task<NativeOAuthCredentials, Error>] = [:]
-    /// Keychain reads are slow enough to matter on every request; the stored item stays the source of truth.
+    /// Refresh tokens this process saw rotated, refused or signed out: never a usable grant again,
+    /// whatever Keychain still holds (a write or a removal it could not make).
+    private var spent: Set<String> = []
+    /// Keychain reads are slow enough to matter on every request, so Keychain is read only on a cache
+    /// miss. Within this process the cache is current: it holds a rotation Keychain could not save,
+    /// and a Keychain item holding a spent token is never loaded into it.
     private var cached: [String: NativeOAuthCredentials] = [:]
     private var login: Task<Void, Error>?
     private static let preference = "NativeVaultServer"
+    /// The iPhone app's callback: a reverse-domain scheme it owns (RFC 8252 §7.1), with no host.
+    static let phoneCallback = URL(string: "dev.wsky.vaultuploader:/oauth")!
+    static let phoneName = "Fundus for iPhone"
 
     public convenience init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -105,8 +125,8 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     }
 
     private func stored(_ server: String) throws -> NativeOAuthCredentials? {
-        if let credentials = cached[server] { return credentials }
-        let credentials = try storage.read(server: server)
+        if let credentials = cached[server] { return spent.contains(credentials.refreshToken) ? nil : credentials }
+        guard let credentials = try storage.read(server: server), !spent.contains(credentials.refreshToken) else { return nil }
         cached[server] = credentials
         return credentials
     }
@@ -170,13 +190,30 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         }
     }
 
+    /// Only how the approval page opens and its answer arrives differs: a loopback listener on
+    /// the Mac, an app-scheme callback through `ASWebAuthenticationSession` on iPhone.
     private func performSignIn(server: String) async throws {
-        let state = try Self.random(), verifier = try Self.random()
+        let state = try Self.random()
+        #if os(macOS)
         let receiver = try NativeLoopbackCallback(state: state)
         defer { receiver.cancel() }
         let callback = try await receiver.start()
+        try await authorize(server: server, name: "Fundus for Mac", callback: callback, state: state) { url in
+            guard NSWorkspace.shared.open(url) else { throw NativeOAuthFailure.message("Could not open your browser. Set a default browser and try again.") }
+            return try await receiver.wait()
+        }
+        #else
+        try await authorize(server: server, name: Self.phoneName, callback: Self.phoneCallback, state: state) { url in
+            try await NativeWebAuthentication.open(url, scheme: Self.phoneCallback.scheme!)
+        }
+        #endif
+    }
+
+    /// Registers this app, shows the approval page through `browse`, and redeems the verified code.
+    func authorize(server: String, name: String, callback: URL, state: String, browse: (URL) async throws -> URL) async throws {
+        let verifier = try Self.random()
         let registration = try await oauth(server: server, path: "/oauth/register", json: [
-            "client_name": "Fundus for Mac", "redirect_uris": [callback.absoluteString],
+            "client_name": name, "redirect_uris": [callback.absoluteString],
             "token_endpoint_auth_method": "none", "scope": "vault:owner",
             "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]
         ])
@@ -190,8 +227,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             .init(name: "resource", value: server + "/api/native"), .init(name: "state", value: state)
         ]
         try Task.checkCancellation()
-        guard NSWorkspace.shared.open(authorization.url!) else { throw NativeOAuthFailure.message("Could not open your browser. Set a default browser and try again.") }
-        let returned = try await receiver.wait()
+        let returned = try await browse(authorization.url!)
         let code = try Self.authorizationCode(from: returned, state: state, issuer: server)
         let tokens = try await oauth(server: server, path: "/oauth/token", form: [
             "grant_type": "authorization_code", "client_id": client, "code": code,
@@ -234,8 +270,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     func connection(for supplied: String, forceRefresh: Bool = false) async throws -> VaultConnection {
         let origin = try Self.origin(supplied)
         guard let credentials = try stored(origin) else {
-            guard let token = VaultCredentials.read(), !token.isEmpty else { throw NativeOAuthFailure.message("Connect this app to your vault first.") }
-            return try VaultConnection(server: origin, token: token)
+            #if os(macOS)
+            // The Mac's upload-token fallback, until upload tokens are removed.
+            if let token = VaultCredentials.read(), !token.isEmpty { return try VaultConnection(server: origin, token: token) }
+            #endif
+            throw NativeOAuthFailure.message("Connect this app to your vault first.")
         }
         guard credentials.server == origin else {
             throw NativeOAuthFailure.message("The saved connection does not match this vault. Connect the app again.")
@@ -245,25 +284,54 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         return try VaultConnection(server: origin, token: current.accessToken, nativeOwner: true)
     }
     private func refresh(_ credentials: NativeOAuthCredentials) async throws -> NativeOAuthCredentials {
-        if let running = refreshes[credentials.server] { return try await running.value }
-        let task = Task { () throws -> NativeOAuthCredentials in
-            let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
-                "grant_type": "refresh_token", "client_id": credentials.clientID,
-                "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
-            ])
+        // One refresh per refresh token: every caller holding that token waits on it, so it is
+        // redeemed once, and a caller holding a newer grant never waits on an older grant's refresh.
+        let key = credentials.refreshToken
+        let task = refreshes[key] ?? Task { () throws -> NativeOAuthCredentials in
+            let result: [String: Any]
+            do {
+                result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
+                    "grant_type": "refresh_token", "client_id": credentials.clientID,
+                    "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
+                ])
+            } catch NativeOAuthFailure.refused {
+                // Only a new sign-in can help a refused grant, so it is forgotten rather than tried
+                // again, unless a sign-in has already replaced it.
+                spent.insert(credentials.refreshToken)
+                if cached[credentials.server]?.refreshToken == credentials.refreshToken || cached[credentials.server] == nil {
+                    try? storage.remove(server: credentials.server)
+                    cached[credentials.server] = nil
+                }
+                throw NativeOAuthFailure.refused
+            }
+            spent.insert(credentials.refreshToken)
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
-            try store(updated)
+            // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.
+            guard cached[credentials.server]?.refreshToken == credentials.refreshToken else { return updated }
+            // Held in memory before Keychain is written: the server has retired the old token, so
+            // this process never redeems it again even if the write fails (the next rotation is
+            // written again).
+            cached[credentials.server] = updated
+            try? storage.save(updated)
             return updated
         }
-        refreshes[credentials.server] = task
-        defer { refreshes[credentials.server] = nil }
-        do {
-            let updated = try await task.value
-            if server == credentials.server { isConnected = true; lastError = nil }
-            return updated
+        refreshes[key] = task
+        defer { if refreshes[key] == task { refreshes[key] = nil } }
+        let outcome = await task.result
+        // The connection is what is stored once this caller resumes: this refresh's rotation, or a
+        // grant a sign-in stored while it ran. Only with neither has this caller's refresh failed.
+        if let current = try? stored(credentials.server), current.refreshToken != credentials.refreshToken {
+            // Connected by this refresh's own rotation only: a grant a sign-in stored keeps the state
+            // it was given (it may since have been refused).
+            if case .success(let updated) = outcome, updated.refreshToken == current.refreshToken, server == credentials.server {
+                isConnected = true; lastError = nil
+            }
+            return current
         }
-        catch { if server == credentials.server { isConnected = false }; throw error }
+        if server == credentials.server { isConnected = false }
+        if case .failure(let error) = outcome { throw error }
+        throw NativeOAuthFailure.message("Connect this app to your vault first.")
     }
 
     public func request(_ path: String, method: String = "GET", json: [String: Any]? = nil) async throws -> URLRequest {
@@ -286,20 +354,35 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         try VaultConnection.check(result.1, result.0)
         return result.0
     }
-    public func signOut() async {
-        cancelSignIn()
-        let origin = server
-        if let credentials = try? stored(origin) {
-            _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
+    /// Revokes and forgets the connection to `supplied`, or, given none, to the selected vault.
+    public func signOut(server supplied: String? = nil) async {
+        let origin: String
+        if let supplied {
+            guard let parsed = try? Self.origin(supplied) else { return }
+            origin = parsed
+        } else { origin = server }
+        let selected = origin == server
+        if selected { cancelSignIn() }
+        // Forgotten here before the revoke request: a sign-in finishing while it is under way keeps
+        // the grant it stored.
+        let credentials = try? stored(origin)
+        if let credentials {
+            refreshes[credentials.refreshToken]?.cancel()
+            refreshes[credentials.refreshToken] = nil
+            // Never a grant again, even if Keychain cannot remove the item below.
+            spent.insert(credentials.refreshToken)
         }
-        refreshes[origin]?.cancel()
-        refreshes[origin] = nil
         try? storage.remove(server: origin)
         cached[origin] = nil
-        isConnected = false
-        server = ""
-        lastError = nil
-        preferences.removeObject(forKey: Self.preference)
+        if selected {
+            isConnected = false
+            server = ""
+            lastError = nil
+            preferences.removeObject(forKey: Self.preference)
+        }
+        if let credentials {
+            _ = try? await oauth(server: origin, path: "/oauth/revoke", form: ["client_id": credentials.clientID, "token": credentials.refreshToken])
+        }
     }
 
     private func oauth(server: String, path: String, json: [String: Any]? = nil, form: [String: String]? = nil) async throws -> [String: Any] {
@@ -319,13 +402,14 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         guard let http = response as? HTTPURLResponse else { throw NativeOAuthFailure.message("The server returned an invalid connection response.") }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) else {
-            if value["error"] as? String == "invalid_grant" { throw NativeOAuthFailure.message("This connection has expired or was revoked. Connect the app again.") }
+            if value["error"] as? String == "invalid_grant" { throw NativeOAuthFailure.refused }
             throw NativeOAuthFailure.message("The server could not connect this app. Check the server address and try again.")
         }
         return value
     }
 }
 
+#if os(macOS)
 @MainActor final class NativeLoopbackCallback {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "vault.oauth.loopback")
@@ -420,6 +504,44 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             connection.cancel()
             if let result { Task { @MainActor in self?.finish(.success(result)) } }
         })
+    }
+}
+#else
+/// Shows the approval page in a browser sheet that shares Safari's sign-ins (such as
+/// Cloudflare Access) and returns the app-scheme callback it catches.
+@MainActor private final class NativeWebAuthentication: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private let anchor: ASPresentationAnchor
+    private var session: ASWebAuthenticationSession?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private init(anchor: ASPresentationAnchor) { self.anchor = anchor }
+
+    static func open(_ url: URL, scheme: String) async throws -> URL {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
+            throw NativeOAuthFailure.message("Open Fundus and try connecting again.")
+        }
+        let browser = NativeWebAuthentication(anchor: window)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                browser.continuation = continuation
+                // @Sendable: the SDK does not promise the main thread, so the result hops there itself.
+                let session = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { @Sendable [weak browser] callback, error in
+                    let result: Result<URL, Error> = if let callback { .success(callback) }
+                        else if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin { .failure(NativeOAuthFailure.cancelled) }
+                        else { .failure(NativeOAuthFailure.message("Could not show the vault sign-in page. Try connecting again.")) }
+                    Task { @MainActor in browser?.finish(result) }
+                }
+                session.presentationContextProvider = browser
+                session.prefersEphemeralWebBrowserSession = false // Reuse an existing browser sign-in.
+                browser.session = session
+                if !session.start() { browser.finish(.failure(NativeOAuthFailure.message("Could not show the vault sign-in page. Try connecting again."))) }
+            }
+        } onCancel: { Task { @MainActor in browser.session?.cancel(); browser.finish(.failure(NativeOAuthFailure.cancelled)) } }
+    }
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { anchor }
+    private func finish(_ result: Result<URL, Error>) {
+        continuation?.resume(with: result)
+        continuation = nil
+        session = nil
     }
 }
 #endif

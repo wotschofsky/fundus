@@ -52,7 +52,7 @@ docker compose up -d
 
 Open your public URL and sign in. The server listens on loopback port `3000`; your reverse proxy provides HTTPS. Use a password of at least 12 characters.
 
-An existing authenticating proxy can provide the browser login instead. See the [server setup guide](docs/guide.md#run-the-server) for proxy authentication, the exact client routes to expose, environment variables, and running a local binary. For a published container image, see [packaging and releases](docs/packaging.md).
+Cloudflare Access can provide the browser login instead. See the [server setup guide](docs/guide.md#run-the-server) for proxy authentication, the exact client routes to expose, environment variables, and running a local binary. For a published container image, see [packaging and releases](docs/packaging.md).
 
 ## The apps
 
@@ -79,7 +79,7 @@ A native Kotlin and Jetpack Compose app: the library with transcripts and playba
 
 ### iOS
 
-An Expo upload app with native SwiftUI controls prepares audio and uploads it in resumable chunks. It requires a custom native build and an upload token from Fundus Settings. [iOS build instructions →](docs/guide.md#upload-apps)
+An Expo upload app with native SwiftUI controls prepares audio and uploads it in resumable chunks. It requires a custom native build and connects through browser sign-in, like the Mac and Android apps. [iOS build instructions →](docs/guide.md#upload-apps)
 
 Physical recorder connectivity and background execution depend on the device and OS. See [verification notes](docs/verification.md) for current testing coverage.
 

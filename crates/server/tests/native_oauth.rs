@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     Json, Router,
     body::Body,
@@ -27,7 +28,7 @@ async fn setup() -> (tempfile::TempDir, App, Router) {
     let mut c = Config::from_env().unwrap();
     c.data = dir.path().into();
     c.public_url = ORIGIN.parse().unwrap();
-    c.proxy_auth = true;
+    common::proxy(&mut c);
     let app = App::new(c).await.unwrap();
     let probe = Router::new()
         .route(
@@ -44,7 +45,11 @@ async fn setup() -> (tempfile::TempDir, App, Router) {
             oauth::require_native,
         ))
         .with_state(app.clone());
-    let router = api::router(app.clone(), tokio_util::sync::CancellationToken::new()).merge(probe);
+    let router = common::signed_in(
+        &app,
+        api::router(app.clone(), tokio_util::sync::CancellationToken::new()),
+    )
+    .merge(probe);
     (dir, app, router)
 }
 async fn call(
@@ -419,4 +424,98 @@ async fn native_owner_alias_supports_crud_uploads_and_excludes_credential_manage
             StatusCode::NOT_FOUND
         );
     }
+}
+
+#[tokio::test]
+async fn owner_access_returns_only_to_the_device_that_signed_in() {
+    let (_dir, app, r) = setup().await;
+    let owner = |redirect: &str| {
+        json!({"client_name":"Fundus","redirect_uris":[redirect],"scope":"vault:owner"}).to_string()
+    };
+    // Anyone can register a client: one approval of theirs must not send the library to a website.
+    let json = "application/json";
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/oauth/register",
+        Some(owner("https://evil.example/callback")),
+        json,
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    for redirect in [CALLBACK, "dev.wsky.fundus:/oauth"] {
+        let (s, _) = call(
+            &r,
+            "POST",
+            "/oauth/register",
+            Some(owner(redirect)),
+            json,
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{redirect}");
+    }
+    // Nor does an ID written by hand, or a client stored before registration checked this.
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        json!({"name":"Fundus","redirect_uris":["https://evil.example/callback"],"auth_method":"none","secret_hash":null,"scope":"vault:owner","nonce":"x"}).to_string(),
+    );
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES('stored','Fundus','[\"https://evil.example/callback\"]','none',unixepoch(),'vault:owner')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(VERIFIER.as_bytes()));
+    for client in [forged.as_str(), "stored"] {
+        let q = form(&[
+            ("client_id", client),
+            ("redirect_uri", "https://evil.example/callback"),
+            ("response_type", "code"),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "vault:owner"),
+            ("resource", NATIVE),
+        ]);
+        let (s, _) = call(
+            &r,
+            "GET",
+            &format!("/api/v1/oauth/authorize?{q}"),
+            None,
+            "",
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{client}");
+    }
+}
+
+#[tokio::test]
+async fn an_owner_request_opened_before_the_check_still_cannot_send_its_code_to_a_website() {
+    let (_dir, app, r) = setup().await;
+    // Stored, and its consent page opened, before owner access was held to the device.
+    sqlx::query("INSERT INTO oauth_clients(id,name,redirect_uris,auth_method,created_at,allowed_scope) VALUES('stored','Fundus','[\"https://evil.example/callback\"]','none',unixepoch(),'vault:owner')")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oauth_pending(hash,client_id,redirect_uri,challenge,scope,resource,state,expires_at) VALUES(?,'stored','https://evil.example/callback','challenge','vault:owner',?,NULL,unixepoch() + 600)")
+        .bind(auth::hash("opened-before"))
+        .bind(NATIVE)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let (s, v) = call(
+        &r,
+        "POST",
+        "/api/v1/oauth/authorize",
+        Some(json!({"request_id":"opened-before","approve":true}).to_string()),
+        "application/json",
+        &[("Origin", ORIGIN)],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let codes: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_codes")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(codes, 0);
 }

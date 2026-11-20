@@ -77,7 +77,21 @@ pub async fn issue(app: &App, name: &str, scope: &str) -> Result<String> {
     .await?;
     Ok(value)
 }
+/// For a request the browser's own sign-in (its cookie, or Access's token) lets in.
 fn check_origin(app: &App, request: &Request) -> Result<()> {
+    // Any site can make the browser send one and time the answer without reading it (does a
+    // search find this word?). Only this site's pages and what the owner opens directly may ask;
+    // browsers too old to say which send nothing.
+    let site = request
+        .headers()
+        .get("sec-fetch-site")
+        .map(|v| v.as_bytes());
+    if site.is_some_and(|site| site != b"same-origin" && site != b"none") {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "Requests from other sites are refused".into(),
+        ));
+    }
     if !["GET", "HEAD", "OPTIONS"].contains(&request.method().as_str()) {
         let origin = request
             .headers()
@@ -91,9 +105,21 @@ fn check_origin(app: &App, request: &Request) -> Result<()> {
     Ok(())
 }
 
-/// Applied only to browser routes, never to the public upload/MCP routers.
+/// Applied only to browser routes, never to the public upload/MCP routers. In proxy mode a request
+/// without an `Authorization` header is the owner's only with Cloudflare Access's token for it:
+/// one that slipped past the proxy's sign-in gets nothing (`access.rs`).
 pub async fn require_browser(State(app): State<App>, mut request: Request, next: Next) -> Response {
     if app.config.proxy_auth && !request.headers().contains_key(header::AUTHORIZATION) {
+        let token = request
+            .headers()
+            .get(crate::access::HEADER)
+            .and_then(|v| v.to_str().ok());
+        let Some(token) = token else {
+            return Error(StatusCode::UNAUTHORIZED, "Sign in to continue".into()).into_response();
+        };
+        if let Err(error) = crate::access::verify(&app, token).await {
+            return error.into_response();
+        }
         if let Err(error) = check_origin(&app, &request) {
             return error.into_response();
         }

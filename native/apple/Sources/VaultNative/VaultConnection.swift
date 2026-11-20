@@ -1,6 +1,8 @@
 import Foundation
 import Security
 
+#if os(macOS)
+/// The Mac's legacy upload token. The iPhone app signs in with owner OAuth instead.
 public enum VaultCredentials {
     // Preserve the original fallback service so saved upload tokens remain available to Fundus.
     private static var service: String { (Bundle.main.bundleIdentifier ?? "dev.wsky.transcript-vault") + ".upload" }
@@ -18,6 +20,7 @@ public enum VaultCredentials {
         return String(data: data, encoding: .utf8)
     }
 }
+#endif
 public struct VaultConnection: Sendable {
     public let base: URL
     public let token: String

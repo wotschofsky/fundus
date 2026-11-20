@@ -87,7 +87,7 @@
   <div class="setting">
     <h3>Access tokens</h3>
     <p>
-      For the iOS upload app and other clients without browser sign-in. Upload tokens can only add
+      For clients without browser sign-in. Upload tokens can only add
       recordings; read tokens can only search and read.
     </p>
     <form
@@ -99,7 +99,7 @@
     >
       <label>
         Name
-        <input placeholder="iPhone" bind:value={name} required maxlength={100} />
+        <input placeholder="Mac" bind:value={name} required maxlength={100} />
       </label>
       <label>
         Access
