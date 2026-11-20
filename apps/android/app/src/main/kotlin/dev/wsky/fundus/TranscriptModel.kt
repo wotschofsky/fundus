@@ -99,10 +99,11 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
             val rows = transcript.segments?.let { rows(detail, it, look) }
             // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
-            // another answer replaced is asked again, with the key of the rows shown: either answer may
-            // hold the newer recording (an edit made here, say), and asking again brings the latest.
+            // another answer replaced, or were drawn under another look than this one, is asked again:
+            // either answer may hold the newer recording (an edit made here, say), and asking again
+            // brings the latest, the segments too when the rows' look is out of date.
             if (ask < shown) return
-            if (!transcript.fits(rowsKey)) return refresh()
+            if (!transcript.fits(rowsKey) || rows == null && rowsLook != look) return refresh()
             shown = ask
             rowsKey = transcript.transcriptKey
             if (rows != null) rowsLook = look

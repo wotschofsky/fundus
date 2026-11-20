@@ -108,10 +108,12 @@ final class TranscriptModel {
                 made = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
             }
             // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
-            // another answer replaced is asked again, with the key of the rows shown: either answer may
-            // hold the newer recording (an edit made here, say), and asking again brings the latest.
+            // another answer replaced, or were drawn in another zone than this timeline's, is asked again:
+            // either answer may hold the newer recording (an edit made here, say), and asking again
+            // brings the latest, the segments too when the rows' zone is out of date.
             guard ask > shown else { return }
-            guard Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey) else { return await refresh() }
+            guard Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey),
+                  made != nil || rowsZone == timeline.timeZone else { return await refresh() }
             shown = ask
             if let made {
                 rows = made

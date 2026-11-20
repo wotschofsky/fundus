@@ -55,7 +55,7 @@ object Format {
 
     val zone: ZoneId get() = ZoneId.systemDefault()
 
-    /** What times are drawn under besides the time itself: one drawn under another look is out of date. */
+    /** What times and positions are drawn under besides the value itself: one drawn under another look is out of date. */
     data class Look(val hour24: Boolean, val zone: ZoneId, val locale: Locale)
 
     /** The phone's look now. */
