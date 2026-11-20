@@ -381,6 +381,8 @@ public struct QueueState: Codable, Sendable {
             return // The native session delegate schedules the next bounded chunk.
         }
         _ = try await sendJSON(connection, "/api/v1/imports/\(snapshot.importID!)/complete", method: "POST")
+        // Paused or cleared while completing: the queue they left stays as they left it.
+        try Task.checkCancellation()
         snapshot.state = "verifying"; save()
         try await pollReceipt()
     }
