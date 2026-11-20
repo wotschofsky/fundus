@@ -83,7 +83,7 @@ class LogicTest {
         assertEquals("1:02:03", Format.position(3723.0))
     }
 
-    /** A position is drawn in the language it is given (a row's look's), not whatever the phone uses meanwhile. */
+    /** A position is drawn in the digits of the locale it is given (its row's look's), not the phone's meanwhile. */
     @Test
     fun positionsAreDrawnInTheGivenLanguage() {
         val arabic = java.util.Locale.forLanguageTag("ar-EG-u-nu-arab")

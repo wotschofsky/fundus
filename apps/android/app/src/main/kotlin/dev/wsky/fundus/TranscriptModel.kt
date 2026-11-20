@@ -96,7 +96,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
             val look = Format.look
-            // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            // Left out when unchanged. The key covers the recording's time too, which decides whether rows
+            // show clock times, and where they count from when its sources carry no time of their own.
             val rows = transcript.segments?.let { rows(detail, it, look) }
             // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
             // another answer replaced, or were drawn under another look than this one, is asked again:

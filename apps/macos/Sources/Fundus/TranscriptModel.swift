@@ -102,7 +102,8 @@ final class TranscriptModel {
             let read = try await VaultAPI.get(VaultAPI.entryPath(entryID, held), as: Detail.self)
             let detail = read.entry
             let timeline = Self.timeline(for: detail)
-            // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            // Left out when unchanged. The key covers the recording's time too, which decides whether rows
+            // show clock times, and where they count from when its sources carry no time of their own.
             var made: [TranscriptRow]?
             if let segments = read.segments {
                 made = await Self.rows(segments, timeline: timeline, dated: detail.recordedAt != nil)
