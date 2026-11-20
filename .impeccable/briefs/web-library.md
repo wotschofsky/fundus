@@ -6,6 +6,6 @@ Operate mode, code-first. Plain white surfaces; system typography; neutral ink a
 
 The first viewport prioritizes the recording list and a findable uploader connection. On narrow screens navigation remains labeled and the content stacks without horizontal overflow. Keep readable body text, clear focus states, subtle active states, and enough separation between controls.
 
-Opening a recording, listening from a timestamp, reading its transcript, and correcting labels or speaker identity are the primary tasks. Search returns evidence with audio time links and visible coverage. Settings gives the address apps connect to through browser sign-in, and lists and disconnects connected apps. White does not hide warnings, destructive actions, or unknown speakers.
+Opening a recording, listening from a timestamp, reading its transcript, and correcting labels or speaker identity are the primary tasks. Search returns evidence with audio time links and visible coverage. Settings gives the addresses the native apps and chat apps connect to through browser sign-in, and lists and disconnects connected apps. White does not hide warnings, destructive actions, or unknown speakers.
 
 The signature interaction remains timestamp-linked audio with optional transcript following. Screenshots use clearly labeled synthetic demonstration content. Do not imply physical hardware testing. Web reviews certify only the supplied web evidence, not absent native screenshots.

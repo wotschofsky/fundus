@@ -24,8 +24,9 @@ final class AppModel {
     /// recorder list does not redraw while a file uploads.
     private(set) var transfer: QueueState
     private(set) var transferState: String
-    /// The vault uploads go to; can differ from `server` (the library shown) when that vault could
-    /// not be opened, such as an unfinished import whose connection is gone.
+    /// The vault uploads go to, as the queue saved it. It can differ from `server` (the library
+    /// shown): an upload-token setup saved the address as typed, and a sign-in that finishes
+    /// mid-import opens its own vault.
     private(set) var uploadServer: String
     private(set) var hasUploads: Bool
     private(set) var isCopyingSources = false

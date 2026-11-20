@@ -40,7 +40,7 @@ pub const MISSING: &str = "VAULT_AUTH_MODE=proxy needs VAULT_ACCESS_TEAM_DOMAIN 
      (<team>.cloudflareaccess.com) and VAULT_ACCESS_AUD (the Access application's Audience tag)";
 impl Settings {
     /// From `VAULT_ACCESS_TEAM_DOMAIN` and `VAULT_ACCESS_AUD`; none when neither is set, so
-    /// commands that never check a sign-in (`init`, `backup`) run without them.
+    /// commands that never check a sign-in (`init`, `backup`, `healthcheck`) run without them.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
         let team = std::env::var("VAULT_ACCESS_TEAM_DOMAIN").unwrap_or_default();
         let audience = std::env::var("VAULT_ACCESS_AUD").unwrap_or_default();
