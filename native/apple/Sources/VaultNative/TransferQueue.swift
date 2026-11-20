@@ -147,6 +147,8 @@ public struct QueueState: Codable, Sendable {
     public func configureNative(server: String, timezone: String) async throws {
         guard ["idle", "verified"].contains(snapshot.state) || server == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
         _ = try await NativeVaultSession.connection(server: server)
+        // Checked again: an import may have started while this waited.
+        guard ["idle", "verified"].contains(snapshot.state) || server == snapshot.server else { throw failure("Finish or clear the current queue before changing servers.") }
         guard TimeZone(identifier: timezone) != nil else { throw failure("Choose a valid recorder timezone.") }
         snapshot.server = server; snapshot.timezone = timezone; save()
     }

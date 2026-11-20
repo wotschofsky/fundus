@@ -249,6 +249,7 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         ReconnectMockProtocol.release()
         _ = try await refreshing
         XCTAssertEqual(storage.values[origin]?.refreshToken, "synthetic-new-refresh")
+        XCTAssertTrue(session.isConnected)
         let current = try await session.connection(for: origin)
         XCTAssertEqual(current.token, "oa_synthetic-new")
     }
