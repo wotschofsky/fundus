@@ -1,4 +1,5 @@
 import { tick } from 'svelte';
+import { dropAll } from './early';
 
 /** Scroll position per history entry, so Back returns to where you were. */
 const positions = new Map<string, number>();
@@ -53,6 +54,8 @@ class Router {
   }
 
   #show(url: URL, key: string, back: boolean) {
+    // The page the early reads were made for is gone: one never taken would be handed out stale.
+    if (url.pathname !== this.url.pathname) dropAll();
     this.url = url;
     this.key = key;
     tick().then(() => {

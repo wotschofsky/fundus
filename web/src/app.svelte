@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { QueryClient, createQuery, setQueryClientContext } from '@tanstack/svelte-query';
   import { api, ApiError, type Me } from './api';
+  import { dropAll } from './early';
   import { router } from './router.svelte';
   import EmptyState from './components/empty-state.svelte';
   import ErrorNotice from './components/error-notice.svelte';
@@ -32,7 +33,13 @@
 
   const me = createQuery(() => ({
     queryKey: ['me'],
-    queryFn: () => api<Me>('/v1/me'),
+    queryFn: () =>
+      api<Me>('/v1/me').catch((error) => {
+        // The reads started beside a check that failed were made signed out, or are as old as the
+        // page by the time it passes (signed in here or in another tab, or tried again).
+        dropAll();
+        throw error;
+      }),
     retry: false,
   }));
   const path = $derived(router.url.pathname);

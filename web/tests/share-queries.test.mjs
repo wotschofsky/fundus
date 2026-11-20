@@ -40,7 +40,9 @@ registerHooks({
   },
 });
 globalThis.document ??= new EventTarget();
-const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery } = await import('../src/api.ts');
+const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery, withTranscript } =
+  await import('../src/api.ts');
+const { dropAll, start, take } = await import('../src/early.ts');
 const { LinkClock, forget, leaving } = await import('../src/link-clock.svelte.ts');
 
 /** What the share dialog takes as a change goes out. */
@@ -469,4 +471,57 @@ test("a change's answer is kept without waiting for the read after it, which may
   stop();
   client.clear();
   assert.equal(result, 'kept');
+});
+
+test('a page read sends the key of the transcript it holds and keeps it when left out', async () => {
+  const asked = [];
+  const read = (answer) => async (query) => (asked.push(query), answer);
+  const first = await withTranscript(
+    read({ stage: 'complete', segments: [1], transcript_key: 'k' }),
+  );
+  assert.deepEqual(first.segments, [1]);
+  const same = await withTranscript(read({ stage: 'complete', transcript_key: 'k' }), first);
+  assert.deepEqual(same.segments, [1]);
+  const moved = await withTranscript(read({ segments: [2], transcript_key: 'j' }), same);
+  assert.deepEqual(moved.segments, [2]);
+  assert.deepEqual(asked, ['', '?transcript_key=k', '?transcript_key=k']);
+});
+
+test('an early read that never arrives fails no one, taken or dropped untaken', async () => {
+  const fetched = globalThis.fetch;
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  globalThis.fetch = async () => {
+    throw new TypeError('offline');
+  };
+  try {
+    start(['/lost', '/dropped']);
+    assert.equal(await take('/lost'), undefined);
+    dropAll();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    globalThis.fetch = fetched;
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('an early read is handed out once, whatever it answered, until dropped', async () => {
+  const fetched = globalThis.fetch;
+  const status = { '/ok': 200, '/gone': 404, '/me': 401, '/entry': 401 };
+  globalThis.fetch = async (url) => new Response('{}', { status: status[url] });
+  try {
+    start(['/ok', '/gone', '/me', '/entry']);
+    assert.equal((await take('/ok'))?.status, 200);
+    assert.equal(await take('/ok'), undefined);
+    // Asking again would only wait for the same answer: a recording gone, the sign-in check's no.
+    assert.equal((await take('/gone'))?.status, 404);
+    assert.equal((await take('/me'))?.status, 401);
+    // Dropped (made beside a sign-in check that failed, say), a read is asked afresh.
+    dropAll();
+    assert.equal(await take('/entry'), undefined);
+  } finally {
+    globalThis.fetch = fetched;
+  }
 });

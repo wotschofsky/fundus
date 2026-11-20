@@ -3,6 +3,7 @@ package dev.wsky.fundus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -63,6 +64,16 @@ class LogicTest {
         assertNull(speakers[1].name)
     }
 
+    /** An answer without segments says they are unchanged since the key it was asked with. Once another answer
+     *  replaced the rows, one like that would pair its recording with rows it never saw. */
+    @Test
+    fun anAnswerWithoutSegmentsStandsOnlyBesideTheRowsItWasAskedAbout() {
+        assertTrue(TranscriptPart(null, "k1").fits("k1"))
+        assertFalse(TranscriptPart(null, "k1").fits("k2"))
+        assertTrue(TranscriptPart(emptyList(), "k1").fits("k2"))
+        assertTrue(TranscriptPart(emptyList(), "k1").fits(null))
+    }
+
     @Test
     fun durationsAndPositions() {
         assertEquals("32s", Format.duration(32.0))
@@ -70,6 +81,20 @@ class LogicTest {
         assertEquals("2h 09m", Format.duration(129 * 60.0))
         assertEquals("2:03", Format.position(123.4))
         assertEquals("1:02:03", Format.position(3723.0))
+    }
+
+    /** A position is drawn in the digits of the locale it is given (its row's look's), not the phone's meanwhile. */
+    @Test
+    fun positionsAreDrawnInTheGivenLanguage() {
+        val arabic = java.util.Locale.forLanguageTag("ar-EG-u-nu-arab")
+        val before = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(arabic)
+        try {
+            assertEquals("2:03", Format.position(123.4, java.util.Locale.US))
+        } finally {
+            java.util.Locale.setDefault(before)
+        }
+        assertEquals("٢:٠٣", Format.position(123.4, arabic))
     }
 
     @Test

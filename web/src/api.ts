@@ -1,4 +1,5 @@
 import { queryOptions, type QueryClient } from '@tanstack/svelte-query';
+import { take } from './early';
 import { confirm, leaving, missing } from './link-clock.svelte';
 
 export class ApiError extends Error {
@@ -11,10 +12,12 @@ export class ApiError extends Error {
 }
 
 export async function api<T = void>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await fetch(`/api${path}`, {
-    ...init,
-    headers: { ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
-  });
+  const r =
+    (!init.method ? await take(`/api${path}`) : undefined) ??
+    (await fetch(`/api${path}`, {
+      ...init,
+      headers: { ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
+    }));
   if (!r.ok) {
     const v = await r.json().catch(() => ({ error: `Request failed (${r.status})` }));
     throw new ApiError(r.status, v.error_description ?? v.error ?? `Request failed (${r.status})`);
@@ -66,6 +69,8 @@ export type Entry = {
   speakers?: Speaker[];
   sources?: { offset_ms: number; recorded_at: string | null; filename: string }[];
 };
+/** The owner's read of one recording: with its transcript and whether a correction can be undone. */
+export type EntryDetail = Entry & Transcribed & { correction_undo: boolean };
 export type Evidence = {
   source: string;
   name?: string;
@@ -273,28 +278,29 @@ export type SharedEntry = Pick<
 > & {
   video: Omit<NonNullable<Entry['video']>, 'failure'> | null;
   speakers: Pick<Speaker, 'label' | 'name'>[];
-};
+} & Transcribed;
 
 /** A share link's own data (`/s/{token}/…`), read with the link alone, never a session. */
 export async function shared<T>(token: string, path: string, signal?: AbortSignal): Promise<T> {
-  const r = await fetch(`/s/${encodeURIComponent(token)}/${path}`, { credentials: 'omit', signal });
+  const url = `/s/${encodeURIComponent(token)}/${path}`;
+  const r = (await take(url)) ?? (await fetch(url, { credentials: 'omit', signal }));
   if (!r.ok) throw new ApiError(r.status, `Request failed (${r.status})`);
   return await r.json();
 }
 
-/** Every transcript page, in order. The server caps page size; follow next_cursor until done. */
-export async function transcript(id: string, signal?: AbortSignal): Promise<Segment[]> {
-  const rows: Segment[] = [];
-  let cursor: number | null = 0;
-  while (cursor !== null) {
-    const page: Page<'segments', Segment> = await api(
-      `/v1/entries/${id}/transcript?limit=2000&cursor=${cursor}`,
-      { signal },
-    );
-    rows.push(...page.segments);
-    cursor = page.next_cursor !== null && page.next_cursor > cursor ? page.next_cursor : null;
-  }
-  return rows;
+/** A recording's page as one read brings it: the transcript comes with it, and is left out when
+ * the reader already holds it (`transcript_key` unchanged). */
+export type Transcribed = { segments: Segment[]; transcript_key: string };
+/** Reads a recording with its transcript, sending the key of the segments `held` so unchanged
+ * ones are not sent again, and keeping those. */
+export async function withTranscript<T extends Transcribed>(
+  read: (query: string) => Promise<Omit<T, 'segments'> & { segments?: Segment[] }>,
+  held: T | undefined,
+): Promise<T> {
+  const fresh = await read(
+    held ? `?transcript_key=${encodeURIComponent(held.transcript_key)}` : '',
+  );
+  return { ...fresh, segments: fresh.segments ?? held?.segments ?? [] } as T;
 }
 
 export const isProcessing = (e: Pick<Entry, 'stage'>) =>

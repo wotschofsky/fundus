@@ -36,8 +36,6 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
     data class State(
         val entry: Entry? = null,
         val rows: List<TranscriptRow> = emptyList(),
-        /** False until the transcript has been read once, so "no speech" is not shown while loading. */
-        val rowsLoaded: Boolean = false,
         val loadError: String? = null,
         val updatingSpeaker: Boolean = false,
     ) {
@@ -48,8 +46,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
 
     data class Playback(val available: Boolean = false, val playing: Boolean = false, val positionMs: Long = 0, val durationMs: Long = 0)
 
-    // Opens with what the list already knows (title, date, summary) while the details load.
-    private val _state = MutableStateFlow(State(entry = app.library.state.value.entries.firstOrNull { it.id == entryId }))
+    // Empty until the details and transcript are both read, so the screen opens in one piece.
+    private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
     /** Kept apart from `state` so playback ticks redraw only the player and the spoken row. */
@@ -62,40 +60,63 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
     /** One-off messages for a snackbar. */
     val messages = _messages.receiveAsFlow()
 
-    private var rowsStage: String? = null
+    /** The vault's key for the segments `rows` came from (hex); sent back, unchanged ones are not resent. */
+    private var rowsKey: String? = null
+    /** The `Format.look` `rows` were drawn under: changed since, the next read does not send the key, so they are drawn again. */
+    private var rowsLook: Format.Look? = null
+    /** Refreshes overlap (the 3 s poll, an edit's, "Try again"): the number of the latest asked, and of the one shown. */
+    private var asked = 0
+    private var shown = 0
     private var watcher: Job? = null
     private var ticker: Job? = null
     private var player: MediaController? = null
     private var connecting = false
     private var cleared = false
 
-    init {
+    init { load() }
+
+    /** Also "Try again": a recording still processing is followed from there, as on opening. */
+    fun load() {
+        // People are read beside the recording, not after it.
+        viewModelScope.launch { library.refreshPeople() }
         viewModelScope.launch {
             refresh()
             watch()
-            library.refreshPeople()
         }
     }
 
     // MARK: Loading
 
     suspend fun refresh() {
+        val ask = ++asked
         try {
-            val detail = vault.get<Entry>("/entries/${segment(entryId)}")
-            _state.update { it.copy(entry = detail, loadError = null) }
+            // The recording and its transcript in one read: neither waits for the other.
+            val held = rowsKey?.takeIf { rowsLook == Format.look }?.let { "?transcript_key=$it" }.orEmpty()
+            val text = vault.request("/entries/${segment(entryId)}$held")
+            val detail = decode<Entry>(text)
+            val transcript = decode<TranscriptPart>(text)
+            val look = Format.look
+            // Left out when unchanged. The key covers the recording's time too, which decides whether rows
+            // show clock times, and where they count from when its sources carry no time of their own.
+            val rows = transcript.segments?.let { rows(detail, it, look) }
+            // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
+            // another answer replaced, or were drawn under another look than this one, is asked again:
+            // either answer may hold the newer recording (an edit made here, say), and asking again
+            // brings the latest, the segments too when the rows' look is out of date.
+            if (ask < shown) return
+            if (!transcript.fits(rowsKey) || rows == null && rowsLook != look) return refresh()
+            shown = ask
+            rowsKey = transcript.transcriptKey
+            if (rows != null) rowsLook = look
+            // Shown together: the recording appears once its transcript is in, not before.
+            _state.update { it.copy(entry = detail, rows = rows ?: it.rows, loadError = null) }
             if (detail.audioAvailable && player == null) startPlayer(detail)
-            // Segments are written once per processing step; reread them only when the stage moves on
-            // (or the recording time changed, which moves every clock time).
-            val stage = "${detail.stage}|${detail.activeStage}|${detail.recordedAt}"
-            if (stage != rowsStage) {
-                val rows = rows(detail)
-                rowsStage = stage
-                _state.update { it.copy(rows = rows, rowsLoaded = true) }
-                if (openAt != null && _currentRow.value == null) _currentRow.value = rowAt(openAt)
-            }
+            if (rows != null && openAt != null && _currentRow.value == null) _currentRow.value = rowAt(openAt)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            // A failure of an earlier ask than the one shown is moot: the screen is newer than it.
+            if (ask < shown) return
             if (_state.value.entry == null) _state.update { it.copy(loadError = error.describe()) }
             else _messages.trySend(error.describe())
         }
@@ -112,21 +133,13 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         }
     }
 
-    private suspend fun rows(entry: Entry): List<TranscriptRow> {
-        val segments = mutableListOf<Segment>()
-        var cursor = 0
-        while (true) {
-            val page = vault.get<SegmentPage>("/entries/${segment(entryId)}/transcript?limit=2000&cursor=$cursor")
-            segments += page.segments
-            val next = page.nextCursor ?: break
-            if (next <= cursor) break
-            cursor = next
-        }
+    /** Every row under the one `look` they are kept under, whatever the phone changes meanwhile. */
+    private suspend fun rows(entry: Entry, segments: List<Segment>, look: Format.Look): List<TranscriptRow> {
         return withContext(Dispatchers.Default) {
             val timeline = SessionTimeline.of(entry)
             val dated = entry.recorded != null
             segments.map {
-                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true) else Format.position(it.startMs / 1000.0)
+                val clock = if (dated) Format.time(timeline.at(it.startMs), seconds = true, look = look) else Format.position(it.startMs / 1000.0, look.locale)
                 TranscriptRow(it.id, it.speaker, it.startMs, clock, it.text)
             }
         }
