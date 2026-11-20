@@ -66,8 +66,7 @@
     // Also while the video is being prepared, which goes on after the transcript is done.
     refetchInterval: ({ state: { data } }) =>
       data && (isProcessing(data) || data.video?.state === 'preparing') ? 3000 : false,
-    // Asked again on every visit, as the undo state's own read was: a correction made in another
-    // tab can be undone on coming back.
+    // Asked again on every visit, so a correction made in another tab can be undone on coming back.
     staleTime: 0,
   }));
   const people = createQuery(() => peopleQuery);

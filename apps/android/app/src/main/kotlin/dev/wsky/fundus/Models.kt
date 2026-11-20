@@ -129,8 +129,8 @@ data class EntryPage(val entries: List<Entry> = emptyList(), val nextCursor: Int
 @Serializable
 data class TranscriptPart(val segments: List<Segment>? = null, val transcriptKey: String) {
     /** Whether this answer can stand beside rows made from the segments keyed `held`. One without segments was
-     *  asked with the key it returns, so another `held` means a newer answer replaced the rows meanwhile, and
-     *  this one's recording would not match them. */
+     *  asked with the key it returns, so another `held` means another answer, read from newer vault state
+     *  (an earlier ask's, say, read later), replaced the rows meanwhile: this one's recording would not match them. */
     fun fits(held: String?) = segments != null || transcriptKey == held
 }
 

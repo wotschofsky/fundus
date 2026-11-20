@@ -6,14 +6,17 @@ export function start(urls: string[], init?: RequestInit) {
   for (const url of urls) started.set(url, fetch(url, init));
 }
 
-/** The early read of `url`, handed out once. One that never arrived, or that wanted signing in,
- * is not: its reader asks afresh, as it would have (after signing in). Any other answer, an error
- * too, is the reader's: asking again would only wait for the same answer. */
+/** The early read of `url`, handed out once, whatever it answered (asking again would only wait for
+ * the same answer); one that never arrived is not, and its reader asks afresh. */
 // ponytail: an early read taken late (the vault's sign-in check failed and was tried again) is
 // as old as the page; the reader's next refresh brings it up to date.
 export async function take(url: string): Promise<Response | undefined> {
   const read = started.get(url);
   started.delete(url);
-  const response = await read?.catch(() => undefined);
-  return response?.status === 401 ? undefined : response;
+  return await read?.catch(() => undefined);
+}
+
+/** Signing in makes every read started before it stale: each was made signed out. */
+export function dropAll() {
+  started.clear();
 }

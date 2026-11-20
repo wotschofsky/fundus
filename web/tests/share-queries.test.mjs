@@ -42,7 +42,7 @@ registerHooks({
 globalThis.document ??= new EventTarget();
 const { keepAnswer, rereadLinks, sentAt, shareQuery, sharesQuery, withTranscript } =
   await import('../src/api.ts');
-const { start, take } = await import('../src/early.ts');
+const { dropAll, start, take } = await import('../src/early.ts');
 const { LinkClock, forget, leaving } = await import('../src/link-clock.svelte.ts');
 
 /** What the share dialog takes as a change goes out. */
@@ -487,17 +487,20 @@ test('a page read sends the key of the transcript it holds and keeps it when lef
   assert.deepEqual(asked, ['', '?transcript_key=k', '?transcript_key=k']);
 });
 
-test('an early read is handed out once, and one that wanted signing in not at all', async () => {
+test('an early read is handed out once, whatever it answered, until signing in', async () => {
   const fetched = globalThis.fetch;
-  const status = { '/ok': 200, '/gone': 404, '/denied': 401 };
+  const status = { '/ok': 200, '/gone': 404, '/me': 401, '/entry': 401 };
   globalThis.fetch = async (url) => new Response('{}', { status: status[url] });
   try {
-    start(['/ok', '/gone', '/denied']);
+    start(['/ok', '/gone', '/me', '/entry']);
     assert.equal((await take('/ok'))?.status, 200);
     assert.equal(await take('/ok'), undefined);
-    // Asking again would only wait for the same answer.
+    // Asking again would only wait for the same answer: a recording gone, the sign-in check's no.
     assert.equal((await take('/gone'))?.status, 404);
-    assert.equal(await take('/denied'), undefined);
+    assert.equal((await take('/me'))?.status, 401);
+    // Read before signing in, the page's own reads are stale once signed in.
+    dropAll();
+    assert.equal(await take('/entry'), undefined);
   } finally {
     globalThis.fetch = fetched;
   }

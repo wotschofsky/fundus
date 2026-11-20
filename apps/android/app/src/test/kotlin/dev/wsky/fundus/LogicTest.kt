@@ -64,8 +64,8 @@ class LogicTest {
         assertNull(speakers[1].name)
     }
 
-    /** An answer without segments says they are unchanged since the key it was asked with. Once a newer answer
-     *  replaced the rows, an older one like that would pair its recording with rows it never saw. */
+    /** An answer without segments says they are unchanged since the key it was asked with. Once another answer
+     *  replaced the rows, one like that would pair its recording with rows it never saw. */
     @Test
     fun anAnswerWithoutSegmentsStandsOnlyBesideTheRowsItWasAskedAbout() {
         assertTrue(TranscriptPart(null, "k1").fits("k1"))
