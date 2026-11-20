@@ -301,7 +301,11 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         // The connection is what is stored once this caller resumes: this refresh's rotation, or a
         // grant a sign-in stored while it ran. Only with neither has this caller's refresh failed.
         if let current = try? stored(credentials.server), current.refreshToken != credentials.refreshToken {
-            if server == credentials.server { isConnected = true; lastError = nil }
+            // Connected by this refresh's own rotation only: a grant a sign-in stored keeps the state
+            // it was given (it may since have been refused).
+            if case .success(let updated) = outcome, updated.refreshToken == current.refreshToken, server == credentials.server {
+                isConnected = true; lastError = nil
+            }
             return current
         }
         if server == credentials.server { isConnected = false }

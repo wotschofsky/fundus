@@ -611,7 +611,8 @@ public struct QueueState: Codable, Sendable {
         request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
         return request
     }
-    /// Sends `original`; a 401 refreshes the connection once and sends it again.
+    /// Sends `original`; after a 401 it is sent once more with the current token, refreshed first
+    /// if the rejected one is still current.
     private func send(_ original: URLRequest, file: URL? = nil) async throws -> (Data, URLResponse) {
         if let requestOverride { return try await requestOverride(original, file) }
         var rejected: String?
@@ -689,7 +690,7 @@ public struct QueueState: Codable, Sendable {
                     // for this chunk, and a refresh cut short loses its rotated token.
                     let awake = StayAwake()
                     defer { awake.end() }
-                    // HEAD reconciles the offset, then the chunk goes out again with the refreshed token.
+                    // HEAD reconciles the offset, then the chunk goes out again with the current token.
                     try await self.connection(replacing: bearer)
                     guard self.snapshot.state == "uploading", self.snapshot.importID == batch,
                           self.sentChunk == nil || self.sentChunk == taskID else { return }
@@ -709,7 +710,7 @@ public struct QueueState: Codable, Sendable {
                 if self.runner != nil { return }
                 #endif
                 #if os(iOS)
-                let message = (error as? URLError)?.code == .cancelled ? "iOS stopped the upload. Resume to continue." : error.localizedDescription
+                let message = (error as? URLError)?.code == .cancelled ? "The upload was stopped. Resume to continue." : error.localizedDescription
                 #else
                 let message = error.localizedDescription
                 #endif

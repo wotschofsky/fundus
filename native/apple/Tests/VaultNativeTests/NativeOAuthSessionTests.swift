@@ -74,6 +74,8 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
 /// that first grant's refresh is refused.
 private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
     static let failRefresh = Mutex(false)
+    /// A later grant's refresh is refused too, as after it was disconnected in Settings.
+    static let failLaterRefresh = Mutex(false)
     /// Each code exchange issues a grant of its own.
     static let exchanges = Mutex(0)
     static let released = Mutex(false)
@@ -116,7 +118,8 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
             : revoke ? "{}"
             : refresh ? #"{"access_token":"oa_synthetic-old-rotated","refresh_token":"synthetic-old-rotated","expires_in":3600,"scope":"vault:owner"}"#
             : #"{"access_token":"oa_synthetic-new\#(grant)","refresh_token":"synthetic-new-refresh\#(grant)","expires_in":3600,"scope":"vault:owner"}"#
-        let refused = refresh && Self.failRefresh.withLock { $0 } && String(decoding: body, as: UTF8.self).contains("refresh_token=synthetic-old-refresh")
+        let firstGrantRefresh = String(decoding: body, as: UTF8.self).contains("refresh_token=synthetic-old-refresh")
+        let refused = refresh && (firstGrantRefresh ? Self.failRefresh.withLock { $0 } : Self.failLaterRefresh.withLock { $0 })
         let deliver: @Sendable () -> Void = { [self] in
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: refused ? 400 : 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data((refused ? #"{"error":"invalid_grant"}"# : reply).utf8))
@@ -337,6 +340,32 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(again.token, "oa_synthetic-next")
         let refreshes = await NativeOAuthMockProtocol.server.count()
         XCTAssertEqual(refreshes, 1)
+    }
+    func testALateRefreshDoesNotReconnectAGrantRevokedMeanwhile() async throws {
+        ReconnectMockProtocol.reset()
+        ReconnectMockProtocol.failLaterRefresh.withLock { $0 = true }
+        defer { ReconnectMockProtocol.failLaterRefresh.withLock { $0 = false } }
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let suite = "NativeOAuthSessionTests-" + UUID().uuidString
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration), preferences: UserDefaults(suiteName: suite)!)
+        // The old grant's refresh is under way; the owner connects again, then that new grant is
+        // disconnected in Settings and its refresh refused.
+        async let underOldGrant = session.connection(for: origin)
+        try await ReconnectMockProtocol.holding("/oauth/token")
+        try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
+            URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
+        }
+        do { _ = try await session.connection(for: origin, forceRefresh: true); XCTFail("The revoked grant must not refresh") } catch {}
+        XCTAssertFalse(session.isConnected)
+        // The old grant's refresh answering late must not mark the revoked one connected again.
+        ReconnectMockProtocol.release()
+        _ = try? await underOldGrant
+        XCTAssertFalse(session.isConnected)
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
