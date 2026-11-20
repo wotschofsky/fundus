@@ -57,8 +57,9 @@ struct NativeOAuthCredentials: Codable, Sendable {
 }
 
 private enum NativeOAuthFailure: LocalizedError {
+    case message(String), keychain, cancelled
     /// The server refused the grant (`invalid_grant`): revoked, expired, or a token reused.
-    case message(String), keychain, cancelled, refused
+    case refused
     var errorDescription: String? {
         switch self {
         case .message(let message): message
@@ -92,6 +93,9 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
     private let preferences: UserDefaults
     /// Refreshes under way, by the refresh token each redeems.
     private var refreshes: [String: Task<NativeOAuthCredentials, Error>] = [:]
+    /// Refresh tokens this process saw rotated or refused: never a usable grant again, whatever
+    /// Keychain still holds (a write or a removal it could not make).
+    private var spent: Set<String> = []
     /// Keychain reads are slow enough to matter on every request; the stored item stays the source of truth.
     private var cached: [String: NativeOAuthCredentials] = [:]
     private var login: Task<Void, Error>?
@@ -120,7 +124,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
 
     private func stored(_ server: String) throws -> NativeOAuthCredentials? {
         if let credentials = cached[server] { return credentials }
-        let credentials = try storage.read(server: server)
+        guard let credentials = try storage.read(server: server), !spent.contains(credentials.refreshToken) else { return nil }
         cached[server] = credentials
         return credentials
     }
@@ -291,12 +295,14 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
             } catch NativeOAuthFailure.refused {
                 // Only a new sign-in can help a refused grant, so it is forgotten rather than tried
                 // again, unless a sign-in has already replaced it.
-                if (try? stored(credentials.server))?.refreshToken == credentials.refreshToken {
+                spent.insert(credentials.refreshToken)
+                if cached[credentials.server]?.refreshToken == credentials.refreshToken || cached[credentials.server] == nil {
                     try? storage.remove(server: credentials.server)
                     cached[credentials.server] = nil
                 }
                 throw NativeOAuthFailure.refused
             }
+            spent.insert(credentials.refreshToken)
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
             // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.

@@ -7,14 +7,18 @@ import XCTest
 
 @MainActor private final class MemoryNativeCredentials: NativeCredentialStorage {
     var values: [String: NativeOAuthCredentials] = [:]
-    /// Saving fails, as Keychain does when it cannot be written.
+    /// Saving or removing fails, as Keychain does when it cannot be written.
     var failSaves = false
+    var failRemoves = false
     func read(server: String) -> NativeOAuthCredentials? { values[server] }
     func save(_ credentials: NativeOAuthCredentials) throws {
         if failSaves { throw CocoaError(.fileWriteUnknown) }
         values[credentials.server] = credentials
     }
-    func remove(server: String) { values[server] = nil }
+    func remove(server: String) throws {
+        if failRemoves { throw CocoaError(.fileWriteUnknown) }
+        values[server] = nil
+    }
 }
 private actor NativeOAuthMockServer {
     private var refreshes = 0
@@ -382,6 +386,23 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
         XCTAssertNil(storage.values[origin])
         // Resuming again does not send the refused token a second time.
+        do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
+        XCTAssertEqual(ReconnectMockProtocol.held.withLock { $0 }.filter { $0 == "/oauth/token" }.count, 1)
+    }
+    func testARefusedGrantKeychainCannotForgetIsStillNeverRedeemedAgain() async throws {
+        ReconnectMockProtocol.reset()
+        ReconnectMockProtocol.release()
+        ReconnectMockProtocol.failRefresh.withLock { $0 = true }
+        defer { ReconnectMockProtocol.failRefresh.withLock { $0 = false } }
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        storage.failRemoves = true
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration))
+        do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
+        // Keychain still holds the refused grant; this process never sends its token again.
         do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
         XCTAssertEqual(ReconnectMockProtocol.held.withLock { $0 }.filter { $0 == "/oauth/token" }.count, 1)
     }

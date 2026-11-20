@@ -673,7 +673,8 @@ public struct QueueState: Codable, Sendable {
             #if os(iOS)
             // A chunk this app cancelled (Pause, then Resume before this arrives) is left to the resumed
             // runner at work. Any other cancellation of the current chunk (by iOS, or Pause's late
-            // cancel reaching a chunk Resume already sent) fails the queue below, resumably. After a
+            // cancel reaching a chunk Resume already sent) fails the queue below, resumably, unless a
+            // resumed runner is already at work: it reconciles the offset and sends the chunk again. After a
             // relaunch nothing was sent by this process, so a chunk that finished is the queue's.
             if let cancelled = error as? URLError, cancelled.code == .cancelled, cancelled.backgroundTaskCancelledReason == nil, self.runner != nil { return }
             if let sent = self.sentChunk, sent != taskID { return }
