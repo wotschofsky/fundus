@@ -128,6 +128,8 @@ final class TranscriptModel {
             if detail.audioAvailable && audio == nil { loadAudio(detail) }
         } catch is CancellationError {
         } catch {
+            // A failure of an earlier ask than the one shown is moot: the screen is newer than it.
+            guard ask > shown else { return }
             if entry == nil { loadError = error.localizedDescription } else { actionError = error.localizedDescription }
         }
     }

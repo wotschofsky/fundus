@@ -115,6 +115,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            // A failure of an earlier ask than the one shown is moot: the screen is newer than it.
+            if (ask < shown) return
             if (_state.value.entry == null) _state.update { it.copy(loadError = error.describe()) }
             else _messages.trySend(error.describe())
         }
