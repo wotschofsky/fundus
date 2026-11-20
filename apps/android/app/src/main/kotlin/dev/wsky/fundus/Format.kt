@@ -55,6 +55,9 @@ object Format {
 
     val zone: ZoneId get() = ZoneId.systemDefault()
 
+    /** What times are drawn by besides the time itself: one drawn under another look is out of date. */
+    val look: List<Any> get() = listOf(hour24, zone, Locale.getDefault())
+
     private val patterns = ConcurrentHashMap<String, DateTimeFormatter>()
     private fun pattern(skeleton: String): DateTimeFormatter {
         val locale = Locale.getDefault()

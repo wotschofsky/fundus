@@ -62,6 +62,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
 
     /** The vault's key for the segments `rows` came from (hex); sent back, unchanged ones are not resent. */
     private var rowsKey: String? = null
+    /** The `Format.look` `rows` were drawn under: changed since, the key is not sent, so they are drawn again. */
+    private var rowsLook: List<Any>? = null
     /** Refreshes overlap (the 3 s poll, an edit's, "Try again"): the number of the latest asked, and of the one shown. */
     private var asked = 0
     private var shown = 0
@@ -89,11 +91,12 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
         val ask = ++asked
         try {
             // The recording and its transcript in one read: neither waits for the other.
-            val held = rowsKey?.let { "?transcript_key=$it" }.orEmpty()
+            val held = rowsKey?.takeIf { rowsLook == Format.look }?.let { "?transcript_key=$it" }.orEmpty()
             val text = vault.request("/entries/${segment(entryId)}$held")
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
+            val look = Format.look
             val rows = transcript.segments?.let { rows(detail, it) }
             // An answer to an earlier ask than the one shown is dropped. One without segments whose rows
             // another answer replaced is asked again, with the key of the rows shown: either answer may
@@ -102,6 +105,7 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             if (!transcript.fits(rowsKey)) return refresh()
             shown = ask
             rowsKey = transcript.transcriptKey
+            if (rows != null) rowsLook = look
             // Shown together: the recording appears once its transcript is in, not before.
             _state.update { it.copy(entry = detail, rows = rows ?: it.rows, loadError = null) }
             if (detail.audioAvailable && player == null) startPlayer(detail)

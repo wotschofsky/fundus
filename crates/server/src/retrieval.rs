@@ -150,8 +150,8 @@ async fn get_entry(app: &App, id: &str, include_trash: bool) -> Result<Value> {
     v["url"] = json!(format!("{}entries/{id}", app.config.public_url));
     Ok(v)
 }
-/// The whole transcript of a recording. Read it after the entry, so the segments are never older
-/// than the stage the entry reports.
+/// The whole transcript of a recording. Read it after the entry, so it is never older than the
+/// entry it comes with.
 // ponytail: every read (each 3 s poll too) reads and hashes the whole transcript, and one
 // response holds all of it (a few MB for a very long recording); store the key with the segments
 // and read pages in one snapshot transaction if that ever matters.

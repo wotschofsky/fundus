@@ -52,6 +52,8 @@ final class TranscriptModel {
     @ObservationIgnored private var timeline = SessionTimeline(chunks: [], timeZone: .current)
     /// The vault's key for the segments `rows` were made from; sent back, unchanged ones are not resent.
     @ObservationIgnored private var rowsKey: String?
+    /// The zone `rows` drew their clock times in: the Mac moved since, the key is not sent, so they are drawn again.
+    @ObservationIgnored private var rowsZone: TimeZone?
     /// Refreshes overlap (the 3 s poll, an edit's, a button's): the number of the latest asked, and of the one shown.
     @ObservationIgnored private var asked = 0
     @ObservationIgnored private var shown = 0
@@ -96,7 +98,7 @@ final class TranscriptModel {
         let ask = asked
         do {
             // The recording and its transcript in one read: neither waits for the other.
-            let held = rowsKey.map { "?transcript_key=\(VaultAPI.component($0))" } ?? ""
+            let held = rowsKey.flatMap { rowsZone == .current ? "?transcript_key=\(VaultAPI.component($0))" : nil } ?? ""
             let read = try await VaultAPI.get(VaultAPI.entryPath(entryID, held), as: Detail.self)
             let detail = read.entry
             let timeline = Self.timeline(for: detail)
@@ -111,7 +113,10 @@ final class TranscriptModel {
             guard ask > shown else { return }
             guard Detail.fits(hasSegments: made != nil, key: read.transcriptKey, held: rowsKey) else { return await refresh() }
             shown = ask
-            if let made { rows = made }
+            if let made {
+                rows = made
+                rowsZone = timeline.timeZone
+            }
             rowsKey = read.transcriptKey
             // Set with the rows, in one update: the recording shows once its transcript is in, not before.
             entry = detail
