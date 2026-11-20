@@ -79,7 +79,7 @@ A native Kotlin and Jetpack Compose app: the library with transcripts and playba
 
 ### iOS
 
-An Expo upload app with native SwiftUI controls prepares audio and uploads it in resumable chunks. It requires a custom native build and an upload token from Fundus Settings. [iOS build instructions →](docs/guide.md#upload-apps)
+An Expo upload app with native SwiftUI controls prepares audio and uploads it in resumable chunks. It requires a custom native build and connects through browser sign-in, like the Mac and Android apps. [iOS build instructions →](docs/guide.md#upload-apps)
 
 Physical recorder connectivity and background execution depend on the device and OS. See [verification notes](docs/verification.md) for current testing coverage.
 
