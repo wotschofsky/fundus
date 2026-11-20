@@ -57,7 +57,8 @@ struct NativeOAuthCredentials: Codable, Sendable {
 }
 
 private enum NativeOAuthFailure: LocalizedError {
-    case message(String), keychain, cancelled
+    /// The server refused the grant (`invalid_grant`): revoked, expired, or a token reused.
+    case message(String), keychain, cancelled, refused
     var errorDescription: String? {
         switch self {
         case .message(let message): message
@@ -67,6 +68,7 @@ private enum NativeOAuthFailure: LocalizedError {
         case .keychain: "Could not access the saved vault connection in Keychain. Unlock this iPhone and reconnect."
         #endif
         case .cancelled: "Connection cancelled."
+        case .refused: "This connection has expired or was revoked. Connect the app again."
         }
     }
 }
@@ -280,10 +282,21 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         // redeemed once, and a caller holding a newer grant never waits on an older grant's refresh.
         let key = credentials.refreshToken
         let task = refreshes[key] ?? Task { () throws -> NativeOAuthCredentials in
-            let result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
-                "grant_type": "refresh_token", "client_id": credentials.clientID,
-                "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
-            ])
+            let result: [String: Any]
+            do {
+                result = try await oauth(server: credentials.server, path: "/oauth/token", form: [
+                    "grant_type": "refresh_token", "client_id": credentials.clientID,
+                    "refresh_token": credentials.refreshToken, "resource": credentials.server + "/api/native"
+                ])
+            } catch NativeOAuthFailure.refused {
+                // Only a new sign-in can help a refused grant, so it is forgotten rather than tried
+                // again, unless a sign-in has already replaced it.
+                if (try? stored(credentials.server))?.refreshToken == credentials.refreshToken {
+                    try? storage.remove(server: credentials.server)
+                    cached[credentials.server] = nil
+                }
+                throw NativeOAuthFailure.refused
+            }
             let updated = try Self.credentials(result, server: credentials.server, client: credentials.clientID)
             try Task.checkCancellation()
             // Saved only over the grant it refreshed, never over one a sign-in stored meanwhile.
@@ -379,7 +392,7 @@ private final class NativeNoRedirects: NSObject, URLSessionTaskDelegate, @unchec
         guard let http = response as? HTTPURLResponse else { throw NativeOAuthFailure.message("The server returned an invalid connection response.") }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) else {
-            if value["error"] as? String == "invalid_grant" { throw NativeOAuthFailure.message("This connection has expired or was revoked. Connect the app again.") }
+            if value["error"] as? String == "invalid_grant" { throw NativeOAuthFailure.refused }
             throw NativeOAuthFailure.message("The server could not connect this app. Check the server address and try again.")
         }
         return value

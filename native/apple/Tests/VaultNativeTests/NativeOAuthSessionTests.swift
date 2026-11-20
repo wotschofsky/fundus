@@ -364,8 +364,26 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertFalse(session.isConnected)
         // The old grant's refresh answering late must not mark the revoked one connected again.
         ReconnectMockProtocol.release()
-        _ = try? await underOldGrant
+        do { _ = try await underOldGrant; XCTFail("The revoked grant's token must not be handed out") } catch {}
         XCTAssertFalse(session.isConnected)
+    }
+    func testARefusedGrantIsForgottenNotRedeemedAgain() async throws {
+        ReconnectMockProtocol.reset()
+        ReconnectMockProtocol.release()
+        ReconnectMockProtocol.failRefresh.withLock { $0 = true }
+        defer { ReconnectMockProtocol.failRefresh.withLock { $0 = false } }
+        let origin = "https://vault.example.com"
+        let storage = MemoryNativeCredentials()
+        storage.values[origin] = NativeOAuthCredentials(server: origin, clientID: "synthetic-old-client", accessToken: "oa_synthetic-old", refreshToken: "synthetic-old-refresh", expiresAt: .distantPast)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReconnectMockProtocol.self]
+        let session = NativeVaultSession(storage: storage, session: URLSession(configuration: configuration))
+        // The server refuses the grant (revoked, or expired): only a new sign-in can help.
+        do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
+        XCTAssertNil(storage.values[origin])
+        // Resuming again does not send the refused token a second time.
+        do { _ = try await session.connection(for: origin); XCTFail("A refused grant must not connect") } catch {}
+        XCTAssertEqual(ReconnectMockProtocol.held.withLock { $0 }.filter { $0 == "/oauth/token" }.count, 1)
     }
     func testConcurrentUploadsShareOneRotatingRefresh() async throws {
         await NativeOAuthMockProtocol.server.reset()
