@@ -68,9 +68,10 @@ private final class SignInMockProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
-/// Registration and code exchange answer at once. A refresh or revoke is held (`held`) until the
-/// test calls `release()`, so it can finish a sign-in, grant stored, in between; while
-/// `failRefresh` is set, a refresh of the first grant (`synthetic-old-refresh`) is refused.
+/// Registration, code exchange and a refresh of a later grant answer at once. A refresh of the
+/// first grant (`synthetic-old-refresh`), or a revoke, is held (`held`) until the test calls
+/// `release()`, so it can finish a sign-in, grant stored, in between; while `failRefresh` is set,
+/// that first grant's refresh is refused.
 private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
     static let failRefresh = Mutex(false)
     /// Each code exchange issues a grant of its own.
@@ -121,7 +122,8 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didLoad: Data((refused ? #"{"error":"invalid_grant"}"# : reply).utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
-        if refresh || revoke {
+        let firstGrant = String(decoding: body, as: UTF8.self).contains("refresh_token=synthetic-old-refresh")
+        if (refresh && firstGrant) || revoke {
             Self.held.withLock { $0.append(url.path) }
             Self.answer(deliver, deadline: Date().addingTimeInterval(5))
         } else { deliver() }
@@ -311,11 +313,11 @@ private final class ReconnectMockProtocol: URLProtocol, @unchecked Sendable {
         try await session.authorize(server: origin, name: NativeVaultSession.phoneName, callback: NativeVaultSession.phoneCallback, state: "synthetic-state") { _ in
             URL(string: "dev.wsky.vaultuploader:/oauth?code=synthetic-code&state=synthetic-state&iss=\(origin)")!
         }
-        async let underNewGrant = session.connection(for: origin, forceRefresh: true)
-        try await Task.sleep(for: .milliseconds(50))
+        // The new grant's refresh completes while the old grant's is still held.
+        _ = try await session.connection(for: origin, forceRefresh: true)
+        XCTAssertEqual(ReconnectMockProtocol.held.withLock { $0 }, ["/oauth/token"])
         ReconnectMockProtocol.release()
         _ = try await underOldGrant
-        _ = try await underNewGrant
         XCTAssertTrue(session.isConnected)
         XCTAssertNotEqual(storage.values[origin]?.refreshToken, "synthetic-old-refresh")
     }
