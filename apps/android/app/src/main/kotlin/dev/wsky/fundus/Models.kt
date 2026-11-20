@@ -127,7 +127,12 @@ data class EntryPage(val entries: List<Entry> = emptyList(), val nextCursor: Int
 
 @Serializable
 /** The transcript a recording's read brings with it: `segments` is left out when the key sent still holds. */
-data class TranscriptPart(val segments: List<Segment>? = null, val transcriptKey: String)
+data class TranscriptPart(val segments: List<Segment>? = null, val transcriptKey: String) {
+    /** Whether this answer can stand beside rows made from the segments keyed `held`. One without segments was
+     *  asked with the key it returns, so another `held` means a newer answer replaced the rows meanwhile, and
+     *  this one's recording would not match them. */
+    fun fits(held: String?) = segments != null || transcriptKey == held
+}
 
 @Serializable
 data class PeoplePage(val people: List<Person> = emptyList())

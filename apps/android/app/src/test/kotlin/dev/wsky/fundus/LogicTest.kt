@@ -3,6 +3,7 @@ package dev.wsky.fundus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -61,6 +62,16 @@ class LogicTest {
         assertEquals("Speaker 2", speakers.nameOf("B"))
         assertEquals(listOf("Voice matches a saved profile"), speakers[0].explanations)
         assertNull(speakers[1].name)
+    }
+
+    /** An answer without segments says they are unchanged since the key it was asked with. Once a newer answer
+     *  replaced the rows, an older one like that would pair its recording with rows it never saw. */
+    @Test
+    fun anAnswerWithoutSegmentsStandsOnlyBesideTheRowsItWasAskedAbout() {
+        assertTrue(TranscriptPart(null, "k1").fits("k1"))
+        assertFalse(TranscriptPart(null, "k1").fits("k2"))
+        assertTrue(TranscriptPart(emptyList(), "k1").fits("k2"))
+        assertTrue(TranscriptPart(emptyList(), "k1").fits(null))
     }
 
     @Test

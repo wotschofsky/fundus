@@ -12,7 +12,7 @@ struct TranscriptRow: Identifiable, Equatable, Sendable {
 }
 
 /// A recording read with its transcript; `segments` is left out when the key the reader sent still holds.
-private struct Detail: Decodable {
+struct Detail: Decodable {
     let entry: Entry
     let segments: [Segment]?
     let transcriptKey: String
@@ -25,6 +25,11 @@ private struct Detail: Decodable {
         segments = try container.decodeIfPresent([Segment].self, forKey: .segments)
         transcriptKey = try container.decode(String.self, forKey: .transcriptKey)
     }
+
+    /// Whether an answer can stand beside rows made from the segments keyed `held`. One without segments was
+    /// asked with the key it returns, so another `held` means a newer answer replaced the rows meanwhile, and
+    /// this one's recording would not match them.
+    static func fits(segments: Bool, key: String, held: String?) -> Bool { segments || key == held }
 }
 
 /// A recording opened from the vault: transcript rows, speakers, streamed playback, edits.
@@ -88,6 +93,8 @@ final class TranscriptModel {
             // The recording and its transcript in one read: neither waits for the other.
             let held = rowsKey.map { "?transcript_key=\(VaultAPI.component($0))" } ?? ""
             let read = try await VaultAPI.get(VaultAPI.entryPath(entryID, held), as: Detail.self)
+            // Refreshes overlap (the 3 s poll, an edit's): an older answer that a newer one overtook is dropped.
+            guard Detail.fits(segments: read.segments != nil, key: read.transcriptKey, held: rowsKey) else { return }
             let detail = read.entry
             let timeline = Self.timeline(for: detail)
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.

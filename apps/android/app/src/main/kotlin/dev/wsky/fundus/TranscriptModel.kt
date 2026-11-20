@@ -89,6 +89,8 @@ class TranscriptModel(private val app: FundusApp, val entryId: String, val openA
             val text = vault.request("/entries/${segment(entryId)}$held")
             val detail = decode<Entry>(text)
             val transcript = decode<TranscriptPart>(text)
+            // Refreshes overlap (the 3 s poll, an edit's, "Try again"): an older answer that a newer one overtook is dropped.
+            if (!transcript.fits(rowsKey)) return
             // Left out when unchanged. The key covers the recording's time too, which moves every clock time.
             val rows = transcript.segments?.let { rows(detail, it) }
             rowsKey = transcript.transcriptKey
