@@ -487,6 +487,26 @@ test('a page read sends the key of the transcript it holds and keeps it when lef
   assert.deepEqual(asked, ['', '?transcript_key=k', '?transcript_key=k']);
 });
 
+test('an early read that never arrives fails no one, taken or dropped untaken', async () => {
+  const fetched = globalThis.fetch;
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  globalThis.fetch = async () => {
+    throw new TypeError('offline');
+  };
+  try {
+    start(['/lost', '/dropped']);
+    assert.equal(await take('/lost'), undefined);
+    dropAll();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    globalThis.fetch = fetched;
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('an early read is handed out once, whatever it answered, until dropped', async () => {
   const fetched = globalThis.fetch;
   const status = { '/ok': 200, '/gone': 404, '/me': 401, '/entry': 401 };

@@ -104,7 +104,9 @@
       <h2 id="transcript-heading">Transcript</h2>
       {#if rows.length > 0 && e.audio_available}<span>Select a time to listen</span>{/if}
     </div>
-    {#if rows.length === 0}
+    <!-- A refresh that failed, beside the rows it could not bring up to date. -->
+    <ErrorNotice error={entry.error} />
+    {#if rows.length === 0 && !entry.error}
       <p class="muted">
         {isProcessing(e)
           ? 'The transcript appears here when transcription finishes.'
