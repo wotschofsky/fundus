@@ -588,7 +588,12 @@ async fn audio_to_search_checkpoints_and_pcm_deduplication() {
     assert!(provider.polls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     let request = provider.transcripts.lock().unwrap()[0].clone();
     assert_eq!(request["speaker_labels"], true);
-    assert_eq!(request["speech_models"][0], "universal-3-5-pro");
+    assert_eq!(
+        request["speech_models"],
+        serde_json::json!(["assemblyai-stt-3-7"])
+    );
+    assert_eq!(request["disfluencies"], false);
+    assert_eq!(request["format_text"], true);
     assert_eq!(request["language_codes"], serde_json::json!(["de", "en"]));
     assert!(request.get("prompt").is_none(), "no context, no prompt");
     let dir_entry = app.entry_dir(&entry);

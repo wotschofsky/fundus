@@ -38,7 +38,7 @@ Still to exercise on physical devices/account:
 
 - USB storage visibility for the intended DJI microphone, cables, and OS document pickers.
 - Long recordings and storage pressure, real disconnects, airplane mode, background execution, force quit, relaunch, token revocation during transfer, and final server receipts on signed native apps.
-- Live AssemblyAI and OpenAI access: the exact request shapes (`speech_models: ["universal-3-5-pro"]` with `language_codes`, `prompt`; OpenAI strict `json_schema` with `gpt-6-luna`) follow the MicIngest client and the providers' documentation but were exercised only against local mocks. Also billing, languages, diarization quality, and transcript accuracy.
+- Live AssemblyAI and OpenAI access, including the `assemblyai-stt-3-7` request with language codes, speaker labels, and optional context, plus OpenAI strict `json_schema` with `gpt-6-luna`. Also billing, languages, diarization quality, and transcript accuracy.
 - Voice thresholds on enrolled real voices, noisy/overlapping speech, and deliberate unknown speakers. Synthetic inference validates integration, not recognition accuracy.
 - Hosted chat-client and native-owner OAuth sign-in against the production proxy, profile switching/relaunch with real Keychain storage, and restore into a clean server. These checks require the generic native discovery and `/api/native/*` routes to be externally reachable while enforcing owner OAuth; browser consent stays behind browser authentication.
 - First hosted AMD64/ARM64 container workflow, GHCR publication and vulnerability scan; Developer ID signing/notarization and signed mobile distribution.

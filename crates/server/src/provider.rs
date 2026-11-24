@@ -124,6 +124,8 @@ struct NewTranscript<'a> {
     audio_url: &'a str,
     speech_models: &'a [String],
     speaker_labels: bool,
+    disfluencies: bool,
+    format_text: bool,
     /// The languages the model code-switches between; excludes language detection.
     language_codes: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +223,8 @@ pub async fn submit(app: &App, audio_url: &str, prompt: Option<&str>) -> Result<
         audio_url,
         speech_models: &app.config.transcription_models,
         speaker_labels: true,
+        disfluencies: false,
+        format_text: true,
         language_codes: &app.config.transcription_languages,
         prompt,
     };

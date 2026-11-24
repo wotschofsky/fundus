@@ -111,7 +111,7 @@ impl Config {
             bind: std::env::var("VAULT_BIND").unwrap_or("127.0.0.1:3000".into()),
             assemblyai_url: base_url("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com"),
             assemblyai_key: secret("ASSEMBLYAI_API_KEY"),
-            transcription_models: list("VAULT_TRANSCRIPTION_MODEL", "universal-3-5-pro"),
+            transcription_models: list("VAULT_TRANSCRIPTION_MODEL", "assemblyai-stt-3-7"),
             transcription_languages: list("VAULT_TRANSCRIPTION_LANGUAGES", "de,en"),
             poll_interval: std::time::Duration::from_secs(5),
             openai_url: base_url("OPENAI_BASE_URL", "https://api.openai.com/v1"),
