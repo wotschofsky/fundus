@@ -378,7 +378,7 @@ private fun TranscriptActions(entry: Entry, model: TranscriptModel, hasRows: Boo
     var menu by remember { mutableStateOf(false) }
     if (hasRows) {
         IconButton(onClick = {
-            // ponytail: shared as text; a very long transcript could exceed the share size limit and needs a file then.
+            // shared as text; a very long transcript could exceed the share size limit and needs a file then.
             val send = Intent(Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(Intent.EXTRA_SUBJECT, entry.displayTitle)
                 .putExtra(Intent.EXTRA_TEXT, model.markdown())

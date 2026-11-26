@@ -71,7 +71,7 @@ final class Library {
     func refreshTrash() async {
         let generation = generation
         do {
-            // ponytail: the 100 most recent trashed recordings; page Trash if anyone keeps more than that.
+            // the 100 most recent trashed recordings; page Trash if anyone keeps more than that.
             let page = try await VaultAPI.get("/api/v1/entries?trash=true&limit=100", as: Page<Entry>.self)
             if generation == self.generation { trash = page.items }
         } catch {

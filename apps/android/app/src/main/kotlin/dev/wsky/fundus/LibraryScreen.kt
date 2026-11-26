@@ -209,7 +209,7 @@ fun LibraryScreen(
                 }
             }
 
-            // ponytail: the classic search bar is deprecated, but its in-place growth is the motion we
+            // the classic search bar is deprecated, but its in-place growth is the motion we
             // want; the newer contained bar opens as a separate full-screen layer instead.
             @Suppress("DEPRECATION")
             SearchBar(

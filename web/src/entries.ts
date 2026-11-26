@@ -16,7 +16,7 @@ export function createEntries(params: () => string, poll: boolean) {
         .flatMap((p) => p.entries)
         .filter((e) => !seen.has(e.id) && !!seen.add(e.id));
     },
-    // ponytail: refetches every loaded page while one is processing; poll page one only if many are loaded.
+    // refetches every loaded page while one is processing; poll page one only if many are loaded.
     refetchInterval: (q) =>
       poll && q.state.data?.pages.some((p) => p.entries.some(isProcessing)) ? 4000 : false,
   }));

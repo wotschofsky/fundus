@@ -189,7 +189,7 @@ pub async fn upload(app: &App, path: &Path) -> Result<String> {
 
 /// The job a create request made from `audio_url`, when its answer was lost. Upload URLs are
 /// unique, so a match is that request's job, and no match means it never reached AssemblyAI.
-// ponytail: newest 200 jobs only; page with before_id if an unresolved request can fall further behind.
+// newest 200 jobs only; page with before_id if an unresolved request can fall further behind.
 pub async fn find(app: &App, audio_url: &str) -> Result<Option<String>> {
     let body = with_retry("AssemblyAI", 4, || {
         Ok(assemblyai(

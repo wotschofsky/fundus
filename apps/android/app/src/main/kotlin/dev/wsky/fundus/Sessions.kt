@@ -78,7 +78,7 @@ object SessionGrouper {
     fun rollsOver(previous: SourceRecording, next: SourceRecording): Boolean =
         Math.abs(next.startSeconds - (previous.startSeconds + previous.duration)) <= TOLERANCE && previous.duration >= ROLLOVER - SLACK
 
-    // ponytail: no manual merge/split on the phone; sessions merged on the Mac show as partly imported.
+    // no manual merge/split on the phone; sessions merged on the Mac show as partly imported.
     fun group(recordings: List<SourceRecording>): List<RecordingSession> {
         // Each transmitter (and file rendition) is its own timeline; recordings never merge across them.
         val streams = recordings.groupBy { "${it.transmitter}|${it.variant}|${it.format}" }

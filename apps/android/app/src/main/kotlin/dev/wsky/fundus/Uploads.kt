@@ -375,7 +375,7 @@ class Uploads(private val context: Context, private val vault: Vault, private va
         checkStopping()
         if (error.isNotEmpty()) throw VaultError(error)
         updateItem(id) { it.copy(prepared = prepared.name, length = prepared.length(), preparationProgress = 1.0, state = "ready") }
-        // ponytail: the WAV copy goes once its lossless copy is verified; phones have little room.
+        // the WAV copy goes once its lossless copy is verified; phones have little room.
         source.delete()
     }
 

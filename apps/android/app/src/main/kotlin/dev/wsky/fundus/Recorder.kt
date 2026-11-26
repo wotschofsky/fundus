@@ -63,7 +63,7 @@ class Recorder(private val context: Context) {
     private val scanning = Mutex()
     @Serializable private data class Header(val format: AudioFormat, val frames: Long)
 
-    // ponytail: grows by ~150 bytes per recording ever seen; prune if it ever matters.
+    // grows by ~150 bytes per recording ever seen; prune if it ever matters.
     /** Header reads by document and size, kept across launches: reading ~200 files over USB is what makes a scan slow. */
     private val headerFile = File(context.filesDir, "mic-headers.json")
     private val headers: MutableMap<String, Header> by lazy {
@@ -193,7 +193,7 @@ class Recorder(private val context: Context) {
         val FACTORY_CLOCK: ZoneId = ZoneId.of("Etc/GMT-8")
         const val OPEN_PROMPT = "dev.wsky.fundus.RECORDER"
         private const val STORAGE = "com.android.externalstorage.documents"
-        // ponytail: the USB chip vendor (Actions) of the DJI Mic case; matches res/xml/dji_mic.xml.
+        // the USB chip vendor (Actions) of the DJI Mic case; matches res/xml/dji_mic.xml.
         const val DJI_VENDOR = 0x10D6
 
         /** `3 new recordings · 2h 09m`. */

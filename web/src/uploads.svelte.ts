@@ -34,7 +34,7 @@ class Uploads {
     this.total += size;
     this.count += files.length;
     this.#batches++;
-    // ponytail: batches wait for the previous one's check too; overlap them if checks get slow.
+    // batches wait for the previous one's check too; overlap them if checks get slow.
     this.#queue = this.#queue.then(async () => {
       const start = this.sent;
       let current = files[0].name;

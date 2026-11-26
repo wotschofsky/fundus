@@ -34,7 +34,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // ponytail: signed with the debug key so it installs over debug builds; add a release
+            // signed with the debug key so it installs over debug builds; add a release
             // keystore before handing the APK to anyone else.
             signingConfig = signingConfigs.getByName("debug")
         }

@@ -152,7 +152,7 @@ async fn get_entry(app: &App, id: &str, include_trash: bool) -> Result<Value> {
 }
 /// The whole transcript of a recording. Read it after the entry, so it is never older than the
 /// entry it comes with.
-// ponytail: every read (each 3 s poll too) reads and hashes the whole transcript, and one
+// every read (each 3 s poll too) reads and hashes the whole transcript, and one
 // response holds all of it (a few MB for a very long recording); store the key with the segments
 // and read pages in one snapshot transaction if that ever matters.
 pub async fn segments(app: &App, id: &str) -> Result<Value> {
@@ -252,7 +252,7 @@ pub async fn search(app: &App, s: Search) -> Result<Value> {
     if enabled && let Ok(v) = provider::embeddings(app, std::slice::from_ref(&s.query), false).await
     {
         let probe = &v[0];
-        // ponytail: every vector is parsed per query; a vector index if archives reach ~100k passages.
+        // every vector is parsed per query; a vector index if archives reach ~100k passages.
         let mut q = QueryBuilder::new(
             "SELECT p.id,p.embedding FROM passages p JOIN entries e ON e.id=p.entry_id WHERE p.embedding IS NOT NULL",
         );

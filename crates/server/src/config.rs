@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 /// full disk breaks more than them. Each writer measures the disk just before it writes
 /// (`App::has_room`), so the reserve holds give or take what is already in flight: one 8 MiB
 /// chunk per upload sending at once, and two seconds of a conversion's output.
-// ponytail: sampled, not reserved. A strict reserve needs a reservation ledger and a hard cap on
+// sampled, not reserved. A strict reserve needs a reservation ledger and a hard cap on
 // FFmpeg's output; worth it only if the disk runs this close for real.
 pub const RESERVE: u64 = 5 * 1024 * 1024 * 1024;
 /// Bytes an unprivileged writer may still use at `path`. An error rather than a guess.

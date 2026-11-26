@@ -105,7 +105,7 @@ pub async fn ffmpeg(args: &[String]) -> Result<()> {
         .await
         .context("FFmpeg is required on the server")?;
     if !output.status.success() {
-        // ponytail: all of stderr is held, as `output()` has always buffered it; read it into a
+        // all of stderr is held, as `output()` has always buffered it; read it into a
         // bounded buffer if a file can make FFmpeg print megabytes even at `-v error`.
         return Err(Failed(String::from_utf8_lossy(&output.stderr).into_owned()).into());
     }
@@ -181,7 +181,7 @@ pub async fn inspect(path: &Path) -> Result<Format> {
 /// Apple's `creationdate` is the start, with its offset. `creation_time` is UTC and written as
 /// the file is finished (an Apple export of a 44-minute recording put it 44 minutes after the
 /// start its name gave), so the start is that less the file's length.
-/// ponytail: some cameras write the start into `creation_time`, or local time marked UTC; a
+/// some cameras write the start into `creation_time`, or local time marked UTC; a
 /// per-maker exception goes here if one shows up.
 /// Both give when the file began; the transcript begins with its sound, at `audio_ms` on the
 /// file's timeline, so its distance from the file's own start is added.

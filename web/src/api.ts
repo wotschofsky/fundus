@@ -154,7 +154,7 @@ export const shareQuery = (id: string) =>
       const since = leaving();
       const next = await api<Share | null>(`/v1/entries/${id}/share`, { signal });
       // Cancelled once its answer had arrived: the cache keeps what it had, and so does the page.
-      // ponytail: a cancel in the few microtasks after the query function returns (here and in
+      // a cancel in the few microtasks after the query function returns (here and in
       // Settings' list), before the cache takes the answer, keeps what follows while the cache
       // reverts. A fresh read follows each cancel (a change ending, the dialog opening; a page
       // that closed reads at its next mount once its answer is stale, or on focus or a lapse),
@@ -220,7 +220,7 @@ export const sentAt = () => landed;
  * the change was sent: that may be newer than this answer (another tab shared again, or a later
  * change committed first, answered or not), so the page asks again instead of overwriting it.
  *
- * ponytail: tabs do not tell each other what they changed; each page reconciles with the server
+ * tabs do not tell each other what they changed; each page reconciles with the server
  * when it reads, so another tab's change shows here at this page's next read (offline, not until
  * it can read). A BroadcastChannel between tabs is the upgrade if that ever matters. */
 export async function keepAnswer(

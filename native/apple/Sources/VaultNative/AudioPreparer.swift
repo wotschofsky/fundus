@@ -72,7 +72,7 @@ public enum AudioPreparer {
         }
     }
     /// The source is the queue's own spool copy: on APFS this clones it instead of writing every byte again.
-    /// ponytail: no hash pass, a clone shares the source's blocks; on a non-APFS volume it is a plain copy.
+    /// no hash pass, a clone shares the source's blocks; on a non-APFS volume it is a plain copy.
     private static func clone(_ source: URL, _ destination: URL, progress: @escaping @Sendable (Double) -> Void) throws {
         if Task.isCancelled { throw PreparationError.cancelled }
         try FileManager.default.copyItem(at: source, to: destination)

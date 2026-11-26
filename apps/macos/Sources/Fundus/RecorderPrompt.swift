@@ -95,7 +95,7 @@ private struct RecorderPromptView: View {
         // A folder chosen in the main window instead of the mic closes it. With no mic shown it waits:
         // taking one mic out of the case can make the others drop out for a moment too, so they get
         // time to mount again. A scan or a returning mic ends the wait.
-        // ponytail: fixed grace; a mic that takes longer to come back reopens the window on arrival. Make
+        // fixed grace; a mic that takes longer to come back reopens the window on arrival. Make
         // it a setting if some mic needs longer.
         .task(id: shown) {
             switch shown {

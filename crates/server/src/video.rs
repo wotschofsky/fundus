@@ -260,7 +260,7 @@ fn arguments(
     // Sound that changes format midway (channels, sample rate) would restart the filter that
     // numbers its samples, and everything after would fall out of step with the transcript, so
     // FFmpeg stops there instead and the conversion fails.
-    // ponytail: such files play as audio only; decode the sound on its own first, as the
+    // such files play as audio only; decode the sound on its own first, as the
     // transcript does, if they turn up.
     args.extend(["-reinit_filter:a", "0", "-i"].map(String::from));
     args.push(source.display().to_string());

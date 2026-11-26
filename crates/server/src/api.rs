@@ -830,7 +830,7 @@ fn web_files(root: &std::path::Path) -> WebFiles {
     let mut files = WebFiles::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        // ponytail: an unreadable folder serves 404s; `serve` refuses to start without index.html.
+        // an unreadable folder serves 404s; `serve` refuses to start without index.html.
         for path in std::fs::read_dir(dir)
             .into_iter()
             .flatten()
